@@ -180,7 +180,7 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
                     )
                 })
             })
-            .and_then(|len| Record::<EmptyBody>::parse_content_length(&len))?;
+            .and_then(|len| Record::parse_content_length(&len))?;
 
         let record_type = headers
             .as_mut()
@@ -218,7 +218,7 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
                     WarcError::MalformedHeader(WarcHeader::Date, "not a UTF-8 string".to_string())
                 })
             })
-            .and_then(|date| Record::<BufferedBody>::parse_record_date(&headers.version, &date))?;
+            .and_then(|date| Record::parse_record_date(&headers.version, &date))?;
 
         let truncated_type = headers
             .as_mut()
@@ -303,7 +303,7 @@ pub struct Record<T: BodyKind> {
     body: T,
 }
 
-impl<T: BodyKind> Record<T> {
+impl Record<EmptyBody> {
     /// Create a new empty record with default values.
     ///
     /// Using a `RecordBuilder` is more efficient when creating records from known data.
@@ -316,7 +316,9 @@ impl<T: BodyKind> Record<T> {
     pub fn new() -> Record<EmptyBody> {
         Record::default()
     }
+}
 
+impl Record<BufferedBody> {
     /// Create a new empty record with a known body.
     ///
     /// Using a `RecordBuilder` is more efficient when creating records from known data.
@@ -332,7 +334,9 @@ impl<T: BodyKind> Record<T> {
             ..Record::default()
         }
     }
+}
 
+impl Record<EmptyBody> {
     /// Generate and return a new value suitable for use in the WARC-Record-ID header.
     ///
     /// # Compatibility
@@ -383,7 +387,9 @@ impl<T: BodyKind> Record<T> {
                 .map(|date| date.into())
         }
     }
+}
 
+impl<T: BodyKind> Record<T> {
     /// Return the WARC version string of this record.
     pub fn warc_version(&self) -> &str {
         &self.headers.version
@@ -489,7 +495,7 @@ impl<T: BodyKind> Record<T> {
         validate_header(&header, value.as_bytes())?;
         match &header {
             WarcHeader::Date => {
-                let date = Record::<T>::parse_record_date(&self.headers.version, &value)?;
+                let date = Record::parse_record_date(&self.headers.version, &value)?;
                 let old_date = std::mem::replace(&mut self.record_date, date);
                 Ok(Some(Cow::Owned(
                     old_date.to_rfc3339_opts(SecondsFormat::Secs, true),
@@ -510,7 +516,7 @@ impl<T: BodyKind> Record<T> {
             }
             WarcHeader::ContentLength => {
                 let content_length = self.body.content_length();
-                if Record::<T>::parse_content_length(&value)? != content_length {
+                if Record::parse_content_length(&value)? != content_length {
                     Err(WarcError::MalformedHeader(
                         WarcHeader::ContentLength,
                         "content length != body size".to_string(),
@@ -727,7 +733,7 @@ impl Default for Record<BufferedBody> {
                 headers: HashMap::new(),
             },
             record_date: Utc::now(),
-            record_id: Record::<BufferedBody>::generate_record_id(),
+            record_id: Record::generate_record_id(),
             record_type: RecordType::Resource,
             truncated_type: None,
             body: BufferedBody(vec![]),
@@ -743,7 +749,7 @@ impl Default for Record<EmptyBody> {
                 headers: HashMap::new(),
             },
             record_date: Utc::now(),
-            record_id: Record::<EmptyBody>::generate_record_id(),
+            record_id: Record::generate_record_id(),
             record_type: RecordType::Resource,
             truncated_type: None,
             body: EmptyBody(),
@@ -1749,8 +1755,7 @@ mod builder_tests {
         const DATE_STRING_1: &[u8] = b"2020-07-18T02:12:45Z";
 
         let mut builder = RecordBuilder::default();
-        builder =
-            builder.date(Record::<BufferedBody>::parse_record_date("1.0", DATE_STRING_0).unwrap());
+        builder = builder.date(Record::parse_record_date("1.0", DATE_STRING_0).unwrap());
 
         let record = builder.clone().build().unwrap();
         assert_eq!(
