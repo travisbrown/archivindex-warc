@@ -1548,8 +1548,7 @@ mod raw_tests {
 mod builder_tests {
     use crate::header::WarcHeader;
     use crate::{
-        BufferedBody, EmptyBody, Error, RawRecordHeader, Record, RecordBuilder, RecordType,
-        TruncatedType,
+        EmptyBody, Error, RawRecordHeader, Record, RecordBuilder, RecordType, TruncatedType,
     };
 
     use std::convert::TryFrom;
