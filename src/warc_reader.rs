@@ -420,6 +420,45 @@ impl<R: BufRead> StreamingIter<'_, R> {
 }
 
 #[cfg(test)]
+mod from_path_tests {
+    use crate::WarcReader;
+
+    #[test]
+    fn reads_existing_file() {
+        let raw: &[u8] = b"\
+            WARC/1.0\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:from-path:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reads_existing_file.warc");
+        std::fs::write(&path, raw).unwrap();
+
+        let reader = WarcReader::from_path(&path).unwrap();
+        let record = reader.iter_records().next().unwrap().unwrap();
+        assert_eq!(record.warc_id(), "<urn:test:from-path:record-0>");
+        assert_eq!(record.body(), b"12345");
+    }
+
+    #[test]
+    fn missing_file_is_not_found_and_not_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing_file.warc");
+        let err = match WarcReader::from_path(&path) {
+            Ok(_) => panic!("expected opening a missing file to fail"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(!path.exists());
+    }
+}
+
+#[cfg(test)]
 mod iter_raw_tests {
     use std::collections::HashMap;
     use std::io::{BufReader, Cursor};
