@@ -313,13 +313,13 @@ impl Record<EmptyBody> {
     /// * WARC-Date: the current moment in time
     /// * WARC-Type: resource
     /// * WARC-Content-Length: 0
-    pub fn new() -> Record<EmptyBody> {
+    pub fn new() -> Self {
         Record::default()
     }
 }
 
 impl Record<BufferedBody> {
-    /// Create a new empty record with a known body.
+    /// Create a new record with a known body.
     ///
     /// Using a `RecordBuilder` is more efficient when creating records from known data.
     ///
@@ -328,7 +328,7 @@ impl Record<BufferedBody> {
     /// * WARC-Date: the current moment in time
     /// * WARC-Type: resource
     /// * WARC-Content-Length: `body.len()`
-    pub fn with_body<B: Into<Vec<u8>>>(body: B) -> Record<BufferedBody> {
+    pub fn with_body<B: Into<Vec<u8>>>(body: B) -> Self {
         Record {
             body: BufferedBody(body.into()),
             ..Record::default()
