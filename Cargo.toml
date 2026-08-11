@@ -11,32 +11,25 @@ keywords = ["warc", "web", "archive"]
 edition = "2024"
 rust-version = "1.85"
 
+[features]
+default = ["gzip"]
+gzip = ["libflate"]
+with_serde = ["serde"]
+
 [dependencies]
 chrono = "0.4"
 indexmap = "2"
+libflate = { version = "2", optional = true }
 nom = "8"
+serde = { version = "1", optional = true, features = ["derive"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
-
-[dependencies.libflate]
-version = "2"
-optional = true
-
-[dependencies.serde]
-version = "1"
-optional = true
-features = ["derive"]
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }
 tempfile = "3"
 # Only the `read_filtered` example parses URLs.
 url = "2"
-
-[features]
-default = ["gzip"]
-gzip = ["libflate"]
-with_serde = ["serde"]
 
 # These examples demonstrate gzip-compressed WARC files, so they are only built when the
 # feature they require is enabled; the remaining examples are still auto-discovered.
