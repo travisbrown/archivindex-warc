@@ -102,7 +102,6 @@ impl WarcWriter<BufWriter<fs::File>> {
     pub fn from_path<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = fs::OpenOptions::new()
             .read(true)
-            .write(true)
             .create(true)
             .truncate(false)
             .append(true)
@@ -126,7 +125,6 @@ impl WarcWriter<BufWriter<GzipWriter<std::fs::File>>> {
     pub fn from_path_gzip<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = fs::OpenOptions::new()
             .read(true)
-            .write(true)
             .create(true)
             .truncate(false)
             .append(true)
