@@ -1,7 +1,7 @@
 use chrono::prelude::*;
 
 use warc::WarcHeader;
-use warc::{BufferedBody, RawRecordHeader, Record, RecordType, WarcWriter};
+use warc::{RawRecordHeader, Record, RecordType, WarcWriter};
 
 fn main() -> Result<(), std::io::Error> {
     let date = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
@@ -13,7 +13,7 @@ fn main() -> Result<(), std::io::Error> {
         headers: vec![
             (
                 WarcHeader::RecordID,
-                Record::<BufferedBody>::generate_record_id().into_bytes(),
+                Record::generate_record_id().into_bytes(),
             ),
             (
                 WarcHeader::WarcType,
