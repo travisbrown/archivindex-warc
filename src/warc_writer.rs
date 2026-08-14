@@ -57,9 +57,7 @@ impl<W: Write> WarcWriter<W> {
         emit(headers.version.as_bytes())?;
         emit(b"\r\n")?;
 
-        let mut headers: Vec<_> = headers.as_ref().iter().collect();
-        headers.sort();
-        for (token, value) in &headers {
+        for (token, value) in headers.as_ref().iter() {
             emit(token.to_string().as_bytes())?;
             emit(b": ")?;
             emit(value)?;
