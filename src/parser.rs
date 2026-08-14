@@ -9,19 +9,15 @@ use nom::{
 use std::borrow::Cow;
 use std::str;
 
+fn verify_error(input: &[u8]) -> nom::Err<nom::error::Error<&[u8]>> {
+    nom::Err::Error(nom::error::Error::new(input, ErrorKind::Verify))
+}
+
 // TODO: evaluate the use of `ErrorKind::Verify` here.
 fn version(input: &[u8]) -> IResult<&[u8], &str> {
     let (input, (_, version, _)) = (tag("WARC/"), not_line_ending, line_ending).parse(input)?;
 
-    let version_str = match str::from_utf8(version) {
-        Err(_) => {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                ErrorKind::Verify,
-            )));
-        }
-        Ok(version) => version,
-    };
+    let version_str = str::from_utf8(version).map_err(|_| verify_error(input))?;
 
     if !crate::is_supported_version(version_str) {
         return Err(nom::Err::Error(nom::error::Error::new(
@@ -87,40 +83,17 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>
     let mut warc_headers: Vec<(&str, Cow<'_, [u8]>)> = Vec::with_capacity(headers.len());
 
     for header in headers {
-        let token_str = match str::from_utf8(header.0) {
-            Err(_) => {
-                return Err(nom::Err::Error(nom::error::Error::new(
-                    input,
-                    ErrorKind::Verify,
-                )));
-            }
-            Ok(token) => token,
-        };
+        let token_str = str::from_utf8(header.0).map_err(|_| verify_error(input))?;
 
         if content_length.is_none() && token_str.eq_ignore_ascii_case("content-length") {
-            let value_str = match str::from_utf8(&header.1) {
-                Err(_) => {
-                    return Err(nom::Err::Error(nom::error::Error::new(
-                        input,
-                        ErrorKind::Verify,
-                    )));
-                }
-                Ok(value) => value,
-            };
+            let value_str = str::from_utf8(&header.1).map_err(|_| verify_error(input))?;
 
             // The parser works in `usize` because it slices the body out of the input, so a
             // length beyond the address space cannot be honored here either.
-            match crate::parse_content_length(value_str).and_then(|len| usize::try_from(len).ok()) {
-                None => {
-                    return Err(nom::Err::Error(nom::error::Error::new(
-                        input,
-                        ErrorKind::Verify,
-                    )));
-                }
-                Some(len) => {
-                    content_length = Some(len);
-                }
-            }
+            let len = crate::parse_content_length(value_str)
+                .and_then(|len| usize::try_from(len).ok())
+                .ok_or_else(|| verify_error(input))?;
+            content_length = Some(len);
         }
 
         warc_headers.push((token_str, header.1));
