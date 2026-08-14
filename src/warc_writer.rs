@@ -346,6 +346,26 @@ mod write_raw_tests {
         assert_eq!(bytes_written, expected.len());
     }
 
+    /// WARC 1.0 dates have second precision, even when the stored instant includes a
+    /// fractional second.
+    #[test]
+    fn warc_1_0_writing_omits_subseconds() {
+        let mut record = crate::Record::<crate::BufferedBody>::default();
+        record
+            .set_header(WarcHeader::Date, "2020-07-08T02:52:55.123456Z")
+            .unwrap();
+        record.set_warc_version(crate::WarcVersion::V1_0);
+
+        let mut writer = WarcWriter::new(Vec::new());
+        writer.write(&record).unwrap();
+
+        let written = String::from_utf8(writer.writer).unwrap();
+        assert!(
+            written.contains("warc-date: 2020-07-08T02:52:55Z\r\n"),
+            "{written:?}"
+        );
+    }
+
     /// A record written by the writer reads back identically, including a sub-second
     /// `WARC-Date`, which WARC 1.1 permits at up to nanosecond precision.
     #[test]
