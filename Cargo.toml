@@ -33,3 +33,17 @@ tempfile = "3"
 default = ["gzip"]
 gzip = ["libflate"]
 with_serde = ["serde"]
+
+# These examples demonstrate gzip-compressed WARC files, so they are only built when the
+# feature they require is enabled; the remaining examples are still auto-discovered.
+[[example]]
+name = "read_gzip"
+required-features = ["gzip"]
+
+[[example]]
+name = "write_gzip"
+required-features = ["gzip"]
+
+[[example]]
+name = "read_filtered"
+required-features = ["gzip"]
