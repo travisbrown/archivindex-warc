@@ -131,7 +131,66 @@ fn check_header_block_end(remainder: &[u8]) -> Result<(), Error> {
     )))
 }
 
-/// Read lines up to and including the blank line that terminates a header block.
+/// The maximum size of a buffered record header block.
+///
+/// The specification places no bound on header blocks, but readers must buffer them, so a
+/// hostile or corrupt stream whose header block never ends has to be stopped somewhere;
+/// 1 MiB is far beyond any legitimate block.
+const MAX_HEADER_BLOCK: usize = MB;
+
+/// The outcome of one [`read_line_bounded`] call.
+enum LineRead {
+    /// A full line ending in `\n` was appended; the length includes the newline.
+    Line(usize),
+    /// The stream ended; any partial final line was appended to the buffer.
+    Eof,
+    /// Completing the line would grow the buffer past the limit.
+    LimitExceeded,
+}
+
+/// Read one `\n`-terminated line into `buffer` without ever letting it grow past `limit`.
+///
+/// Unlike [`BufRead::read_until`], which buffers an entire delimiter-free stream within a
+/// single call, this never reads more than `limit - buffer.len()` bytes.
+fn read_line_bounded<R: BufRead>(
+    reader: &mut R,
+    buffer: &mut Vec<u8>,
+    limit: usize,
+) -> Result<LineRead, Error> {
+    let mut appended = 0;
+    loop {
+        let available = match reader.fill_buf() {
+            Err(io) => return Err(Error::ReadData(io)),
+            Ok(available) => available,
+        };
+        if available.is_empty() {
+            return Ok(LineRead::Eof);
+        }
+
+        let allowance = limit - buffer.len();
+        if let Some(index) = available
+            .iter()
+            .take(allowance)
+            .position(|&byte| byte == b'\n')
+        {
+            buffer.extend_from_slice(&available[..=index]);
+            reader.consume(index + 1);
+            return Ok(LineRead::Line(appended + index + 1));
+        }
+
+        if available.len() >= allowance {
+            return Ok(LineRead::LimitExceeded);
+        }
+
+        let taken = available.len();
+        buffer.extend_from_slice(available);
+        reader.consume(taken);
+        appended += taken;
+    }
+}
+
+/// Read lines up to and including the blank line that terminates a header block, reading at
+/// most [`MAX_HEADER_BLOCK`] bytes.
 ///
 /// The header block is left in `header_buffer`, which is cleared first so callers can reuse
 /// one buffer across records.
@@ -144,25 +203,22 @@ fn read_header_block<R: BufRead>(
 ) -> Option<Result<(), Error>> {
     header_buffer.clear();
     loop {
-        let bytes_read = match reader.read_until(b'\n', header_buffer) {
-            Err(io) => return Some(Err(Error::ReadData(io))),
-            Ok(len) => len,
-        };
-
-        if bytes_read == 0 {
-            // A record boundary is the only place the input may cleanly end. Anything
-            // buffered here is a header block whose terminating blank line never arrived:
-            // the input was truncated mid-record, or uses bare-`\n` line endings (which
-            // never match the `\r\n` check below, and would otherwise read as an empty
-            // stream with no error).
-            if header_buffer.is_empty() {
-                return None;
+        match read_line_bounded(reader, header_buffer, MAX_HEADER_BLOCK) {
+            Err(e) => return Some(Err(e)),
+            Ok(LineRead::Eof) => {
+                // A record boundary is the only place the input may cleanly end. Anything
+                // buffered here is a header block whose terminating blank line never arrived:
+                // the input was truncated mid-record, or uses bare-`\n` line endings (which
+                // never match the `\r\n` check below, and would otherwise read as an empty
+                // stream with no error).
+                if header_buffer.is_empty() {
+                    return None;
+                }
+                return Some(Err(Error::UnexpectedEOH));
             }
-            return Some(Err(Error::UnexpectedEOH));
-        }
-
-        if bytes_read == 2 && header_buffer.ends_with(b"\r\n") {
-            return Some(Ok(()));
+            Ok(LineRead::LimitExceeded) => return Some(Err(Error::HeaderBlockTooLarge)),
+            Ok(LineRead::Line(2)) if header_buffer.ends_with(b"\r\n") => return Some(Ok(())),
+            Ok(LineRead::Line(_)) => {}
         }
     }
 }
@@ -200,40 +256,35 @@ fn read_body<R: BufRead>(reader: &mut R, expected_body_len: u64) -> Result<Vec<u
     // on a 32-bit target) is rejected up front, rather than overflowing the arithmetic below;
     // such records can still be read with `WarcReader::stream_records`.
     let expected_body_len = usize::try_from(expected_body_len).map_err(|_| Error::BodyTooLarge)?;
-    let maximum_read_range = expected_body_len
+    let needed = expected_body_len
         .checked_add(4)
         .ok_or(Error::BodyTooLarge)?;
     // Size the buffer to the record, but cap the speculative allocation at `MB` so a bogus
-    // `Content-Length` cannot force a huge up-front allocation.
-    let mut body_buffer: Vec<u8> = Vec::with_capacity(std::cmp::min(maximum_read_range, MB));
-    let mut body_bytes_read = 0;
-    loop {
-        let bytes_read = match reader.read_until(b'\n', &mut body_buffer) {
+    // `Content-Length` cannot force a huge up-front allocation. Reads are bounded by the
+    // declared length: exactly the body and its 4-byte `\r\n\r\n` terminator are consumed,
+    // regardless of what follows in the stream.
+    let mut body_buffer: Vec<u8> = Vec::with_capacity(std::cmp::min(needed, MB));
+    while body_buffer.len() < needed {
+        let available = match reader.fill_buf() {
             Err(io) => return Err(Error::ReadData(io)),
-            Ok(len) => len,
+            Ok(available) => available,
         };
-
-        body_bytes_read += bytes_read;
-
-        // we expect 4 characters (`\r\n\r\n`) after the body
-        if bytes_read == 2 && body_bytes_read == maximum_read_range {
-            // The terminator is what separates one record from the next, so a body followed by
-            // anything else has not been framed as the header block said it was.
-            if &body_buffer[expected_body_len..] != b"\r\n\r\n" {
-                return Err(Error::MalformedRecordTerminator);
-            }
-            body_buffer.truncate(expected_body_len);
-            return Ok(body_buffer);
-        }
-
-        if bytes_read == 0 {
+        if available.is_empty() {
             return Err(Error::UnexpectedEOB);
         }
 
-        if body_bytes_read > maximum_read_range {
-            return Err(Error::ReadOverflow);
-        }
+        let taken = available.len().min(needed - body_buffer.len());
+        body_buffer.extend_from_slice(&available[..taken]);
+        reader.consume(taken);
     }
+
+    // A record whose actual body outruns its declared length puts body bytes where the
+    // terminator belongs, so overlong records surface here too.
+    if &body_buffer[expected_body_len..] != b"\r\n\r\n" {
+        return Err(Error::MalformedRecordTerminator);
+    }
+    body_buffer.truncate(expected_body_len);
+    Ok(body_buffer)
 }
 
 /// An iterator of raw records streamed from a reader. See `RawRecord` for more information.
@@ -493,6 +544,82 @@ mod iter_raw_tests {
     use crate::{Error, WarcHeader, WarcReader};
     macro_rules! create_reader {
         ($raw:expr) => {{ BufReader::new(Cursor::new($raw.get(..).unwrap())) }};
+    }
+
+    /// A stream that never terminates its header block is stopped at the size bound instead of
+    /// being buffered without limit.
+    #[test]
+    fn oversized_header_block_without_newlines() {
+        let raw = vec![b'A'; 2 * crate::MB];
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(Error::HeaderBlockTooLarge))
+        ));
+    }
+
+    /// The header-block bound also applies to a block of well-formed lines that never ends.
+    #[test]
+    fn oversized_header_block_with_newlines() {
+        let mut raw = b"WARC/1.1\r\n".to_vec();
+        while raw.len() <= 2 * crate::MB {
+            raw.extend_from_slice(b"a: b\r\n");
+        }
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(Error::HeaderBlockTooLarge))
+        ));
+    }
+
+    /// A record whose actual body outruns its declared `Content-Length` puts body bytes where
+    /// the terminator belongs; only the declared range is read.
+    #[test]
+    fn oversized_body_reports_malformed_terminator() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            \r\n\
+            1234567890\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(Error::MalformedRecordTerminator))
+        ));
+    }
+
+    /// The stream ends inside the record body.
+    #[test]
+    fn body_eof_mid_body() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 10\r\n\
+            \r\n\
+            12";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        assert!(matches!(reader.next(), Some(Err(Error::UnexpectedEOB))));
+    }
+
+    /// The stream ends inside the record terminator.
+    #[test]
+    fn body_eof_mid_terminator() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            \r\n\
+            12345\r\n";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        assert!(matches!(reader.next(), Some(Err(Error::UnexpectedEOB))));
     }
 
     #[test]

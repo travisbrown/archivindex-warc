@@ -20,15 +20,16 @@ pub enum Error {
     /// The underlying read from the data source failed.
     #[error("Error reading data source.")]
     ReadData(#[source] std::io::Error),
-    /// More data was read than expected by the header metadata. The record was well-formed, but
-    /// invalid.
-    #[error("Read further than expected.")]
-    ReadOverflow,
     /// The record's declared `Content-Length` is too large for its body to be buffered in
     /// memory on this platform. Such a record may still be readable with
     /// `WarcReader::stream_records`, which does not buffer bodies.
     #[error("Record body too large to buffer.")]
     BodyTooLarge,
+    /// The record's header block exceeds the supported maximum size. Header blocks are
+    /// buffered in memory, so a bound protects readers from hostile or corrupt streams whose
+    /// header block never ends.
+    #[error("Record header block too large.")]
+    HeaderBlockTooLarge,
     /// The input ended in the middle of a record's header block. Either the stream was
     /// truncated mid-record, or its lines are not `\r\n`-terminated as the standard requires
     /// (a bare-`\n` blank line never terminates a header block).
@@ -88,10 +89,14 @@ mod tests {
                 false,
             ),
             (Error::ReadData(io), "Error reading data source.", true),
-            (Error::ReadOverflow, "Read further than expected.", false),
             (
                 Error::BodyTooLarge,
                 "Record body too large to buffer.",
+                false,
+            ),
+            (
+                Error::HeaderBlockTooLarge,
+                "Record header block too large.",
                 false,
             ),
             (
