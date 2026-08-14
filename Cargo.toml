@@ -11,6 +11,10 @@ keywords = ["warc", "web", "archive"]
 edition = "2024"
 rust-version = "1.85"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 chrono = "0.4"
 nom = "8"
