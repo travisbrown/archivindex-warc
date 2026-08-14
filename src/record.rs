@@ -1,6 +1,6 @@
 use chrono::prelude::*;
+use indexmap::IndexMap;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::fmt;
 use std::io::Read;
 
@@ -91,18 +91,18 @@ mod streaming_trait {
 pub struct RawRecordHeader {
     /// The WARC standard version this record reports conformance to.
     pub version: String,
-    /// All headers that are part of this record.
-    pub headers: HashMap<WarcHeader, Vec<u8>>,
+    /// All headers that are part of this record, in insertion order.
+    pub headers: IndexMap<WarcHeader, Vec<u8>>,
 }
 
-impl AsRef<HashMap<WarcHeader, Vec<u8>>> for RawRecordHeader {
-    fn as_ref(&self) -> &HashMap<WarcHeader, Vec<u8>> {
+impl AsRef<IndexMap<WarcHeader, Vec<u8>>> for RawRecordHeader {
+    fn as_ref(&self) -> &IndexMap<WarcHeader, Vec<u8>> {
         &self.headers
     }
 }
 
-impl AsMut<HashMap<WarcHeader, Vec<u8>>> for RawRecordHeader {
-    fn as_mut(&mut self) -> &mut HashMap<WarcHeader, Vec<u8>> {
+impl AsMut<IndexMap<WarcHeader, Vec<u8>>> for RawRecordHeader {
+    fn as_mut(&mut self) -> &mut IndexMap<WarcHeader, Vec<u8>> {
         &mut self.headers
     }
 }
@@ -120,7 +120,7 @@ fn normalize_raw_headers(headers: &mut RawRecordHeader) -> Result<(), WarcError>
         .any(|header| matches!(header, WarcHeader::Unknown(_)));
 
     if needs_normalizing {
-        let mut normalized = HashMap::with_capacity(headers.as_ref().len());
+        let mut normalized = IndexMap::with_capacity(headers.as_ref().len());
         for (header, value) in std::mem::take(headers.as_mut()) {
             let header = header.normalized();
             if normalized.insert(header.clone(), value).is_some() {
@@ -170,7 +170,7 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
         normalize_raw_headers(&mut headers)?;
         headers
             .as_mut()
-            .remove(&WarcHeader::ContentLength)
+            .shift_remove(&WarcHeader::ContentLength)
             .ok_or(WarcError::MissingHeader(WarcHeader::ContentLength))
             .and_then(|vec| {
                 String::from_utf8(vec).map_err(|_| {
@@ -184,7 +184,7 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
 
         let record_type = headers
             .as_mut()
-            .remove(&WarcHeader::WarcType)
+            .shift_remove(&WarcHeader::WarcType)
             .ok_or(WarcError::MissingHeader(WarcHeader::WarcType))
             .and_then(|vec| {
                 String::from_utf8(vec).map_err(|_| {
@@ -198,7 +198,7 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
 
         let record_id = headers
             .as_mut()
-            .remove(&WarcHeader::RecordID)
+            .shift_remove(&WarcHeader::RecordID)
             .ok_or(WarcError::MissingHeader(WarcHeader::RecordID))
             .and_then(|vec| {
                 String::from_utf8(vec).map_err(|_| {
@@ -211,7 +211,7 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
 
         let record_date = headers
             .as_mut()
-            .remove(&WarcHeader::Date)
+            .shift_remove(&WarcHeader::Date)
             .ok_or(WarcError::MissingHeader(WarcHeader::Date))
             .and_then(|vec| {
                 String::from_utf8(vec).map_err(|_| {
@@ -273,7 +273,7 @@ impl std::fmt::Display for RawRecordHeader {
 #[derive(Clone, Default)]
 pub struct RecordBuilder {
     value: Record<BufferedBody>,
-    broken_headers: HashMap<WarcHeader, Vec<u8>>,
+    broken_headers: IndexMap<WarcHeader, Vec<u8>>,
 }
 
 /// A single WARC record.
@@ -641,31 +641,26 @@ impl Record<BufferedBody> {
             record_date,
             record_id,
             record_type,
+            truncated_type,
             body,
-            ..
         } = self;
-        let insert1 = headers.as_mut().insert(
-            WarcHeader::ContentLength,
-            format!("{}", body.0.len()).into(),
-        );
-        let insert2 = headers
-            .as_mut()
-            .insert(WarcHeader::WarcType, record_type.to_string().into());
-        let insert3 = headers
-            .as_mut()
-            .insert(WarcHeader::RecordID, record_id.into());
-        let insert4 = if let Some(ref truncated_type) = self.truncated_type {
-            headers
-                .as_mut()
-                .insert(WarcHeader::Truncated, truncated_type.to_string().into())
-        } else {
-            None
-        };
-        let insert5 = headers.as_mut().insert(
+
+        // Conventional WARC header order: record-level headers first, `Content-Length` last.
+        let map = headers.as_mut();
+        let insert1 = map.shift_insert(0, WarcHeader::WarcType, record_type.to_string().into());
+        let insert2 = map.shift_insert(1, WarcHeader::RecordID, record_id.into());
+        let insert3 = map.shift_insert(
+            2,
             WarcHeader::Date,
             record_date
                 .to_rfc3339_opts(SecondsFormat::Secs, true)
                 .into(),
+        );
+        let insert4 = truncated_type
+            .and_then(|t| map.shift_insert(3, WarcHeader::Truncated, t.to_string().into()));
+        let insert5 = map.insert(
+            WarcHeader::ContentLength,
+            format!("{}", body.0.len()).into(),
         );
 
         debug_assert!(
@@ -728,7 +723,7 @@ impl Default for Record<BufferedBody> {
         Record {
             headers: RawRecordHeader {
                 version: "1.0".to_string(),
-                headers: HashMap::new(),
+                headers: IndexMap::new(),
             },
             record_date: Utc::now(),
             record_id: Record::generate_record_id(),
@@ -744,7 +739,7 @@ impl Default for Record<EmptyBody> {
         Record {
             headers: RawRecordHeader {
                 version: "1.0".to_string(),
-                headers: HashMap::new(),
+                headers: IndexMap::new(),
             },
             record_date: Utc::now(),
             record_id: Record::generate_record_id(),
@@ -865,7 +860,7 @@ impl RecordBuilder {
         let value = value.into();
         match Self::set_raw_header(&mut self.value, key.clone(), &value) {
             Ok(()) => {
-                self.broken_headers.remove(&key);
+                self.broken_headers.shift_remove(&key);
             }
             Err(_) => {
                 self.broken_headers.insert(key, value);
@@ -977,6 +972,28 @@ mod record_tests {
         record.body_mut().copy_from_slice(b"goodbye");
         assert_eq!(record.content_length(), 7);
         assert_eq!(record.body(), b"goodbye");
+    }
+
+    #[test]
+    fn into_raw_parts_header_order() {
+        let mut record = Record::<BufferedBody>::default();
+        record.replace_body(b"hello".to_vec());
+        record
+            .set_header(WarcHeader::TargetURI, "https://example.com/")
+            .unwrap();
+
+        let (headers, _) = record.into_raw_parts();
+        let keys: Vec<&WarcHeader> = headers.as_ref().keys().collect();
+        assert_eq!(
+            keys,
+            vec![
+                &WarcHeader::WarcType,
+                &WarcHeader::RecordID,
+                &WarcHeader::Date,
+                &WarcHeader::TargetURI,
+                &WarcHeader::ContentLength,
+            ]
+        );
     }
 
     #[test]
@@ -1306,14 +1323,14 @@ mod raw_tests {
     use crate::header::WarcHeader;
     use crate::{EmptyBody, Error, RawRecordHeader, Record, RecordType, TruncatedType};
 
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
     use std::convert::TryFrom;
 
     #[test]
     fn create() {
         let headers = RawRecordHeader {
             version: "1.0".to_owned(),
-            headers: HashMap::new(),
+            headers: IndexMap::new(),
         };
 
         assert_eq!(headers.as_ref().len(), 0);
