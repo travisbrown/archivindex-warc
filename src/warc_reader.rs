@@ -318,19 +318,18 @@ impl<R: BufRead> StreamingIter<'_, R> {
     }
 
     fn skip_body(&mut self) -> Result<(), Error> {
-        let mut read_buffer = [0u8; MB];
-        let maximum_read_range = self.current_item_size;
-        let mut body_bytes_left = maximum_read_range;
+        let mut body_bytes_left = self.current_item_size;
         while body_bytes_left > 0 {
-            let read_size = std::cmp::min(body_bytes_left, read_buffer.len() as u64) as usize;
-            let bytes_read = match self.reader.read(&mut read_buffer[..read_size]) {
+            let buffered_len = match self.reader.fill_buf() {
                 Err(io) => return Err(Error::ReadData(io)),
-                Ok(len) => len as u64,
+                Ok(buffered) => buffered.len(),
             };
-            if bytes_read == 0 {
+            if buffered_len == 0 {
                 return Err(Error::UnexpectedEOB);
             }
-            body_bytes_left -= bytes_read;
+            let bytes_skipped = std::cmp::min(body_bytes_left, buffered_len as u64);
+            self.reader.consume(bytes_skipped as usize);
+            body_bytes_left -= bytes_skipped;
         }
 
         let mut crlfs = [0; 4];
@@ -934,6 +933,47 @@ mod next_item_tests {
             assert_eq!(record.warc_id(), "<urn:test:three-records:record-2>");
             assert_eq!(record.body(), b"12345678");
         }
+    }
+
+    #[test]
+    fn skip_body_larger_than_bufreader_buffer() {
+        let body = vec![b'x'; 20_000];
+        let mut raw = format!(
+            "WARC/1.0\r\n\
+             Warc-Type: dunno\r\n\
+             WARC-Record-Id: <urn:test:skip-large-body:record-0>\r\n\
+             WARC-Date: 2020-07-08T02:52:55Z\r\n\
+             Content-Length: {}\r\n\
+             \r\n",
+            body.len()
+        )
+        .into_bytes();
+        raw.extend_from_slice(&body);
+        raw.extend_from_slice(b"\r\n\r\n");
+        raw.extend_from_slice(
+            b"WARC/1.0\r\n\
+              Warc-Type: another\r\n\
+              WARC-Record-Id: <urn:test:skip-large-body:record-1>\r\n\
+              WARC-Date: 2020-07-08T02:52:56Z\r\n\
+              Content-Length: 6\r\n\
+              \r\n\
+              123456\r\n\
+              \r\n",
+        );
+
+        let mut reader = WarcReader::new(create_reader!(raw));
+        let mut stream_iter = reader.stream_records();
+
+        let _skipped = stream_iter.next_item().unwrap().unwrap();
+
+        let record = stream_iter
+            .next_item()
+            .unwrap()
+            .unwrap()
+            .into_buffered()
+            .unwrap();
+        assert_eq!(record.warc_id(), "<urn:test:skip-large-body:record-1>");
+        assert_eq!(record.body(), b"123456");
     }
 
     #[test]
