@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 
 use std::fmt::Display;
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TruncatedType {
     Length,
     Time,
@@ -13,11 +13,11 @@ pub enum TruncatedType {
 impl Display for TruncatedType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let stringified = match *self {
-            TruncatedType::Length => "length",
-            TruncatedType::Time => "time",
-            TruncatedType::Disconnect => "disconnect",
-            TruncatedType::Unspecified => "unspecified",
-            TruncatedType::Unknown(ref val) => val.as_ref(),
+            Self::Length => "length",
+            Self::Time => "time",
+            Self::Disconnect => "disconnect",
+            Self::Unspecified => "unspecified",
+            Self::Unknown(ref val) => val.as_ref(),
         };
         f.write_str(stringified)
     }
@@ -36,7 +36,9 @@ impl<S: AsRef<str>> From<S> for TruncatedType {
         KNOWN_TYPES
             .iter()
             .find(|(name, _)| string.eq_ignore_ascii_case(name))
-            .map(|(_, truncated_type)| truncated_type.clone())
-            .unwrap_or_else(|| TruncatedType::Unknown(string.to_lowercase()))
+            .map_or_else(
+                || Self::Unknown(string.to_lowercase()),
+                |(_, truncated_type)| truncated_type.clone(),
+            )
     }
 }

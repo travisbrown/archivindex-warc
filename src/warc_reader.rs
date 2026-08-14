@@ -21,8 +21,8 @@ pub struct WarcReader<R> {
 
 impl<R: BufRead> WarcReader<R> {
     /// Create a new reader.
-    pub fn new(r: R) -> Self {
-        WarcReader { reader: r }
+    pub const fn new(r: R) -> Self {
+        Self { reader: r }
     }
 
     /// Create an iterator over all of the raw records read.
@@ -45,7 +45,7 @@ impl<R: BufRead> WarcReader<R> {
     ///
     /// This will build each record header, and allow the caller to decide whether to read
     /// the body or not.
-    pub fn stream_records(&mut self) -> StreamingIter<'_, R> {
+    pub const fn stream_records(&mut self) -> StreamingIter<'_, R> {
         StreamingIter::new(&mut self.reader)
     }
 }
@@ -57,7 +57,7 @@ impl WarcReader<BufReader<fs::File>> {
 
         let reader = BufReader::with_capacity(MB, file);
 
-        Ok(WarcReader::new(reader))
+        Ok(Self::new(reader))
     }
 }
 
@@ -70,7 +70,7 @@ impl WarcReader<BufReader<GzipReader<BufReader<fs::File>>>> {
         let file = fs::File::open(&path)?;
 
         let gzip_stream = GzipReader::new(BufReader::with_capacity(MB, file))?;
-        Ok(WarcReader::new(BufReader::new(gzip_stream)))
+        Ok(Self::new(BufReader::new(gzip_stream)))
     }
 }
 
@@ -82,6 +82,7 @@ impl WarcReader<BufReader<GzipReader<BufReader<fs::File>>>> {
 /// # Errors
 ///
 /// Returns `Error::DuplicateHeader` if any other named field appears more than once.
+#[allow(clippy::type_complexity)]
 fn collect_headers<'a>(
     parsed: Vec<(&'a str, std::borrow::Cow<'a, [u8]>)>,
 ) -> Result<(IndexMap<WarcHeader, Vec<u8>>, Vec<Vec<u8>>), Error> {
@@ -230,8 +231,8 @@ pub struct RawRecordIter<R> {
 }
 
 impl<R: BufRead> RawRecordIter<R> {
-    pub(crate) fn new(reader: R) -> RawRecordIter<R> {
-        RawRecordIter {
+    pub(crate) const fn new(reader: R) -> Self {
+        Self {
             reader,
             finished: false,
             header_buffer: Vec::new(),
@@ -282,8 +283,8 @@ pub struct RecordIter<R> {
 }
 
 impl<R: BufRead> RecordIter<R> {
-    pub(crate) fn new(reader: R) -> RecordIter<R> {
-        RecordIter {
+    pub(crate) const fn new(reader: R) -> Self {
+        Self {
             raw_iter: RawRecordIter::new(reader),
         }
     }
@@ -322,7 +323,7 @@ pub struct StreamingIter<'r, R> {
 }
 
 impl<R: BufRead> StreamingIter<'_, R> {
-    pub(crate) fn new(reader: &mut R) -> StreamingIter<'_, R> {
+    pub(crate) const fn new(reader: &mut R) -> StreamingIter<'_, R> {
         StreamingIter {
             reader,
             current_item_size: 0,
@@ -342,9 +343,11 @@ impl<R: BufRead> StreamingIter<'_, R> {
             if buffered_len == 0 {
                 return Err(Error::UnexpectedEOB);
             }
-            let bytes_skipped = std::cmp::min(body_bytes_left, buffered_len as u64);
-            self.reader.consume(bytes_skipped as usize);
-            body_bytes_left -= bytes_skipped;
+            // The skip is bounded by the buffer length, so it always fits in `usize`.
+            let bytes_skipped = usize::try_from(body_bytes_left)
+                .map_or(buffered_len, |left| left.min(buffered_len));
+            self.reader.consume(bytes_skipped);
+            body_bytes_left -= bytes_skipped as u64;
         }
 
         let mut crlfs = [0; 4];
@@ -447,9 +450,8 @@ mod from_path_tests {
     fn missing_file_is_not_found_and_not_created() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing_file.warc");
-        let err = match WarcReader::from_path(&path) {
-            Ok(_) => panic!("expected opening a missing file to fail"),
-            Err(e) => e,
+        let Err(err) = WarcReader::from_path(&path) else {
+            panic!("expected opening a missing file to fail");
         };
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
         assert!(!path.exists());
