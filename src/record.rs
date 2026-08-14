@@ -6,10 +6,10 @@ use std::io::Read;
 
 use uuid::Uuid;
 
+use crate::Error as WarcError;
 use crate::header::WarcHeader;
 use crate::record_type::RecordType;
 use crate::truncated_type::TruncatedType;
-use crate::Error as WarcError;
 
 use streaming_trait::BodyKind;
 pub use streaming_trait::{BufferedBody, EmptyBody, StreamingBody};
@@ -983,10 +983,12 @@ mod record_tests {
     fn add_header() {
         let mut record = Record::<BufferedBody>::default();
         assert!(record.header(WarcHeader::TargetURI).is_none());
-        assert!(record
-            .set_header(WarcHeader::TargetURI, "https://www.rust-lang.org")
-            .unwrap()
-            .is_none());
+        assert!(
+            record
+                .set_header(WarcHeader::TargetURI, "https://www.rust-lang.org")
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             record.header(WarcHeader::TargetURI).unwrap(),
             "https://www.rust-lang.org"
@@ -1063,9 +1065,11 @@ mod record_tests {
             );
         }
 
-        assert!(record
-            .set_header(WarcHeader::Unknown("x-custom".to_string()), "value")
-            .is_ok());
+        assert!(
+            record
+                .set_header(WarcHeader::Unknown("x-custom".to_string()), "value")
+                .is_ok()
+        );
     }
 
     /// DEL is a control character, so it cannot appear in an extension field-name token.
@@ -1193,9 +1197,11 @@ mod record_tests {
         let mut record = Record::<BufferedBody>::default();
 
         assert!(record.set_header(WarcHeader::ContentLength, "0 ").is_ok());
-        assert!(record
-            .set_header(WarcHeader::ContentLength, "\t0\t")
-            .is_ok());
+        assert!(
+            record
+                .set_header(WarcHeader::ContentLength, "\t0\t")
+                .is_ok()
+        );
 
         // A sign is rejected even when the value would match the body size.
         assert!(matches!(
@@ -1225,9 +1231,11 @@ mod record_tests {
     fn set_header_override_content_length() {
         let mut record = Record::<BufferedBody>::default();
         assert_eq!(record.header(WarcHeader::ContentLength).unwrap(), "0");
-        assert!(record
-            .set_header(WarcHeader::ContentLength, "really short")
-            .is_err());
+        assert!(
+            record
+                .set_header(WarcHeader::ContentLength, "really short")
+                .is_err()
+        );
         assert!(record.set_header(WarcHeader::ContentLength, "50").is_err());
         assert_eq!(
             record

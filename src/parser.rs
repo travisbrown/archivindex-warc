@@ -1,14 +1,13 @@
 use nom::{
+    IResult,
     bytes::streaming::{tag, take, take_while1},
     character::streaming::{line_ending, not_line_ending, space0, space1},
     combinator::complete,
     error::ErrorKind,
     multi::{many0, many1},
     sequence::tuple,
-    IResult,
 };
 use std::borrow::Cow;
-use std::convert::TryFrom;
 use std::str;
 
 // TODO: evaluate the use of `ErrorKind::Verify` here.
@@ -149,9 +148,9 @@ pub fn record(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>,
 #[cfg(test)]
 mod tests {
     use super::{header, headers, record, version};
-    use nom::error::ErrorKind;
     use nom::Err;
     use nom::Needed;
+    use nom::error::ErrorKind;
     use std::borrow::Cow;
 
     #[test]

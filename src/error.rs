@@ -36,14 +36,14 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Error::ParseHeaders(_) => write!(f, "Error parsing headers."),
-            Error::MissingHeader(ref h) => write!(f, "Missing required header: {}", h),
-            Error::MalformedHeader(ref h, ref r) => {
+            Error::MissingHeader(h) => write!(f, "Missing required header: {}", h),
+            Error::MalformedHeader(h, r) => {
                 write!(f, "Malformed header: {}: {}", h, r)
             }
             Error::ReadData(_) => write!(f, "Error reading data source."),
             Error::ReadOverflow => write!(f, "Read further than expected."),
             Error::UnexpectedEOB => write!(f, "Unexpected end of body."),
-            Error::MalformedVersion(ref v) => write!(f, "Malformed version: {}", v),
+            Error::MalformedVersion(v) => write!(f, "Malformed version: {}", v),
             Error::ContentLengthMismatch { declared, actual } => write!(
                 f,
                 "Content-Length declares {} bytes, but the body is {}.",
@@ -56,8 +56,8 @@ impl fmt::Display for Error {
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::ParseHeaders(ref e) => Some(e),
-            Error::ReadData(ref e) => Some(e),
+            Error::ParseHeaders(e) => Some(e),
+            Error::ReadData(e) => Some(e),
             _ => None,
         }
     }
