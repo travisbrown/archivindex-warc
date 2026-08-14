@@ -4,6 +4,8 @@
 #![forbid(unsafe_code)]
 //! A WARC (Web ARChive) library
 
+const MB: usize = 1_048_576;
+
 /// Whether a byte may appear in a header name, per the specification's token grammar: ASCII,
 /// excluding control characters, separators, and space. Shared by the parser and the
 /// write-path validation so that acceptance on write matches acceptance on read.
