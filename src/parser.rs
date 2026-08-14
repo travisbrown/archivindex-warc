@@ -157,19 +157,6 @@ mod tests {
         assert!(header(b"evil\x7fname: value\r\n").is_err());
     }
 
-    /// A field value folded across lines with leading whitespace is unfolded, each fold
-    /// reading as a single space.
-    #[test]
-    fn header_pair_folded_value_parsing() {
-        assert_eq!(
-            header(&b"folded-header: one\r\n two\r\n\tthree\r\n"[..]),
-            Ok((
-                &b""[..],
-                (&b"folded-header"[..], Cow::Owned(b"one two three".to_vec()))
-            ))
-        );
-    }
-
     /// `Content-Length` follows the `1*DIGIT` grammar strictly: linear whitespace around the
     /// digits is tolerated, but signs, internal whitespace, and non-digits are not.
     #[test]
@@ -213,6 +200,30 @@ mod tests {
         assert_eq!(
             header(&b"incomplete-header: missing-line-ending"[..]),
             Err(Err::Incomplete(Needed::Unknown))
+        );
+    }
+
+    /// A field value may span lines via LWS continuation; each fold reads as a single space.
+    #[test]
+    fn header_pair_folded_value_parsing() {
+        assert_eq!(
+            header(&b"folded-header: line one\r\n line two\r\n\t \tline three\r\n"[..]),
+            Ok((
+                &b""[..],
+                (
+                    &b"folded-header"[..],
+                    Cow::Owned(b"line one line two line three".to_vec())
+                )
+            ))
+        );
+
+        // A continuation line is part of the value, not the start of the next field.
+        assert_eq!(
+            header(&b"folded-header: one\r\n two\r\nnext-header: value\r\n"[..]),
+            Ok((
+                &b"next-header: value\r\n"[..],
+                (&b"folded-header"[..], Cow::Owned(b"one two".to_vec()))
+            ))
         );
     }
 

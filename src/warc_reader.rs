@@ -158,6 +158,10 @@ fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, usize), Error> 
     let expected_body_len =
         expected_body_len.ok_or(Error::MissingHeader(WarcHeader::ContentLength))?;
 
+    // The specification forbids repeating a field (other than `WARC-Concurrent-To`, which this
+    // representation cannot hold more than once). If a record repeats one anyway, keep the
+    // first occurrence: it is the `Content-Length` the parser framed the body with, so the
+    // headers reported always match the body actually read.
     let headers = RawRecordHeader {
         version: version.to_owned(),
         headers: collect_headers(headers),

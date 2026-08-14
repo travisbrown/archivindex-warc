@@ -277,6 +277,54 @@ mod write_raw_tests {
         assert_eq!(record_len, raw_len);
     }
 
+    /// A written record follows the WARC 1.1 grammar byte for byte: version line, named
+    /// fields, and block all terminated by CRLF, with two CRLFs closing the record.
+    #[test]
+    fn written_record_follows_the_warc_1_1_grammar() {
+        let record = crate::RecordBuilder::default()
+            .warc_type(crate::RecordType::Response)
+            .warc_id("<urn:test:grammar:record-0>")
+            .header(WarcHeader::Date, "2020-07-08T02:52:55Z")
+            .header(WarcHeader::TargetURI, "https://example.com/")
+            .body(b"body".to_vec())
+            .build()
+            .unwrap();
+
+        let mut writer = WarcWriter::new(Vec::new());
+        let bytes_written = writer.write(&record).unwrap();
+
+        let expected: &[u8] = b"WARC/1.1\r\n\
+            warc-type: response\r\n\
+            warc-record-id: <urn:test:grammar:record-0>\r\n\
+            warc-date: 2020-07-08T02:52:55Z\r\n\
+            warc-target-uri: https://example.com/\r\n\
+            content-length: 4\r\n\
+            \r\n\
+            body\r\n\
+            \r\n";
+        assert_eq!(writer.writer.as_slice(), expected);
+        assert_eq!(bytes_written, expected.len());
+    }
+
+    /// A record written by the writer reads back identically, including a sub-second
+    /// `WARC-Date`, which WARC 1.1 permits at up to nanosecond precision.
+    #[test]
+    fn written_record_round_trips_through_the_reader() {
+        let mut record = Record::with_body("payload");
+        record
+            .set_header(WarcHeader::TargetURI, "https://example.com/a?b=c")
+            .unwrap();
+
+        let mut writer = WarcWriter::new(Vec::new());
+        writer.write(&record).unwrap();
+
+        let read_back = crate::WarcReader::new(writer.writer.as_slice())
+            .iter_records()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(read_back, vec![record]);
+    }
+
     /// A writer that accepts at most one byte per `write` call.
     struct TrickleWriter(Vec<u8>);
 
