@@ -36,7 +36,7 @@ fn main() -> Result<(), std::io::Error> {
     let bytes_written = file.write_raw(&headers, &body)?;
 
     // NB: the compression stream must be finish()ed, or the file will be truncated
-    let gzip_stream = file.into_inner()?;
+    let gzip_stream = file.finish()?;
     gzip_stream.finish()?;
 
     println!("{} bytes written.", bytes_written);
