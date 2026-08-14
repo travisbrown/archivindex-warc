@@ -24,8 +24,7 @@ impl<W: Write> WarcWriter<W> {
     ///
     /// The number of bytes written is returned upon success.
     pub fn write(&mut self, record: &Record<BufferedBody>) -> io::Result<usize> {
-        let (headers, body) = record.clone().into_raw_parts();
-        self.write_raw(headers, &body)
+        self.write_raw(record.to_raw_header(), &record.body())
     }
 
     /// Write a single raw record.
@@ -260,6 +259,22 @@ mod write_raw_tests {
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(writer.writer.is_empty());
+    }
+
+    #[test]
+    fn write_matches_into_raw_parts() {
+        let mut record = Record::<BufferedBody>::default();
+        record.replace_body(b"body-bytes".to_vec());
+
+        let mut record_writer = WarcWriter::new(Vec::new());
+        let record_len = record_writer.write(&record).unwrap();
+
+        let (headers, body) = record.into_raw_parts();
+        let mut raw_writer = WarcWriter::new(Vec::new());
+        let raw_len = raw_writer.write_raw(headers, &body).unwrap();
+
+        assert_eq!(record_writer.writer, raw_writer.writer);
+        assert_eq!(record_len, raw_len);
     }
 
     /// A writer that accepts at most one byte per `write` call.

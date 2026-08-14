@@ -545,6 +545,47 @@ impl<T: BodyKind> Record<T> {
     pub fn content_length(&self) -> u64 {
         self.body.content_length()
     }
+
+    /// Build the raw header block for this record without consuming it.
+    ///
+    /// Headers appear in conventional WARC order: record-level headers first,
+    /// `Content-Length` last.
+    pub fn to_raw_header(&self) -> RawRecordHeader {
+        let stored_headers = self.headers.as_ref();
+        let mut headers: IndexMap<WarcHeader, Vec<u8>> =
+            IndexMap::with_capacity(stored_headers.len() + 5);
+        headers.insert(WarcHeader::WarcType, self.record_type.to_string().into());
+        headers.insert(WarcHeader::RecordID, self.record_id.clone().into());
+        headers.insert(
+            WarcHeader::Date,
+            self.record_date
+                .to_rfc3339_opts(SecondsFormat::Secs, true)
+                .into(),
+        );
+        if let Some(truncated_type) = &self.truncated_type {
+            headers.insert(WarcHeader::Truncated, truncated_type.to_string().into());
+        }
+        headers.extend(
+            stored_headers
+                .iter()
+                .map(|(header, value)| (header.clone(), value.clone())),
+        );
+        headers.insert(
+            WarcHeader::ContentLength,
+            self.body.content_length().to_string().into(),
+        );
+
+        debug_assert_eq!(
+            headers.len(),
+            stored_headers.len() + 4 + usize::from(self.truncated_type.is_some()),
+            "invariant violation: raw struct contains externally stored fields"
+        );
+
+        RawRecordHeader {
+            version: self.headers.version.clone(),
+            headers,
+        }
+    }
 }
 
 impl Record<EmptyBody> {
@@ -636,43 +677,7 @@ impl Record<BufferedBody> {
 
     /// Transform this record into a raw record containing the same data.
     pub fn into_raw_parts(self) -> (RawRecordHeader, Vec<u8>) {
-        let Record {
-            mut headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            body,
-        } = self;
-
-        // Conventional WARC header order: record-level headers first, `Content-Length` last.
-        let map = headers.as_mut();
-        let insert1 = map.shift_insert(0, WarcHeader::WarcType, record_type.to_string().into());
-        let insert2 = map.shift_insert(1, WarcHeader::RecordID, record_id.into());
-        let insert3 = map.shift_insert(
-            2,
-            WarcHeader::Date,
-            record_date
-                .to_rfc3339_opts(SecondsFormat::Secs, true)
-                .into(),
-        );
-        let insert4 = truncated_type
-            .and_then(|t| map.shift_insert(3, WarcHeader::Truncated, t.to_string().into()));
-        let insert5 = map.insert(
-            WarcHeader::ContentLength,
-            format!("{}", body.0.len()).into(),
-        );
-
-        debug_assert!(
-            insert1.is_none()
-                && insert2.is_none()
-                && insert3.is_none()
-                && insert4.is_none()
-                && insert5.is_none(),
-            "invariant violation: raw struct contains externally stored fields"
-        );
-
-        (headers, body.0)
+        (self.to_raw_header(), self.body.0)
     }
 }
 
@@ -752,8 +757,7 @@ impl Default for Record<EmptyBody> {
 
 impl fmt::Display for Record<BufferedBody> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let (headers, body) = self.clone().into_raw_parts();
-        write!(f, "Record({}, {:?})", headers, body)
+        write!(f, "Record({}, {:?})", self.to_raw_header(), self.body.0)
     }
 }
 impl fmt::Display for Record<EmptyBody> {
