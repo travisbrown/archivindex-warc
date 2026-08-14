@@ -245,6 +245,18 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
         take_required_utf8_header(&mut headers, &WarcHeader::ContentLength)
             .and_then(|len| Self::parse_content_length(&len))?;
 
+        Self::from_validated_raw(headers)
+    }
+}
+
+impl Record<EmptyBody> {
+    /// Build a record from a raw header block whose `Content-Length` has already been parsed
+    /// and validated — by the stream parser for records read from input, or by `try_from`
+    /// above — so that the parsed value flows through instead of being parsed a second time
+    /// from the stored bytes.
+    pub(crate) fn from_validated_raw(mut headers: RawRecordHeader) -> Result<Self, WarcError> {
+        headers.as_mut().shift_remove(&WarcHeader::ContentLength);
+
         let record_type: RecordType =
             take_required_utf8_header(&mut headers, &WarcHeader::WarcType)?.into();
 
