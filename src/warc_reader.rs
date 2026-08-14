@@ -331,6 +331,9 @@ impl<R: BufRead> Iterator for RecordIter<R> {
 pub struct StreamingIter<'r, R> {
     reader: &'r mut R,
     current_item_size: u64,
+    /// Set through the current record when `into_buffered` consumed and verified its
+    /// terminator, so that `skip_body` does not read it a second time.
+    terminator_consumed: bool,
     first_record: bool,
     /// Set once a stream-level error has been returned, so that further calls do not read
     /// from a stream left at an unspecified position.
@@ -343,6 +346,7 @@ impl<R: BufRead> StreamingIter<'_, R> {
         StreamingIter {
             reader,
             current_item_size: 0,
+            terminator_consumed: false,
             first_record: true,
             finished: false,
             header_buffer: Vec::new(),
@@ -350,6 +354,10 @@ impl<R: BufRead> StreamingIter<'_, R> {
     }
 
     fn skip_body(&mut self) -> Result<(), Error> {
+        if self.terminator_consumed {
+            return Ok(());
+        }
+
         let mut body_bytes_left = self.current_item_size;
         while body_bytes_left > 0 {
             let buffered_len = match self.reader.fill_buf() {
@@ -422,14 +430,16 @@ impl<R: BufRead> StreamingIter<'_, R> {
             }
         };
         self.current_item_size = expected_body_len;
+        self.terminator_consumed = false;
 
         match headers.try_into() {
             Ok(b) => {
                 let record: Record<_> = b;
-                let fixed_stream_result = record
-                    .add_fixed_stream(self.reader, &mut self.current_item_size)
-                    .map_err(Error::ReadData);
-                Some(fixed_stream_result)
+                Some(Ok(record.add_managed_stream(
+                    self.reader,
+                    &mut self.current_item_size,
+                    &mut self.terminator_consumed,
+                )))
             }
             Err(e) => Some(Err(e)),
         }
@@ -1176,6 +1186,7 @@ mod next_item_tests {
         WARC-Date: 2020-07-08T02:52:57Z\r\n\
         \r\n\
         \r\n\
+        \r\n\
     ";
 
         let mut reader = WarcReader::new(create_reader!(raw));
@@ -1308,6 +1319,161 @@ mod next_item_tests {
         WARC-Date: 2020-07-08T02:52:55Z\r\n\
         \r\n\
         12";
+
+    /// A record whose body is complete but whose stream ends without a record terminator.
+    const MISSING_TERMINATOR: &[u8] = b"\
+        WARC/1.1\r\n\
+        Warc-Type: dunno\r\n\
+        Content-Length: 5\r\n\
+        WARC-Record-Id: <urn:test:missing-terminator>\r\n\
+        WARC-Date: 2020-07-08T02:52:55Z\r\n\
+        \r\n\
+        12345";
+
+    /// A record followed by four bytes that are not `\r\n\r\n`.
+    const MALFORMED_TERMINATOR: &[u8] = b"\
+        WARC/1.1\r\n\
+        Warc-Type: dunno\r\n\
+        Content-Length: 5\r\n\
+        WARC-Record-Id: <urn:test:malformed-terminator>\r\n\
+        WARC-Date: 2020-07-08T02:52:55Z\r\n\
+        \r\n\
+        12345ABCD";
+
+    #[test]
+    fn into_buffered_errors_on_truncated_body() {
+        let mut reader = WarcReader::new(create_reader!(TRUNCATED_BODY));
+        let mut stream_iter = reader.stream_records();
+
+        let record = stream_iter.next_item().unwrap().unwrap();
+        assert!(matches!(record.into_buffered(), Err(Error::UnexpectedEOB)));
+    }
+
+    #[test]
+    fn into_buffered_errors_on_missing_terminator() {
+        let mut reader = WarcReader::new(create_reader!(MISSING_TERMINATOR));
+        let mut stream_iter = reader.stream_records();
+
+        let record = stream_iter.next_item().unwrap().unwrap();
+        assert!(matches!(record.into_buffered(), Err(Error::UnexpectedEOB)));
+    }
+
+    #[test]
+    fn into_buffered_errors_on_malformed_terminator() {
+        let mut reader = WarcReader::new(create_reader!(MALFORMED_TERMINATOR));
+        let mut stream_iter = reader.stream_records();
+
+        let record = stream_iter.next_item().unwrap().unwrap();
+        assert!(matches!(
+            record.into_buffered(),
+            Err(Error::MalformedRecordTerminator)
+        ));
+    }
+
+    /// A body streamed from outside a WARC file (via `add_fixed_stream`) has no terminator to
+    /// verify, but a short stream is still reported.
+    #[test]
+    fn into_buffered_checks_truncation_for_external_streams() {
+        use crate::{EmptyBody, Record};
+
+        let mut complete: &[u8] = b"12345";
+        let mut length = 5;
+        let record = Record::<EmptyBody>::new()
+            .add_fixed_stream(&mut complete, &mut length)
+            .into_buffered()
+            .unwrap();
+        assert_eq!(record.body(), b"12345");
+
+        let mut short: &[u8] = b"12";
+        let mut length = 5;
+        let result = Record::<EmptyBody>::new()
+            .add_fixed_stream(&mut short, &mut length)
+            .into_buffered();
+        assert!(matches!(result, Err(Error::UnexpectedEOB)));
+    }
+
+    #[test]
+    fn skip_errors_on_eof_mid_body() {
+        let mut reader = WarcReader::new(create_reader!(TRUNCATED_BODY));
+        let mut stream_iter = reader.stream_records();
+
+        // Leave the first record's body unread so that the next call must skip it.
+        let _record = stream_iter.next_item().unwrap().unwrap();
+        assert!(matches!(
+            stream_iter.next_item(),
+            Some(Err(Error::UnexpectedEOB))
+        ));
+    }
+
+    #[test]
+    fn skip_errors_on_missing_terminator() {
+        let mut reader = WarcReader::new(create_reader!(MISSING_TERMINATOR));
+        let mut stream_iter = reader.stream_records();
+
+        let _record = stream_iter.next_item().unwrap().unwrap();
+        assert!(matches!(
+            stream_iter.next_item(),
+            Some(Err(Error::UnexpectedEOB))
+        ));
+    }
+
+    #[test]
+    fn skip_errors_on_malformed_terminator() {
+        let mut reader = WarcReader::new(create_reader!(MALFORMED_TERMINATOR));
+        let mut stream_iter = reader.stream_records();
+
+        let _record = stream_iter.next_item().unwrap().unwrap();
+        assert!(matches!(
+            stream_iter.next_item(),
+            Some(Err(Error::MalformedRecordTerminator))
+        ));
+    }
+
+    /// A reader that serves a prefix of valid data and then fails with an I/O error.
+    struct FailingReader {
+        data: Cursor<Vec<u8>>,
+    }
+
+    impl std::io::Read for FailingReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let available = std::io::BufRead::fill_buf(self)?;
+            let read = available.len().min(buf.len());
+            buf[..read].copy_from_slice(&available[..read]);
+            std::io::BufRead::consume(self, read);
+
+            Ok(read)
+        }
+    }
+
+    impl std::io::BufRead for FailingReader {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            if self.data.position() == self.data.get_ref().len() as u64 {
+                return Err(std::io::Error::other("stream failed"));
+            }
+
+            std::io::BufRead::fill_buf(&mut self.data)
+        }
+
+        fn consume(&mut self, amt: usize) {
+            std::io::BufRead::consume(&mut self.data, amt);
+        }
+    }
+
+    #[test]
+    fn skip_reports_io_errors() {
+        let mut reader = FailingReader {
+            data: Cursor::new(TRUNCATED_BODY.to_vec()),
+        };
+        let mut stream_iter = crate::warc_reader::StreamingIter::new(&mut reader);
+
+        // The header block parses from the served prefix; skipping the unread body then hits
+        // the I/O error.
+        let _record = stream_iter.next_item().unwrap().unwrap();
+        assert!(matches!(
+            stream_iter.next_item(),
+            Some(Err(Error::ReadData(_)))
+        ));
+    }
 
     /// A stream-level error fuses the streaming iterator instead of yielding further errors
     /// from an unspecified position.
