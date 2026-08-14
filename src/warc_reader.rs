@@ -136,7 +136,8 @@ fn check_header_block_end(remainder: &[u8]) -> Result<(), Error> {
 /// The header block is left in `header_buffer`, which is cleared first so callers can reuse
 /// one buffer across records.
 ///
-/// Returns `None` on a clean end-of-stream at a record boundary.
+/// Returns `None` on a clean end-of-stream at a record boundary. End-of-stream with header
+/// bytes already buffered is truncated input, and is an error.
 fn read_header_block<R: BufRead>(
     reader: &mut R,
     header_buffer: &mut Vec<u8>,
@@ -149,7 +150,15 @@ fn read_header_block<R: BufRead>(
         };
 
         if bytes_read == 0 {
-            return None;
+            // A record boundary is the only place the input may cleanly end. Anything
+            // buffered here is a header block whose terminating blank line never arrived:
+            // the input was truncated mid-record, or uses bare-`\n` line endings (which
+            // never match the `\r\n` check below, and would otherwise read as an empty
+            // stream with no error).
+            if header_buffer.is_empty() {
+                return None;
+            }
+            return Some(Err(Error::UnexpectedEOH));
         }
 
         if bytes_read == 2 && header_buffer.ends_with(b"\r\n") {
@@ -552,6 +561,50 @@ mod iter_raw_tests {
             }
             other => panic!(
                 "expected a parse error naming content-length, got {:?}",
+                other.map(|(headers, _)| headers)
+            ),
+        }
+    }
+
+    /// A stream that ends in the middle of a header block is truncated input, not a clean
+    /// end-of-archive.
+    #[test]
+    fn truncated_header_block_is_an_error() {
+        let raw = b"\
+            WARC/1.0\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Le\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        match reader.next().unwrap() {
+            Err(Error::UnexpectedEOH) => {}
+            other => panic!(
+                "expected an error for a truncated header block, got {:?}",
+                other.map(|(headers, _)| headers)
+            ),
+        }
+    }
+
+    /// A file written with bare-`\n` line endings never matches the `\r\n` framing the
+    /// standard requires, and must be reported as an error rather than reading as an empty
+    /// archive.
+    #[test]
+    fn bare_lf_line_endings_are_an_error() {
+        let raw = b"\
+            WARC/1.0\n\
+            Warc-Type: dunno\n\
+            Content-Length: 5\n\
+            \n\
+            12345\n\
+            \n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        match reader.next().unwrap() {
+            Err(Error::UnexpectedEOH) => {}
+            other => panic!(
+                "expected an error for bare-LF line endings, got {:?}",
                 other.map(|(headers, _)| headers)
             ),
         }
@@ -1090,6 +1143,27 @@ mod next_item_tests {
 
         let record = stream_iter.next_item().unwrap().unwrap();
         assert_eq!(record.content_length(), u64::MAX);
+    }
+
+    /// The streaming path reports truncated header blocks just as the buffered path does.
+    #[test]
+    fn streaming_truncated_header_block_is_an_error() {
+        let raw = b"\
+            WARC/1.0\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Le\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw));
+        let mut stream_iter = reader.stream_records();
+
+        match stream_iter.next_item().unwrap() {
+            Err(Error::UnexpectedEOH) => {}
+            other => panic!(
+                "expected an error for a truncated header block, got {:?}",
+                other.map(|record| record.content_length())
+            ),
+        }
     }
 
     #[test]

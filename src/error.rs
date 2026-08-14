@@ -29,6 +29,11 @@ pub enum Error {
     /// `WarcReader::stream_records`, which does not buffer bodies.
     #[error("Record body too large to buffer.")]
     BodyTooLarge,
+    /// The input ended in the middle of a record's header block. Either the stream was
+    /// truncated mid-record, or its lines are not `\r\n`-terminated as the standard requires
+    /// (a bare-`\n` blank line never terminates a header block).
+    #[error("Unexpected end of header block.")]
+    UnexpectedEOH,
     /// The end of the record's body was found unexpectedly.
     #[error("Unexpected end of body.")]
     UnexpectedEOB,
@@ -87,6 +92,11 @@ mod tests {
             (
                 Error::BodyTooLarge,
                 "Record body too large to buffer.",
+                false,
+            ),
+            (
+                Error::UnexpectedEOH,
+                "Unexpected end of header block.",
                 false,
             ),
             (Error::UnexpectedEOB, "Unexpected end of body.", false),
