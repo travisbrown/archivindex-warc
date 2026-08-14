@@ -39,7 +39,7 @@ fn main() -> Result<(), std::io::Error> {
 
     // NB: the compression stream must be finish()ed, or the file will be truncated
     let gzip_stream = file.into_inner()?;
-    gzip_stream.finish().into_result()?;
+    gzip_stream.finish()?;
 
     println!("{} bytes written.", bytes_written);
 
