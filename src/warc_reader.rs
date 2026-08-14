@@ -1696,7 +1696,7 @@ mod gzip_tests {
             .unwrap();
         // The gzip stream must be finished, or the file is truncated.
         let gzip_stream = writer
-            .into_inner()
+            .finish()
             .map_err(std::io::IntoInnerError::into_error)
             .unwrap();
         gzip_stream.finish().unwrap();
@@ -1769,7 +1769,7 @@ mod gzip_tests {
             .write(&record(b"second body", "https://example.com/2"))
             .unwrap();
         let gzip_stream = writer
-            .into_inner()
+            .finish()
             .map_err(std::io::IntoInnerError::into_error)
             .unwrap();
         gzip_stream.finish().unwrap();

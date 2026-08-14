@@ -12,10 +12,42 @@ pub struct WarcWriter<W> {
     writer: W,
 }
 
+impl<W> WarcWriter<W> {
+    /// Return a shared reference to the inner writer.
+    pub const fn get_ref(&self) -> &W {
+        &self.writer
+    }
+
+    /// Return a mutable reference to the inner writer.
+    pub const fn get_mut(&mut self) -> &mut W {
+        &mut self.writer
+    }
+
+    /// Consume this writer and return the inner writer.
+    ///
+    /// This method does not flush or otherwise finish the inner writer. Use [`Self::flush`]
+    /// first when necessary, or [`Self::finish`] when the inner writer is a
+    /// [`std::io::BufWriter`].
+    ///
+    /// ```
+    /// let writer = archivindex_warc::WarcWriter::new(Vec::new());
+    /// let output = writer.into_inner();
+    /// assert!(output.is_empty());
+    /// ```
+    pub fn into_inner(self) -> W {
+        self.writer
+    }
+}
+
 impl<W: Write> WarcWriter<W> {
     /// Create a new writer.
     pub const fn new(w: W) -> Self {
         Self { writer: w }
+    }
+
+    /// Flush the inner writer.
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
     }
 
     /// Write a single record.
@@ -109,7 +141,7 @@ impl<W: Write> WarcWriter<W> {
 }
 
 impl<W: Write> WarcWriter<BufWriter<W>> {
-    /// Consume this writer and return the inner writer.
+    /// Flush the buffered writer, then consume it and return its inner writer.
     ///
     /// # Flushing Compressed Data Streams
     ///
@@ -125,14 +157,14 @@ impl<W: Write> WarcWriter<BufWriter<W>> {
 let writer = archivindex_warc::WarcWriter::from_path_gzip(dir.path().join("example.warc.gz"))?;
 // ... write records ...
 let gzip_stream = writer
-    .into_inner()
+    .finish()
     .map_err(std::io::IntoInnerError::into_error)?;
 gzip_stream.finish()?;
 # Ok(())
 # }
 ```"#
     )]
-    pub fn into_inner(self) -> Result<W, std::io::IntoInnerError<BufWriter<W>>> {
+    pub fn finish(self) -> Result<W, std::io::IntoInnerError<BufWriter<W>>> {
         self.writer.into_inner()
     }
 }
@@ -257,7 +289,7 @@ mod write_raw_tests {
             .expect_err("the block should be rejected");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert!(writer.writer.is_empty(), "no partial record is written");
+        assert!(writer.get_ref().is_empty(), "no partial record is written");
     }
 
     /// Raw header blocks that could not be parsed back are rejected before anything is
@@ -301,7 +333,18 @@ mod write_raw_tests {
             .expect_err("injection should be rejected");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert!(writer.writer.is_empty());
+        assert!(writer.get_ref().is_empty());
+    }
+
+    #[test]
+    fn inner_writer_is_accessible_and_recoverable() {
+        let mut writer = WarcWriter::new(Vec::new());
+        assert!(writer.get_ref().is_empty());
+
+        writer.get_mut().extend_from_slice(b"prefix");
+        writer.flush().unwrap();
+
+        assert_eq!(writer.into_inner(), b"prefix");
     }
 
     #[test]
@@ -316,7 +359,7 @@ mod write_raw_tests {
         let mut raw_writer = WarcWriter::new(Vec::new());
         let raw_len = raw_writer.write_raw(&headers, &body).unwrap();
 
-        assert_eq!(record_writer.writer, raw_writer.writer);
+        assert_eq!(record_writer.into_inner(), raw_writer.into_inner());
         assert_eq!(record_len, raw_len);
     }
 
@@ -345,7 +388,7 @@ mod write_raw_tests {
             \r\n\
             body\r\n\
             \r\n";
-        assert_eq!(writer.writer.as_slice(), expected);
+        assert_eq!(writer.get_ref().as_slice(), expected);
         assert_eq!(bytes_written, expected.len());
     }
 
@@ -362,7 +405,7 @@ mod write_raw_tests {
         let mut writer = WarcWriter::new(Vec::new());
         writer.write(&record).unwrap();
 
-        let written = String::from_utf8(writer.writer).unwrap();
+        let written = String::from_utf8(writer.into_inner()).unwrap();
         assert!(
             written.contains("warc-date: 2020-07-08T02:52:55Z\r\n"),
             "{written:?}"
@@ -387,7 +430,7 @@ mod write_raw_tests {
                 .expect_err("WARC 1.1-only header should be rejected");
 
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-            assert!(writer.writer.is_empty(), "no partial record is written");
+            assert!(writer.get_ref().is_empty(), "no partial record is written");
             assert!(matches!(
                 error
                     .get_ref()
@@ -410,7 +453,7 @@ mod write_raw_tests {
         let mut writer = WarcWriter::new(Vec::new());
         writer.write(&record).unwrap();
 
-        let read_back = crate::WarcReader::new(writer.writer.as_slice())
+        let read_back = crate::WarcReader::new(writer.get_ref().as_slice())
             .iter_records()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
@@ -428,7 +471,7 @@ mod write_raw_tests {
         let mut writer = WarcWriter::new(Vec::new());
         writer.write(&record).unwrap();
 
-        let written = String::from_utf8(writer.writer.clone()).unwrap();
+        let written = String::from_utf8(writer.get_ref().clone()).unwrap();
         assert_eq!(
             written
                 .matches("warc-concurrent-to: <urn:test:concurrent:record-")
@@ -436,7 +479,7 @@ mod write_raw_tests {
             2
         );
 
-        let read_back = crate::WarcReader::new(writer.writer.as_slice())
+        let read_back = crate::WarcReader::new(writer.get_ref().as_slice())
             .iter_records()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
@@ -474,14 +517,10 @@ mod write_raw_tests {
         let mut writer = WarcWriter::new(TrickleWriter(Vec::new()));
         let bytes_written = writer.write_raw(&headers, b"12345").unwrap();
 
-        // The field order follows the header map's iteration order, so check the lines
-        // rather than one fixed serialization of the block.
-        let written = String::from_utf8(writer.writer.0).unwrap();
-        assert!(written.starts_with("WARC/1.0\r\n"), "{}", written);
-        assert!(written.contains("warc-type: dunno\r\n"), "{}", written);
-        assert!(written.contains("content-length: 5\r\n"), "{}", written);
-        assert!(written.ends_with("\r\n\r\n12345\r\n\r\n"), "{}", written);
-        assert_eq!(bytes_written, written.len());
+        let expected: &[u8] =
+            b"WARC/1.0\r\nwarc-type: dunno\r\ncontent-length: 5\r\n\r\n12345\r\n\r\n";
+        assert_eq!(writer.get_ref().0.as_slice(), expected);
+        assert_eq!(bytes_written, expected.len());
     }
 
     /// A block frames its body by declaring its length, and a reader trusts that declaration
@@ -539,13 +578,13 @@ mod from_path_tests {
         writer
             .write_raw(&record_with_body(first_body), &first_body)
             .unwrap();
-        writer.into_inner().unwrap();
+        writer.finish().unwrap();
 
         let mut writer = WarcWriter::from_path(&path).unwrap();
         writer
             .write_raw(&record_with_body(second_body), &second_body)
             .unwrap();
-        writer.into_inner().unwrap();
+        writer.finish().unwrap();
 
         let mut expected_writer = WarcWriter::new(Vec::new());
         expected_writer
@@ -555,7 +594,7 @@ mod from_path_tests {
             .write_raw(&record_with_body(second_body), &second_body)
             .unwrap();
 
-        assert_eq!(std::fs::read(&path).unwrap(), expected_writer.writer);
+        assert_eq!(std::fs::read(&path).unwrap(), expected_writer.into_inner());
     }
 
     #[cfg(feature = "gzip")]
@@ -572,7 +611,7 @@ mod from_path_tests {
             writer.write_raw(&record_with_body(body), body).unwrap();
             // The compression stream must be finish()ed, or the member will be truncated.
             let gzip_stream = writer
-                .into_inner()
+                .finish()
                 .map_err(std::io::IntoInnerError::into_error)
                 .unwrap();
             gzip_stream.finish().unwrap();
