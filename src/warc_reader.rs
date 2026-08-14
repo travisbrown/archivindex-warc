@@ -332,7 +332,7 @@ impl<R: BufRead> StreamingIter<'_, R> {
     /// Advance the stream to the next item.
     ///
     /// Returns one of the following:
-    /// * Some(Ok(r))` is the next record read from the stream.
+    /// * `Some(Ok(r))` is the next record read from the stream.
     /// * `Some(Err)` indicates there was a read error.
     /// * `None` indicates no more records are returned. The iterator is fused: once the input
     ///   has cleanly ended, every further call returns `None`.
