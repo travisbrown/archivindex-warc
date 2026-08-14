@@ -31,19 +31,24 @@ impl Display for RecordType {
     }
 }
 
+const KNOWN_TYPES: [(&str, RecordType); 8] = [
+    ("warcinfo", RecordType::WarcInfo),
+    ("response", RecordType::Response),
+    ("resource", RecordType::Resource),
+    ("request", RecordType::Request),
+    ("metadata", RecordType::Metadata),
+    ("revisit", RecordType::Revisit),
+    ("conversion", RecordType::Conversion),
+    ("continuation", RecordType::Continuation),
+];
+
 impl<S: AsRef<str>> From<S> for RecordType {
     fn from(string: S) -> Self {
-        let lower: String = string.as_ref().to_lowercase();
-        match lower.as_str() {
-            "warcinfo" => RecordType::WarcInfo,
-            "response" => RecordType::Response,
-            "resource" => RecordType::Resource,
-            "request" => RecordType::Request,
-            "metadata" => RecordType::Metadata,
-            "revisit" => RecordType::Revisit,
-            "conversion" => RecordType::Conversion,
-            "continuation" => RecordType::Continuation,
-            _ => RecordType::Unknown(lower),
-        }
+        let string = string.as_ref();
+        KNOWN_TYPES
+            .iter()
+            .find(|(name, _)| string.eq_ignore_ascii_case(name))
+            .map(|(_, record_type)| record_type.clone())
+            .unwrap_or_else(|| RecordType::Unknown(string.to_lowercase()))
     }
 }
