@@ -1,15 +1,13 @@
 use std::fmt::Display;
 
-#[cfg(feature = "with_serde")]
-use serde::{Deserialize, Serialize};
 /// Represents a WARC header defined by the standard.
 ///
 /// All headers are camel-case versions of the standard names, with the hyphens removed.
 #[allow(missing_docs)]
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
-#[cfg_attr(feature = "with_serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "with_serde", serde(into = "String"))]
-#[cfg_attr(feature = "with_serde", serde(from = "String"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(into = "String"))]
+#[cfg_attr(feature = "serde", serde(from = "String"))]
 pub enum WarcHeader {
     ContentLength,
     ContentType,
@@ -136,8 +134,8 @@ impl<S: AsRef<str>> From<S> for WarcHeader {
 mod tests {
     use super::WarcHeader;
 
-    /// The `with_serde` derives round-trip headers through their string names.
-    #[cfg(feature = "with_serde")]
+    /// The `serde` derives round-trip headers through their string names.
+    #[cfg(feature = "serde")]
     #[test]
     fn serde_round_trip() {
         for header in [
