@@ -1,13 +1,12 @@
-use nom::{
-    IResult, Parser,
-    bytes::streaming::{tag, take, take_while1},
-    character::streaming::{line_ending, not_line_ending, space0, space1},
-    combinator::complete,
-    error::ErrorKind,
-    multi::{many0, many1},
-};
 use std::borrow::Cow;
 use std::str;
+
+use nom::bytes::streaming::{tag, take, take_while1};
+use nom::character::streaming::{line_ending, not_line_ending, space0, space1};
+use nom::combinator::complete;
+use nom::error::ErrorKind;
+use nom::multi::{many0, many1};
+use nom::{IResult, Parser};
 
 fn verify_error(input: &[u8]) -> nom::Err<nom::error::Error<&[u8]>> {
     nom::Err::Error(nom::error::Error::new(input, ErrorKind::Verify))
@@ -120,11 +119,12 @@ pub fn record(
 
 #[cfg(test)]
 mod tests {
-    use super::{header, headers, record, version};
-    use nom::Err;
-    use nom::Needed;
-    use nom::error::ErrorKind;
     use std::borrow::Cow;
+
+    use nom::error::ErrorKind;
+    use nom::{Err, Needed};
+
+    use super::{header, headers, record, version};
 
     #[test]
     fn version_parsing() {

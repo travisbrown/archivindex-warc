@@ -1,17 +1,12 @@
-use crate::parser;
-use crate::{BufferedBody, Error, MB, RawRecordHeader, Record, StreamingBody};
-
-use crate::header::WarcHeader;
-
-use indexmap::IndexMap;
-
-use std::fs;
-use std::io;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::{fs, io};
 
 #[cfg(feature = "gzip")]
 use flate2::bufread::MultiGzDecoder as GzipReader;
+use indexmap::IndexMap;
+
+use crate::{BufferedBody, Error, MB, RawRecordHeader, Record, StreamingBody, WarcHeader, parser};
 
 /// A reader which iteratively parses WARC records from a stream.
 pub struct WarcReader<R> {
@@ -535,9 +530,10 @@ mod from_path_tests {
 
 #[cfg(test)]
 mod iter_raw_tests {
-    use indexmap::IndexMap;
     use std::io::{BufReader, Cursor};
     use std::iter::FromIterator;
+
+    use indexmap::IndexMap;
 
     use crate::{Error, WarcHeader, WarcReader};
     macro_rules! create_reader {
