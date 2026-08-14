@@ -14,9 +14,11 @@ pub enum RecordType {
     Unknown(String),
 }
 
-impl Display for RecordType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let stringified = match *self {
+impl RecordType {
+    /// The serialized form of this value, borrowing rather than allocating.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
             Self::WarcInfo => "warcinfo",
             Self::Response => "response",
             Self::Resource => "resource",
@@ -25,9 +27,14 @@ impl Display for RecordType {
             Self::Revisit => "revisit",
             Self::Conversion => "conversion",
             Self::Continuation => "continuation",
-            Self::Unknown(ref val) => val.as_ref(),
-        };
-        f.write_str(stringified)
+            Self::Unknown(val) => val,
+        }
+    }
+}
+
+impl Display for RecordType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
