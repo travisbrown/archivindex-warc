@@ -652,6 +652,56 @@ mod iter_raw_tests {
         assert_eq!(body, expected_body);
     }
 
+    /// The WARC 1.0 defined-field registry does not include either of the fields added in
+    /// WARC 1.1.
+    #[test]
+    #[ignore = "known bug (1.0 reader accepts 1.1-only headers): fix incoming"]
+    fn warc_1_0_reading_rejects_warc_1_1_headers() {
+        let cases: &[(&[u8], WarcHeader)] = &[
+            (
+                b"\
+                    WARC/1.0\r\n\
+                    WARC-Type: revisit\r\n\
+                    Content-Length: 0\r\n\
+                    WARC-Record-ID: <urn:test:warc-1.0-field:record-0>\r\n\
+                    WARC-Date: 2020-07-08T02:52:55Z\r\n\
+                    WARC-Refers-To-Date: 2020-07-07T02:52:55Z\r\n\
+                    \r\n\
+                    \r\n\
+                    \r\n\
+                ",
+                WarcHeader::RefersToDate,
+            ),
+            (
+                b"\
+                    WARC/1.0\r\n\
+                    WARC-Type: revisit\r\n\
+                    Content-Length: 0\r\n\
+                    WARC-Record-ID: <urn:test:warc-1.0-field:record-1>\r\n\
+                    WARC-Date: 2020-07-08T02:52:55Z\r\n\
+                    WARC-Refers-To-Target-URI: https://example.com/\r\n\
+                    \r\n\
+                    \r\n\
+                    \r\n\
+                ",
+                WarcHeader::RefersToTargetURI,
+            ),
+        ];
+
+        for (raw, expected_header) in cases {
+            let result = WarcReader::new(create_reader!(raw))
+                .iter_records()
+                .next()
+                .unwrap();
+            match result {
+                Err(Error::MalformedHeader(actual_header, _)) => {
+                    assert_eq!(&actual_header, expected_header);
+                }
+                other => panic!("expected a version error for {expected_header}, got {other:?}"),
+            }
+        }
+    }
+
     /// A hostile `Content-Length` near the unsigned 64-bit maximum must be rejected cleanly:
     /// the buffered path cannot possibly hold such a body, and the length arithmetic must not
     /// overflow (which previously panicked in debug builds and wrapped in release).
