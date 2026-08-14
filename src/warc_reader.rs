@@ -11,7 +11,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 #[cfg(feature = "gzip")]
-use libflate::gzip::MultiDecoder as GzipReader;
+use flate2::bufread::MultiGzDecoder as GzipReader;
 
 /// A reader which iteratively parses WARC records from a stream.
 pub struct WarcReader<R> {
@@ -68,7 +68,7 @@ impl WarcReader<BufReader<GzipReader<BufReader<fs::File>>>> {
     pub fn from_path_gzip<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = fs::File::open(&path)?;
 
-        let gzip_stream = GzipReader::new(BufReader::with_capacity(MB, file))?;
+        let gzip_stream = GzipReader::new(BufReader::with_capacity(MB, file));
         Ok(Self::new(BufReader::new(gzip_stream)))
     }
 }
@@ -1654,7 +1654,7 @@ mod gzip_tests {
             .into_inner()
             .map_err(std::io::IntoInnerError::into_error)
             .unwrap();
-        gzip_stream.finish().into_result().unwrap();
+        gzip_stream.finish().unwrap();
 
         let reader = WarcReader::from_path_gzip(&path).unwrap();
         let records = reader
@@ -1688,11 +1688,12 @@ mod gzip_tests {
             (&b"first body"[..], "https://example.com/1"),
             (&b"second body"[..], "https://example.com/2"),
         ] {
-            let mut encoder = libflate::gzip::Encoder::new(Vec::new()).unwrap();
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
             WarcWriter::new(&mut encoder)
                 .write(&record(body, url))
                 .unwrap();
-            let member = encoder.finish().into_result().unwrap();
+            let member = encoder.finish().unwrap();
             file.write_all(&member).unwrap();
         }
         drop(file);
@@ -1726,7 +1727,7 @@ mod gzip_tests {
             .into_inner()
             .map_err(std::io::IntoInnerError::into_error)
             .unwrap();
-        gzip_stream.finish().into_result().unwrap();
+        gzip_stream.finish().unwrap();
 
         let mut reader = WarcReader::from_path_gzip(&path).unwrap();
         let mut stream_iter = reader.stream_records();

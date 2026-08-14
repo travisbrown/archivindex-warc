@@ -17,13 +17,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["gzip"]
-gzip = ["libflate"]
+gzip = ["dep:flate2"]
 with_serde = ["serde"]
 
 [dependencies]
 chrono = "0.4"
+flate2 = { version = "1", optional = true }
 indexmap = "2"
-libflate = { version = "2", optional = true }
 nom = "8"
 serde = { version = "1", optional = true, features = ["derive"] }
 thiserror = "2"

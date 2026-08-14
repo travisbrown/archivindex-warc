@@ -7,7 +7,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 #[cfg(feature = "gzip")]
-use libflate::gzip::Encoder as GzipWriter;
+use flate2::write::GzEncoder as GzipWriter;
 
 /// A writer which writes records to an output stream.
 pub struct WarcWriter<W> {
@@ -126,7 +126,7 @@ let writer = warc::WarcWriter::from_path_gzip(dir.path().join("example.warc.gz")
 let gzip_stream = writer
     .into_inner()
     .map_err(std::io::IntoInnerError::into_error)?;
-gzip_stream.finish().into_result()?;
+gzip_stream.finish()?;
 # Ok(())
 # }
 ```"#
@@ -174,7 +174,7 @@ impl WarcWriter<BufWriter<GzipWriter<std::fs::File>>> {
             .truncate(false)
             .append(true)
             .open(&path)?;
-        let gzip_stream = GzipWriter::new(file)?;
+        let gzip_stream = GzipWriter::new(file, flate2::Compression::default());
         let writer = BufWriter::with_capacity(MB, gzip_stream);
 
         Ok(Self::new(writer))
@@ -529,7 +529,7 @@ mod from_path_tests {
                 .into_inner()
                 .map_err(std::io::IntoInnerError::into_error)
                 .unwrap();
-            gzip_stream.finish().into_result().unwrap();
+            gzip_stream.finish().unwrap();
         }
 
         let reader = crate::WarcReader::from_path_gzip(&path).unwrap();
