@@ -216,6 +216,18 @@ pub fn validate_header(header: &WarcHeader, value: &[u8]) -> Result<(), WarcErro
     Ok(())
 }
 
+/// Reject a standard field that was introduced after the record's declared WARC version.
+pub fn validate_header_version(version: WarcVersion, header: &WarcHeader) -> Result<(), WarcError> {
+    if header.is_allowed_in(version) {
+        Ok(())
+    } else {
+        Err(WarcError::MalformedHeader(
+            header.clone(),
+            format!("field is not defined in WARC {version}"),
+        ))
+    }
+}
+
 /// Remove `header` from the raw headers, decoding its value as UTF-8.
 fn take_utf8_header(
     headers: &mut RawRecordHeader,
@@ -257,6 +269,10 @@ impl Record<EmptyBody> {
     /// above — so that the parsed value flows through instead of being parsed a second time
     /// from the stored bytes.
     pub(crate) fn from_validated_raw(mut headers: RawRecordHeader) -> Result<Self, WarcError> {
+        for header in headers.as_ref().keys() {
+            validate_header_version(headers.version, header)?;
+        }
+
         headers.as_mut().shift_remove(&WarcHeader::ContentLength);
 
         let record_type: RecordType =

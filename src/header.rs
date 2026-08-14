@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use crate::WarcVersion;
+
 /// Represents a WARC header defined by the standard.
 ///
 /// All headers are camel-case versions of the standard names, with the hyphens removed.
@@ -82,6 +84,21 @@ impl WarcHeader {
             Self::Unknown(string) => string,
         }
     }
+
+    /// Return whether this field name is permitted by the given WARC version.
+    ///
+    /// WARC 1.0 permits extension fields, so unknown names are accepted. The two fields
+    /// standardized for the first time in WARC 1.1 are rejected only when recognized as
+    /// their well-known variants.
+    pub(crate) const fn is_allowed_in(&self, version: WarcVersion) -> bool {
+        !matches!(
+            (version, self),
+            (
+                WarcVersion::V1_0,
+                Self::RefersToDate | Self::RefersToTargetURI
+            )
+        )
+    }
 }
 
 impl Display for WarcHeader {
@@ -133,6 +150,7 @@ impl<S: AsRef<str>> From<S> for WarcHeader {
 #[cfg(test)]
 mod tests {
     use super::WarcHeader;
+    use crate::WarcVersion;
 
     /// The `serde` derives round-trip headers through their string names.
     #[cfg(feature = "serde")]
@@ -170,5 +188,19 @@ mod tests {
             assert_eq!(WarcHeader::from(name.to_uppercase().as_str()), header);
             assert_eq!(header.to_string(), name);
         }
+    }
+
+    /// The fields added in WARC 1.1 are version-specific, while WARC 1.0 extension fields
+    /// remain permitted.
+    #[test]
+    fn warc_1_1_headers_are_not_allowed_in_warc_1_0() {
+        for header in [WarcHeader::RefersToDate, WarcHeader::RefersToTargetURI] {
+            assert!(!header.is_allowed_in(WarcVersion::V1_0));
+            assert!(header.is_allowed_in(WarcVersion::V1_1));
+        }
+
+        let extension = WarcHeader::Unknown("x-extension".to_string());
+        assert!(extension.is_allowed_in(WarcVersion::V1_0));
+        assert!(extension.is_allowed_in(WarcVersion::V1_1));
     }
 }
