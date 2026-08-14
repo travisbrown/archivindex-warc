@@ -655,7 +655,6 @@ mod iter_raw_tests {
     /// The WARC 1.0 defined-field registry does not include either of the fields added in
     /// WARC 1.1.
     #[test]
-    #[ignore = "known bug (1.0 reader accepts 1.1-only headers): fix incoming"]
     fn warc_1_0_reading_rejects_warc_1_1_headers() {
         let cases: &[(&[u8], WarcHeader)] = &[
             (

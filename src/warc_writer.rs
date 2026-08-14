@@ -26,8 +26,12 @@ impl<W: Write> WarcWriter<W> {
     pub fn write(&mut self, record: &Record<BufferedBody>) -> io::Result<usize> {
         // Validate every header line before emitting anything, mirroring `write_raw`, so that a
         // rejected record leaves no partial bytes in the output.
+        let version = record.warc_version();
         record
-            .visit_header_lines(crate::record::validate_header)
+            .visit_header_lines(|header, value| {
+                crate::record::validate_header(header, value)?;
+                crate::record::validate_header_version(version, header)
+            })
             .map_err(invalid_input)?;
 
         let writer = &mut self.writer;
@@ -369,7 +373,6 @@ mod write_raw_tests {
     /// The typed writer does not emit either of the fields added in WARC 1.1 on a WARC 1.0
     /// record.
     #[test]
-    #[ignore = "known bug (1.0 writer emits 1.1-only headers): fix incoming"]
     fn warc_1_0_writing_rejects_warc_1_1_headers() {
         for (header, value) in [
             (WarcHeader::RefersToDate, "2020-07-07T02:52:55Z"),
