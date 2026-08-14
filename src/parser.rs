@@ -138,8 +138,8 @@ mod tests {
     #[test]
     fn version_rejects_unsupported_values() {
         for value in ["", "0.0", "1.2", "2.0-alpha", "not-a-version"] {
-            let raw = format!("WARC/{}\r\n", value);
-            assert!(version(raw.as_bytes()).is_err(), "{:?}", value);
+            let raw = format!("WARC/{value}\r\n");
+            assert!(version(raw.as_bytes()).is_err(), "{value:?}");
         }
     }
 
@@ -161,18 +161,18 @@ mod tests {
     /// digits is tolerated, but signs, internal whitespace, and non-digits are not.
     #[test]
     fn content_length_grammar() {
-        let block = |value: &str| format!("WARC/1.1\r\ncontent-length: {}\r\n\r\n", value);
+        let block = |value: &str| format!("WARC/1.1\r\ncontent-length: {value}\r\n\r\n");
 
         for (value, expected) in [("42", 42), ("42 ", 42), ("42\t", 42), ("0", 0)] {
             let raw = block(value);
             let parsed = headers(raw.as_bytes()).expect(value);
-            assert_eq!((parsed.1).2, Some(expected), "{:?}", value);
+            assert_eq!((parsed.1).2, Some(expected), "{value:?}");
         }
 
         // The last entry is a pair of non-ASCII (Arabic-Indic) digits.
         for value in ["+42", "-42", "4 2", "4a", "\u{0664}\u{0662}"] {
             let raw = block(value);
-            assert!(headers(raw.as_bytes()).is_err(), "{:?}", value);
+            assert!(headers(raw.as_bytes()).is_err(), "{value:?}");
         }
     }
 

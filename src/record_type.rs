@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 
 use std::fmt::Display;
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordType {
     WarcInfo,
     Response,
@@ -17,15 +17,15 @@ pub enum RecordType {
 impl Display for RecordType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let stringified = match *self {
-            RecordType::WarcInfo => "warcinfo",
-            RecordType::Response => "response",
-            RecordType::Resource => "resource",
-            RecordType::Request => "request",
-            RecordType::Metadata => "metadata",
-            RecordType::Revisit => "revisit",
-            RecordType::Conversion => "conversion",
-            RecordType::Continuation => "continuation",
-            RecordType::Unknown(ref val) => val.as_ref(),
+            Self::WarcInfo => "warcinfo",
+            Self::Response => "response",
+            Self::Resource => "resource",
+            Self::Request => "request",
+            Self::Metadata => "metadata",
+            Self::Revisit => "revisit",
+            Self::Conversion => "conversion",
+            Self::Continuation => "continuation",
+            Self::Unknown(ref val) => val.as_ref(),
         };
         f.write_str(stringified)
     }
@@ -48,7 +48,9 @@ impl<S: AsRef<str>> From<S> for RecordType {
         KNOWN_TYPES
             .iter()
             .find(|(name, _)| string.eq_ignore_ascii_case(name))
-            .map(|(_, record_type)| record_type.clone())
-            .unwrap_or_else(|| RecordType::Unknown(string.to_lowercase()))
+            .map_or_else(
+                || Self::Unknown(string.to_lowercase()),
+                |(_, record_type)| record_type.clone(),
+            )
     }
 }

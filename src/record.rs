@@ -22,7 +22,7 @@ mod streaming_trait {
         fn content_length(&self) -> u64;
     }
 
-    #[derive(Clone, Debug, Default, PartialEq)]
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
     /// An associated type indicating the body is buffered within the record.
     pub struct BufferedBody(pub Vec<u8>);
     impl BodyKind for BufferedBody {
@@ -40,35 +40,38 @@ mod streaming_trait {
         remaining_len: &'t mut u64,
     }
     impl<'t, T: Read> StreamingBody<'t, T> {
-        pub(crate) fn new(stream: &'t mut T, remaining_len: &'t mut u64) -> StreamingBody<'t, T> {
-            StreamingBody {
-                stream,
+        pub(crate) const fn new(stream: &'t mut T, remaining_len: &'t mut u64) -> Self {
+            Self {
                 declared_content_len: *remaining_len,
+                stream,
                 remaining_len,
             }
         }
 
         /// The unread portion of the body, shrinking as the stream is consumed.
-        pub(crate) fn remaining_len(&self) -> u64 {
+        pub(crate) const fn remaining_len(&self) -> u64 {
             *self.remaining_len
         }
     }
-    impl<'t, T: Read> BodyKind for StreamingBody<'t, T> {
+    impl<T: Read> BodyKind for StreamingBody<'_, T> {
         fn content_length(&self) -> u64 {
             self.declared_content_len
         }
     }
 
-    impl<'t, T: Read> Read for StreamingBody<'t, T> {
+    impl<T: Read> Read for StreamingBody<'_, T> {
         fn read(&mut self, data: &mut [u8]) -> std::io::Result<usize> {
-            let max_read = std::cmp::min(data.len(), *self.remaining_len as usize);
+            // `try_from` fails only when the remaining length exceeds the address space, in
+            // which case the read is capped at `data.len()` anyway.
+            let max_read = usize::try_from(*self.remaining_len)
+                .map_or(data.len(), |remaining| data.len().min(remaining));
             self.stream.read(&mut data[..max_read]).inspect(|&n| {
                 *self.remaining_len -= n as u64;
             })
         }
     }
 
-    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     /// An associated type indicated the record has a zero-length body.
     pub struct EmptyBody;
     impl BodyKind for EmptyBody {
@@ -87,7 +90,7 @@ mod streaming_trait {
 /// field the specification allows to repeat: all of its values are held in `concurrent_to`.
 ///
 /// Use the `Display` trait to generate the formatted representation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawRecordHeader {
     /// The WARC standard version this record reports conformance to.
     pub version: String,
@@ -196,7 +199,7 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
     fn try_from(mut headers: RawRecordHeader) -> Result<Self, WarcError> {
         normalize_raw_headers(&mut headers)?;
         take_required_utf8_header(&mut headers, &WarcHeader::ContentLength)
-            .and_then(|len| Record::parse_content_length(&len))?;
+            .and_then(|len| Self::parse_content_length(&len))?;
 
         let record_type: RecordType =
             take_required_utf8_header(&mut headers, &WarcHeader::WarcType)?.into();
@@ -204,7 +207,7 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
         let record_id = take_required_utf8_header(&mut headers, &WarcHeader::RecordID)?;
 
         let record_date = take_required_utf8_header(&mut headers, &WarcHeader::Date)
-            .and_then(|date| Record::parse_record_date(&headers.version, &date))?;
+            .and_then(|date| Self::parse_record_date(&headers.version, &date))?;
 
         let truncated_type = take_utf8_header(&mut headers, &WarcHeader::Truncated)?
             .map(|value| TruncatedType::from(&value));
@@ -216,7 +219,7 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
         }
 
         // `Record` guarantees UTF-8 header values; reject the record otherwise.
-        for (header, value) in headers.as_ref().iter() {
+        for (header, value) in headers.as_ref() {
             if std::str::from_utf8(value).is_err() {
                 return Err(WarcError::MalformedHeader(
                     header.clone(),
@@ -233,7 +236,7 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
             }
         }
 
-        Ok(Record {
+        Ok(Self {
             headers,
             record_date,
             record_id,
@@ -249,7 +252,7 @@ impl std::fmt::Display for RawRecordHeader {
     // with CRLF, so this cannot use `writeln!` (which emits a bare LF).
     fn fmt(&self, w: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(w, "WARC/{}\r\n", self.version)?;
-        for (key, value) in self.as_ref().iter() {
+        for (key, value) in self.as_ref() {
             write!(w, "{}: {}\r\n", key, String::from_utf8_lossy(value))?;
         }
         for value in &self.concurrent_to {
@@ -291,7 +294,10 @@ pub struct RecordBuilder {
 /// with records whose header values are arbitrary bytes.
 ///
 /// Use the `Display` trait to generate the formatted representation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+// The `record_` prefix distinguishes the parsed fields from the raw `headers`, and `type` alone
+// is a keyword.
+#[allow(clippy::struct_field_names)]
 pub struct Record<T: BodyKind> {
     // NB: invariant: does not contain the headers stored in the struct
     headers: RawRecordHeader,
@@ -312,8 +318,9 @@ impl Record<EmptyBody> {
     /// * WARC-Date: the current moment in time
     /// * WARC-Type: resource
     /// * WARC-Content-Length: 0
+    #[must_use]
     pub fn new() -> Self {
-        Record::default()
+        Self::default()
     }
 }
 
@@ -328,9 +335,9 @@ impl Record<BufferedBody> {
     /// * WARC-Type: resource
     /// * WARC-Content-Length: `body.len()`
     pub fn with_body<B: Into<Vec<u8>>>(body: B) -> Self {
-        Record {
+        Self {
             body: BufferedBody(body.into()),
-            ..Record::default()
+            ..Self::default()
         }
     }
 }
@@ -353,6 +360,7 @@ impl Record<EmptyBody> {
     /// # Implementation
     /// The current implementation generates random values based on UUID version 4.
     ///
+    #[must_use]
     pub fn generate_record_id() -> String {
         format!("<{}>", Uuid::new_v4().urn())
     }
@@ -410,7 +418,7 @@ impl<T: BodyKind> Record<T> {
     }
 
     /// Return the WARC-Type header for this record.
-    pub fn warc_type(&self) -> &RecordType {
+    pub const fn warc_type(&self) -> &RecordType {
         &self.record_type
     }
 
@@ -420,17 +428,17 @@ impl<T: BodyKind> Record<T> {
     }
 
     /// Return the WARC-Date header for this record.
-    pub fn date(&self) -> &DateTime<Utc> {
+    pub const fn date(&self) -> &DateTime<Utc> {
         &self.record_date
     }
 
     /// Set the WARC-Date header for this record.
-    pub fn set_date(&mut self, date: DateTime<Utc>) {
+    pub const fn set_date(&mut self, date: DateTime<Utc>) {
         self.record_date = date;
     }
 
     /// Return the WARC-Truncated header for this record.
-    pub fn truncated_type(&self) -> &Option<TruncatedType> {
+    pub const fn truncated_type(&self) -> &Option<TruncatedType> {
         &self.truncated_type
     }
 
@@ -445,6 +453,14 @@ impl<T: BodyKind> Record<T> {
     }
 
     /// Return the WARC header requested if present in this record, or `None`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stored header value is not UTF-8, which construction of the record
+    /// prevents.
+    // Taking `WarcHeader` by value keeps call sites like `record.header(WarcHeader::Date)`
+    // free of borrows; every variant but `Unknown` is a unit.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn header(&self, header: WarcHeader) -> Option<Cow<'_, str>> {
         let header = header.normalized();
         match &header {
@@ -486,6 +502,11 @@ impl<T: BodyKind> Record<T> {
     ///
     /// If setting a header whose value has a well-formedness test, an error is returned if the
     /// value is not well-formed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stored header value being replaced is not UTF-8, which construction of
+    /// the record prevents.
     pub fn set_header<V>(
         &mut self,
         header: WarcHeader,
@@ -530,13 +551,13 @@ impl<T: BodyKind> Record<T> {
             }
             WarcHeader::ContentLength => {
                 let content_length = self.body.content_length();
-                if Record::parse_content_length(&value)? != content_length {
+                if Record::<EmptyBody>::parse_content_length(&value)? == content_length {
+                    Ok(Some(Cow::Owned(content_length.to_string())))
+                } else {
                     Err(WarcError::MalformedHeader(
                         WarcHeader::ContentLength,
                         "content length != body size".to_string(),
                     ))
-                } else {
-                    Ok(Some(Cow::Owned(content_length.to_string())))
                 }
             }
             _ => Ok(self
@@ -553,6 +574,11 @@ impl<T: BodyKind> Record<T> {
     }
 
     /// Return all values of the repeatable `WARC-Concurrent-To` header, in order of appearance.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a stored header value is not UTF-8, which construction of the record
+    /// prevents.
     pub fn concurrent_to(&self) -> impl Iterator<Item = &str> {
         self.headers.concurrent_to.iter().map(|value| {
             std::str::from_utf8(value)
@@ -652,11 +678,13 @@ impl Record<EmptyBody> {
 
 impl Record<BufferedBody> {
     /// Strip the body from this record.
+    #[must_use]
     pub fn strip_body(self) -> Record<EmptyBody> {
         self.with_body_kind(EmptyBody)
     }
 
     /// Return the body of this record.
+    #[must_use]
     pub fn body(&self) -> &[u8] {
         self.body.0.as_slice()
     }
@@ -675,12 +703,13 @@ impl Record<BufferedBody> {
     }
 
     /// Transform this record into a raw record containing the same data.
+    #[must_use]
     pub fn into_raw_parts(self) -> (RawRecordHeader, Vec<u8>) {
         (self.to_raw_header(), self.body.0)
     }
 }
 
-impl<'t, T: Read> Record<StreamingBody<'t, T>> {
+impl<T: Read> Record<StreamingBody<'_, T>> {
     /// Returns a record with a buffered body by collecting the streaming body.
     ///
     /// # Errors
@@ -688,22 +717,27 @@ impl<'t, T: Read> Record<StreamingBody<'t, T>> {
     /// This method can fail if the underlying stream returns an error. If this happens, the
     /// state of the stream is not guaranteed.
     pub fn into_buffered(mut self) -> std::io::Result<Record<BufferedBody>> {
-        let mut buf = Vec::with_capacity(self.body.remaining_len() as usize);
+        // Size the buffer to the body, but cap the speculative allocation at `MB` so a bogus
+        // `Content-Length` cannot force a huge up-front allocation.
+        let capacity = usize::try_from(self.body.remaining_len())
+            .unwrap_or(usize::MAX)
+            .min(crate::MB);
+        let mut buf = Vec::with_capacity(capacity);
         self.body.read_to_end(&mut buf)?;
 
         Ok(self.with_body_kind(BufferedBody(buf)))
     }
 }
 
-impl<'t, T: Read> Read for Record<StreamingBody<'t, T>> {
+impl<T: Read> Read for Record<StreamingBody<'_, T>> {
     fn read(&mut self, dst: &mut [u8]) -> Result<usize, std::io::Error> {
         self.body.read(dst)
     }
 }
 
 impl<T: BodyKind + Default> Default for Record<T> {
-    fn default() -> Record<T> {
-        Record {
+    fn default() -> Self {
+        Self {
             headers: RawRecordHeader {
                 version: "1.1".to_string(),
                 headers: IndexMap::new(),
@@ -719,22 +753,23 @@ impl<T: BodyKind + Default> Default for Record<T> {
 }
 
 impl fmt::Display for Record<BufferedBody> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Record({}, {:?})", self.to_raw_header(), self.body.0)
     }
 }
 impl fmt::Display for Record<EmptyBody> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Giving the record an empty body reuses the header rendering the buffered
         // implementation gets from `into_raw_parts`, which puts back the headers this type
         // stores outside the map.
         let (headers, _) = self.clone().add_body(Vec::new()).into_raw_parts();
-        write!(f, "Record({}, Empty)", headers)
+        write!(f, "Record({headers}, Empty)")
     }
 }
 
 impl RecordBuilder {
     /// Set the body of the record under construction.
+    #[must_use]
     pub fn body(mut self, body: Vec<u8>) -> Self {
         self.value.replace_body(body);
 
@@ -742,13 +777,15 @@ impl RecordBuilder {
     }
 
     /// Set the record date header of the record under construction.
-    pub fn date(mut self, date: DateTime<Utc>) -> Self {
+    #[must_use]
+    pub const fn date(mut self, date: DateTime<Utc>) -> Self {
         self.value.set_date(date);
 
         self
     }
 
     /// Set the record ID header of the record under construction.
+    #[must_use]
     pub fn warc_id<S: Into<String>>(mut self, id: S) -> Self {
         self.value.set_warc_id(id);
 
@@ -756,6 +793,7 @@ impl RecordBuilder {
     }
 
     /// Set the WARC version of the record under construction.
+    #[must_use]
     pub fn version(mut self, version: String) -> Self {
         self.value.set_warc_version(version);
 
@@ -763,6 +801,7 @@ impl RecordBuilder {
     }
 
     /// Set the WARC record type header field of the record under construction.
+    #[must_use]
     pub fn warc_type(mut self, warc_type: RecordType) -> Self {
         self.value.set_warc_type(warc_type);
 
@@ -770,6 +809,7 @@ impl RecordBuilder {
     }
 
     /// Set the truncated type header of the record under construction.
+    #[must_use]
     pub fn truncated_type(mut self, trunc_type: TruncatedType) -> Self {
         self.value.set_truncated_type(trunc_type);
 
@@ -797,6 +837,7 @@ impl RecordBuilder {
     /// against the finished record when `build` runs, so an error that a later call cures
     /// (for example a `Content-Length` set before the body it describes) does not fail the
     /// build.
+    #[must_use]
     pub fn header<V: Into<Vec<u8>>>(mut self, key: WarcHeader, value: V) -> Self {
         let value = value.into();
         match Self::set_raw_header(&mut self.value, key.clone(), &value) {
@@ -814,8 +855,9 @@ impl RecordBuilder {
     /// Build a raw record header from the data collected in this builder.
     ///
     /// A body set in this builder will be returned raw.
+    #[must_use]
     pub fn build_raw(self) -> (RawRecordHeader, Vec<u8>) {
-        let RecordBuilder {
+        let Self {
             value,
             broken_headers,
         } = self;
@@ -835,7 +877,7 @@ impl RecordBuilder {
     /// Returns the error for a header value that is still not valid for the finished
     /// record.
     pub fn build(self) -> Result<Record<BufferedBody>, WarcError> {
-        let RecordBuilder {
+        let Self {
             mut value,
             broken_headers,
         } = self;
@@ -1164,8 +1206,7 @@ mod record_tests {
                     record.set_header(WarcHeader::TargetURI, value),
                     Err(Error::MalformedHeader(WarcHeader::TargetURI, _))
                 ),
-                "{:?}",
-                value
+                "{value:?}"
             );
         }
 
@@ -1188,8 +1229,7 @@ mod record_tests {
                     record.set_header(header, "value"),
                     Err(Error::MalformedHeader(WarcHeader::Unknown(_), _))
                 ),
-                "{:?}",
-                name
+                "{name:?}"
             );
         }
 
@@ -1272,8 +1312,7 @@ mod record_tests {
         assert_eq!(
             block.to_lowercase().matches("warc-date:").count(),
             1,
-            "{}",
-            block
+            "{block}"
         );
 
         let reader = crate::WarcReader::new(std::io::Cursor::new(block.into_bytes()));
@@ -1308,12 +1347,7 @@ mod record_tests {
             "warc-target-uri: https://example.com/",
             "content-length: 0",
         ] {
-            assert!(
-                rendered.contains(expected),
-                "{:?} in {}",
-                expected,
-                rendered
-            );
+            assert!(rendered.contains(expected), "{expected:?} in {rendered}");
         }
         assert!(rendered.ends_with(", Empty)"), "{}", rendered);
     }
@@ -1589,7 +1623,7 @@ mod raw_tests {
             let headers = headers_with(WarcHeader::ContentLength, bad_value.to_vec());
             match Record::<EmptyBody>::try_from(headers) {
                 Err(Error::MalformedHeader(WarcHeader::ContentLength, _)) => {}
-                other => panic!("expected malformed content-length error, got {:?}", other),
+                other => panic!("expected malformed content-length error, got {other:?}"),
             }
         }
     }
@@ -1599,7 +1633,7 @@ mod raw_tests {
         let headers = headers_with(WarcHeader::RecordID, vec![0xff, 0xfe]);
         match Record::<EmptyBody>::try_from(headers) {
             Err(Error::MalformedHeader(WarcHeader::RecordID, _)) => {}
-            other => panic!("expected malformed record-id error, got {:?}", other),
+            other => panic!("expected malformed record-id error, got {other:?}"),
         }
     }
 
@@ -1616,7 +1650,7 @@ mod raw_tests {
         let headers = headers_with(WarcHeader::TargetURI, vec![0xff, 0xfe]);
         match Record::<EmptyBody>::try_from(headers) {
             Err(Error::MalformedHeader(WarcHeader::TargetURI, _)) => {}
-            other => panic!("expected malformed target-uri error, got {:?}", other),
+            other => panic!("expected malformed target-uri error, got {other:?}"),
         }
     }
 
@@ -1703,10 +1737,10 @@ mod raw_tests {
         let actual_lines: Vec<_> = output.lines().collect();
 
         let mut expected_headers: Vec<_> = expected_lines[1..expected_lines.len() - 1].to_vec();
-        expected_headers.sort();
+        expected_headers.sort_unstable();
 
         let mut actual_headers: Vec<_> = actual_lines[1..actual_lines.len() - 1].to_vec();
-        actual_headers.sort();
+        actual_headers.sort_unstable();
 
         // verify parts
         assert_eq!(actual_lines[0], expected_lines[0]); // WARC version
@@ -1898,7 +1932,7 @@ mod builder_tests {
 
         match builder.build() {
             Err(Error::MalformedHeader(WarcHeader::ContentLength, _)) => {}
-            other => panic!("expected an error blaming content-length, got {:?}", other),
+            other => panic!("expected an error blaming content-length, got {other:?}"),
         }
     }
 
@@ -2018,7 +2052,6 @@ mod builder_tests {
         );
         assert_eq!(
             builder
-                .clone()
                 .build_raw()
                 .0
                 .as_ref()
@@ -2096,7 +2129,6 @@ mod builder_tests {
 
         assert_eq!(
             builder
-                .clone()
                 .build_raw()
                 .0
                 .as_ref()
