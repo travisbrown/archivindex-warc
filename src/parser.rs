@@ -1,18 +1,17 @@
 use nom::{
-    IResult,
+    IResult, Parser,
     bytes::streaming::{tag, take, take_while1},
     character::streaming::{line_ending, not_line_ending, space0, space1},
     combinator::complete,
     error::ErrorKind,
     multi::{many0, many1},
-    sequence::tuple,
 };
 use std::borrow::Cow;
 use std::str;
 
 // TODO: evaluate the use of `ErrorKind::Verify` here.
 fn version(input: &[u8]) -> IResult<&[u8], &str> {
-    let (input, (_, version, _)) = tuple((tag("WARC/"), not_line_ending, line_ending))(input)?;
+    let (input, (_, version, _)) = (tag("WARC/"), not_line_ending, line_ending).parse(input)?;
 
     let version_str = match str::from_utf8(version) {
         Err(_) => {
@@ -44,18 +43,19 @@ fn version(input: &[u8]) -> IResult<&[u8], &str> {
 /// value but none before the colon, so a line that puts some there is not a field line.
 #[allow(clippy::type_complexity)]
 fn header(input: &[u8]) -> IResult<&[u8], (&[u8], Cow<'_, [u8]>)> {
-    let (input, (token, _, _, value, _)) = tuple((
+    let (input, (token, _, _, value, _)) = (
         take_while1(crate::is_header_token_char),
         tag(":"),
         space0,
         not_line_ending,
         line_ending,
-    ))(input)?;
+    )
+        .parse(input)?;
 
     // `complete` keeps a value ending exactly at the end of input from reporting `Incomplete`
     // while probing for a continuation line that is not there.
     let (input, continuations) =
-        many0(complete(tuple((space1, not_line_ending, line_ending))))(input)?;
+        many0(complete((space1, not_line_ending, line_ending))).parse(input)?;
 
     let value = if continuations.is_empty() {
         Cow::Borrowed(value)
@@ -81,7 +81,7 @@ fn header(input: &[u8]) -> IResult<&[u8], (&[u8], Cow<'_, [u8]>)> {
 #[allow(clippy::type_complexity)]
 pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, Option<usize>)> {
     let (input, version) = version(input)?;
-    let (input, headers) = many1(header)(input)?;
+    let (input, headers) = many1(header).parse(input)?;
 
     let mut content_length: Option<usize> = None;
     let mut warc_headers: Vec<(&str, Cow<'_, [u8]>)> = Vec::with_capacity(headers.len());
@@ -135,12 +135,12 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>
 /// its body ends), so parsing one fails with an error pointing at its header block.
 #[allow(clippy::type_complexity)]
 pub fn record(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, &[u8])> {
-    let (remainder, (headers, _)) = tuple((headers, line_ending))(input)?;
+    let (remainder, (headers, _)) = (headers, line_ending).parse(input)?;
     let content_length = headers
         .2
         .ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, ErrorKind::Verify)))?;
     let (remainder, (body, _, _)) =
-        tuple((take(content_length), line_ending, line_ending))(remainder)?;
+        (take(content_length), line_ending, line_ending).parse(remainder)?;
 
     Ok((remainder, (headers.0, headers.1, body)))
 }
