@@ -22,7 +22,7 @@ mod streaming_trait {
         fn content_length(&self) -> u64;
     }
 
-    #[derive(Clone, Debug, PartialEq)]
+    #[derive(Clone, Debug, Default, PartialEq)]
     /// An associated type indicating the body is buffered within the record.
     pub struct BufferedBody(pub Vec<u8>);
     impl BodyKind for BufferedBody {
@@ -68,7 +68,7 @@ mod streaming_trait {
         }
     }
 
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
     /// An associated type indicated the record has a zero-length body.
     pub struct EmptyBody();
     impl BodyKind for EmptyBody {
@@ -264,7 +264,7 @@ pub struct RecordBuilder {
 /// with records whose header values are arbitrary bytes.
 ///
 /// Use the `Display` trait to generate the formatted representation.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Record<T: BodyKind> {
     // NB: invariant: does not contain the headers stored in the struct
     headers: RawRecordHeader,
@@ -695,8 +695,8 @@ impl<'t, T: Read> Read for Record<StreamingBody<'t, T>> {
     }
 }
 
-impl Default for Record<BufferedBody> {
-    fn default() -> Record<BufferedBody> {
+impl<T: BodyKind + Default> Default for Record<T> {
+    fn default() -> Record<T> {
         Record {
             headers: RawRecordHeader {
                 version: "1.0".to_string(),
@@ -706,23 +706,7 @@ impl Default for Record<BufferedBody> {
             record_id: Record::generate_record_id(),
             record_type: RecordType::Resource,
             truncated_type: None,
-            body: BufferedBody(vec![]),
-        }
-    }
-}
-
-impl Default for Record<EmptyBody> {
-    fn default() -> Record<EmptyBody> {
-        Record {
-            headers: RawRecordHeader {
-                version: "1.0".to_string(),
-                headers: IndexMap::new(),
-            },
-            record_date: Utc::now(),
-            record_id: Record::generate_record_id(),
-            record_type: RecordType::Resource,
-            truncated_type: None,
-            body: EmptyBody(),
+            body: T::default(),
         }
     }
 }
@@ -739,32 +723,6 @@ impl fmt::Display for Record<EmptyBody> {
         // stores outside the map.
         let (headers, _) = self.clone().add_body(Vec::new()).into_raw_parts();
         write!(f, "Record({}, Empty)", headers)
-    }
-}
-
-impl Clone for Record<EmptyBody> {
-    fn clone(&self) -> Self {
-        Record {
-            headers: self.headers.clone(),
-            record_type: self.record_type.clone(),
-            record_date: self.record_date,
-            record_id: self.record_id.clone(),
-            truncated_type: self.truncated_type.clone(),
-            body: self.body,
-        }
-    }
-}
-
-impl Clone for Record<BufferedBody> {
-    fn clone(&self) -> Self {
-        Record {
-            headers: self.headers.clone(),
-            record_type: self.record_type.clone(),
-            record_date: self.record_date,
-            record_id: self.record_id.clone(),
-            truncated_type: self.truncated_type.clone(),
-            body: self.body.clone(),
-        }
     }
 }
 
@@ -933,6 +891,13 @@ mod record_tests {
     #[test]
     fn impl_eq() {
         let record1 = Record::<BufferedBody>::default();
+        let record2 = record1.clone();
+        assert_eq!(record1, record2);
+    }
+
+    #[test]
+    fn impl_eq_empty_body() {
+        let record1 = Record::<EmptyBody>::default();
         let record2 = record1.clone();
         assert_eq!(record1, record2);
     }
