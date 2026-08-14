@@ -106,3 +106,6 @@ pub use truncated_type::TruncatedType;
 
 mod version;
 pub use version::WarcVersion;
+
+mod warc_date;
+pub use warc_date::{WarcDate, WarcDatePrecision};
