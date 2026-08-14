@@ -366,6 +366,36 @@ mod write_raw_tests {
         );
     }
 
+    /// The typed writer does not emit either of the fields added in WARC 1.1 on a WARC 1.0
+    /// record.
+    #[test]
+    #[ignore = "known bug (1.0 writer emits 1.1-only headers): fix incoming"]
+    fn warc_1_0_writing_rejects_warc_1_1_headers() {
+        for (header, value) in [
+            (WarcHeader::RefersToDate, "2020-07-07T02:52:55Z"),
+            (WarcHeader::RefersToTargetURI, "https://example.com/"),
+        ] {
+            let mut record = crate::Record::<crate::BufferedBody>::default();
+            record.set_warc_version(crate::WarcVersion::V1_0);
+            record.set_header(header.clone(), value).unwrap();
+
+            let mut writer = WarcWriter::new(Vec::new());
+            let error = writer
+                .write(&record)
+                .expect_err("WARC 1.1-only header should be rejected");
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(writer.writer.is_empty(), "no partial record is written");
+            assert!(matches!(
+                error
+                    .get_ref()
+                    .and_then(|source| source.downcast_ref::<crate::Error>()),
+                Some(crate::Error::MalformedHeader(actual_header, _))
+                    if actual_header == &header
+            ));
+        }
+    }
+
     /// A record written by the writer reads back identically, including a sub-second
     /// `WARC-Date`, which WARC 1.1 permits at up to nanosecond precision.
     #[test]
