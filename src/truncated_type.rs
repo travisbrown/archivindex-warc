@@ -10,16 +10,23 @@ pub enum TruncatedType {
     Unknown(String),
 }
 
-impl Display for TruncatedType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let stringified = match *self {
+impl TruncatedType {
+    /// The serialized form of this value, borrowing rather than allocating.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
             Self::Length => "length",
             Self::Time => "time",
             Self::Disconnect => "disconnect",
             Self::Unspecified => "unspecified",
-            Self::Unknown(ref val) => val.as_ref(),
-        };
-        f.write_str(stringified)
+            Self::Unknown(val) => val,
+        }
+    }
+}
+
+impl Display for TruncatedType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
