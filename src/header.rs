@@ -74,7 +74,7 @@ impl Display for WarcHeader {
             WarcHeader::Truncated => "warc-truncated",
             WarcHeader::WarcType => "warc-type",
             WarcHeader::WarcInfoID => "warc-warcinfo-id",
-            WarcHeader::Unknown(ref string) => string,
+            WarcHeader::Unknown(string) => string,
         };
         write!(f, "{}", stringified)
     }
