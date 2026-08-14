@@ -29,7 +29,9 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+data-encoding = "2"
 serde_json = { version = "1", features = ["preserve_order"] }
+sha1 = "0.11"
 tempfile = "3"
 # Only the `read_filtered` example parses URLs.
 url = "2"
