@@ -13,17 +13,13 @@ fn verify_error(input: &[u8]) -> nom::Err<nom::error::Error<&[u8]>> {
     nom::Err::Error(nom::error::Error::new(input, ErrorKind::Verify))
 }
 
-// TODO: evaluate the use of `ErrorKind::Verify` here.
 fn version(input: &[u8]) -> IResult<&[u8], &str> {
     let (input, (_, version, _)) = (tag("WARC/"), not_line_ending, line_ending).parse(input)?;
 
-    let version_str = str::from_utf8(version).map_err(|_| verify_error(input))?;
+    let version_str = str::from_utf8(version).map_err(|_| verify_error(version))?;
 
     if !crate::is_supported_version(version_str) {
-        return Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            ErrorKind::Verify,
-        )));
+        return Err(verify_error(version));
     }
 
     Ok((input, version_str))
@@ -75,24 +71,24 @@ fn header(input: &[u8]) -> IResult<&[u8], (&[u8], Cow<'_, [u8]>)> {
 /// the missing field.
 // TODO: evaluate the use of `ErrorKind::Verify` here.
 #[allow(clippy::type_complexity)]
-pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, Option<usize>)> {
+pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, Option<u64>)> {
     let (input, version) = version(input)?;
     let (input, headers) = many1(header).parse(input)?;
 
-    let mut content_length: Option<usize> = None;
+    // The specification puts no ceiling on `Content-Length`, so the full unsigned 64-bit range
+    // is accepted here; whether a record of that size can be buffered is the caller's concern.
+    let mut content_length: Option<u64> = None;
     let mut warc_headers: Vec<(&str, Cow<'_, [u8]>)> = Vec::with_capacity(headers.len());
 
+    // Errors carry the offending field name rather than the remaining input, so they point at
+    // the culprit. The value cannot be carried: a folded value is owned by this function.
     for header in headers {
-        let token_str = str::from_utf8(header.0).map_err(|_| verify_error(input))?;
+        let token_str = str::from_utf8(header.0).map_err(|_| verify_error(header.0))?;
 
         if content_length.is_none() && token_str.eq_ignore_ascii_case("content-length") {
-            let value_str = str::from_utf8(&header.1).map_err(|_| verify_error(input))?;
-
-            // The parser works in `usize` because it slices the body out of the input, so a
-            // length beyond the address space cannot be honored here either.
-            let len = crate::parse_content_length(value_str)
-                .and_then(|len| usize::try_from(len).ok())
-                .ok_or_else(|| verify_error(input))?;
+            let value_str = str::from_utf8(&header.1).map_err(|_| verify_error(header.0))?;
+            let len =
+                crate::parse_content_length(value_str).ok_or_else(|| verify_error(header.0))?;
             content_length = Some(len);
         }
 
@@ -109,9 +105,10 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>
 #[allow(clippy::type_complexity)]
 pub fn record(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, &[u8])> {
     let (remainder, (headers, _)) = (headers, line_ending).parse(input)?;
-    let content_length = headers
-        .2
-        .ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, ErrorKind::Verify)))?;
+    let content_length = headers.2.ok_or_else(|| verify_error(input))?;
+    // The body of an in-memory record must fit in a slice, so a length beyond the address
+    // space cannot possibly be satisfied by `input` and is rejected as invalid.
+    let content_length = usize::try_from(content_length).map_err(|_| verify_error(input))?;
     let (remainder, (body, _, _)) =
         (take(content_length), line_ending, line_ending).parse(remainder)?;
 
@@ -237,10 +234,11 @@ mod tests {
             \r\n\
         ";
 
+        // The error points at the field whose value failed validation.
         assert_eq!(
             headers(&raw_invalid[..]),
             Err(Err::Error(nom::error::Error::new(
-                &b"\r\n"[..],
+                &b"content-length"[..],
                 ErrorKind::Verify
             )))
         );
@@ -267,6 +265,29 @@ mod tests {
             Ok((
                 &b"\r\n"[..],
                 (expected_version, expected_headers, expected_len)
+            ))
+        );
+    }
+
+    /// A missing `Content-Length` is reported as `None` rather than a parse failure, leaving
+    /// the caller to raise an error naming the missing field.
+    #[test]
+    fn headers_parsing_without_content_length() {
+        let raw = b"\
+            WARC/1.0\r\n\
+            foo: is fantastic\r\n\
+            \r\n\
+        ";
+
+        assert_eq!(
+            headers(&raw[..]),
+            Ok((
+                &b"\r\n"[..],
+                (
+                    "1.0",
+                    vec![("foo", Cow::Borrowed(&b"is fantastic"[..]))],
+                    None
+                )
             ))
         );
     }
@@ -301,6 +322,27 @@ mod tests {
                 &b"WARC/1.0\r\nWarc-Type: another\r\nContent-Length: 6\r\n\r\n123456\r\n\r\n"[..],
                 (expected_version, expected_headers, expected_body)
             ))
+        );
+    }
+
+    /// A record without `Content-Length` cannot be framed, so parsing it fails with an error
+    /// pointing at its header block.
+    #[test]
+    fn parse_record_without_content_length() {
+        let raw = b"\
+            WARC/1.0\r\n\
+            Warc-Type: dunno\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        assert_eq!(
+            record(&raw[..]),
+            Err(Err::Error(nom::error::Error::new(
+                &raw[..],
+                ErrorKind::Verify
+            )))
         );
     }
 }

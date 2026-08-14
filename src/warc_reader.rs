@@ -162,7 +162,7 @@ fn read_header_block<R: BufRead>(
 ///
 /// A record without `Content-Length` cannot be framed: there is no way to know where its body
 /// ends, so the missing field is reported rather than defaulted.
-fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, usize), Error> {
+fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, u64), Error> {
     let (remainder, (version, headers, expected_body_len)) =
         parser::headers(buffer).map_err(|e| {
             Error::ParseHeaders(
@@ -185,12 +185,19 @@ fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, usize), Error> 
 }
 
 /// Read a record body of the given length, plus the `\r\n\r\n` record terminator.
-fn read_body<R: BufRead>(reader: &mut R, expected_body_len: usize) -> Result<Vec<u8>, Error> {
+fn read_body<R: BufRead>(reader: &mut R, expected_body_len: u64) -> Result<Vec<u8>, Error> {
+    // The body plus its 4-byte terminator must fit in a single in-memory buffer. A length for
+    // which that is impossible (a hostile value near the platform maximum, or a >4 GiB record
+    // on a 32-bit target) is rejected up front, rather than overflowing the arithmetic below;
+    // such records can still be read with `WarcReader::stream_records`.
+    let expected_body_len = usize::try_from(expected_body_len).map_err(|_| Error::BodyTooLarge)?;
+    let maximum_read_range = expected_body_len
+        .checked_add(4)
+        .ok_or(Error::BodyTooLarge)?;
     // Size the buffer to the record, but cap the speculative allocation at `MB` so a bogus
     // `Content-Length` cannot force a huge up-front allocation.
-    let mut body_buffer: Vec<u8> = Vec::with_capacity(std::cmp::min(expected_body_len + 4, MB));
+    let mut body_buffer: Vec<u8> = Vec::with_capacity(std::cmp::min(maximum_read_range, MB));
     let mut body_bytes_read = 0;
-    let maximum_read_range = expected_body_len + 4;
     loop {
         let bytes_read = match reader.read_until(b'\n', &mut body_buffer) {
             Err(io) => return Err(Error::ReadData(io)),
@@ -405,7 +412,7 @@ impl<R: BufRead> StreamingIter<'_, R> {
                 return Some(Err(e));
             }
         };
-        self.current_item_size = expected_body_len as u64;
+        self.current_item_size = expected_body_len;
 
         match headers.try_into() {
             Ok(b) => {
@@ -499,6 +506,55 @@ mod iter_raw_tests {
         assert_eq!(headers.version, expected_version);
         assert_eq!(headers.as_ref(), &expected_headers);
         assert_eq!(body, expected_body);
+    }
+
+    /// A hostile `Content-Length` near the unsigned 64-bit maximum must be rejected cleanly:
+    /// the buffered path cannot possibly hold such a body, and the length arithmetic must not
+    /// overflow (which previously panicked in debug builds and wrapped in release).
+    #[test]
+    fn huge_content_length_is_rejected_without_panicking() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: dunno\r\n\
+            Content-Length: 18446744073709551615\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        match reader.next().unwrap() {
+            Err(Error::BodyTooLarge) => {}
+            other => panic!(
+                "expected a body-too-large error, got {:?}",
+                other.map(|(headers, _)| headers)
+            ),
+        }
+    }
+
+    /// A `Content-Length` value beyond the unsigned 64-bit range is not a length at all; it is
+    /// rejected as a parse error naming the field.
+    #[test]
+    fn content_length_beyond_u64_is_a_parse_error() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: dunno\r\n\
+            Content-Length: 99999999999999999999999999\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        match reader.next().unwrap() {
+            Err(Error::ParseHeaders(nom::Err::Error(e))) => {
+                assert_eq!(e.input, b"Content-Length".to_vec());
+            }
+            other => panic!(
+                "expected a parse error naming content-length, got {:?}",
+                other.map(|(headers, _)| headers)
+            ),
+        }
     }
 
     #[test]
@@ -1014,6 +1070,26 @@ mod next_item_tests {
             .unwrap();
         assert_eq!(record.warc_id(), "<urn:test:skip-large-body:record-1>");
         assert_eq!(record.body(), b"123456");
+    }
+
+    /// The streaming path frames bodies as unsigned 64-bit lengths on every platform, so a
+    /// record too large to buffer still yields a streaming record reporting its full size.
+    #[test]
+    fn streaming_reports_unbuffered_content_length() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: dunno\r\n\
+            WARC-Record-Id: <urn:test:huge-record:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            Content-Length: 18446744073709551615\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw));
+        let mut stream_iter = reader.stream_records();
+
+        let record = stream_iter.next_item().unwrap().unwrap();
+        assert_eq!(record.content_length(), u64::MAX);
     }
 
     #[test]
