@@ -2010,6 +2010,25 @@ mod builder_tests {
         );
     }
 
+    /// A later valid spelling of the same normalized field cures an earlier rejected value.
+    #[test]
+    #[ignore = "known bug (equivalent spelling does not cure header): fix incoming"]
+    fn broken_header_is_cured_by_an_equivalent_spelling() {
+        let record = RecordBuilder::default()
+            .header(
+                WarcHeader::Unknown("WARC-Date".to_string()),
+                "not-a-dayTor:a:time",
+            )
+            .header(WarcHeader::Date, "2020-07-08T02:52:55Z")
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            record.header(WarcHeader::Date).unwrap(),
+            "2020-07-08T02:52:55Z"
+        );
+    }
+
     /// A `Content-Length` set before the body it describes is retried against the finished
     /// record, so the order of the two calls does not matter.
     #[test]
