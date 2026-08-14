@@ -990,6 +990,41 @@ mod record_tests {
         }
     }
 
+    /// Generated record ids satisfy the `WARC-Record-ID` requirements: a bracketed URI in a
+    /// registered scheme, with no internal whitespace.
+    #[test]
+    fn generated_record_id_is_a_bracketed_urn() {
+        let id = Record::generate_record_id();
+        let uri = id
+            .strip_prefix('<')
+            .and_then(|id| id.strip_suffix('>'))
+            .expect("record id should be enclosed in angle brackets");
+        assert!(uri.starts_with("urn:uuid:"));
+        assert!(!uri.contains(char::is_whitespace));
+    }
+
+    /// Emitted `WARC-Date` values are ISO 8601 UTC timestamps: non-UTC offsets are converted, and
+    /// a decimal fraction (at most nine digits) appears only when the moment requires one.
+    #[test]
+    fn emitted_date_is_iso_8601_utc() {
+        let mut record = Record::<BufferedBody>::default();
+        for (input, expected) in [
+            ("2020-07-08T02:52:55Z", "2020-07-08T02:52:55Z"),
+            ("2020-07-08T02:52:55.123Z", "2020-07-08T02:52:55.123Z"),
+            (
+                "2020-07-08T03:52:55.123456789+01:00",
+                "2020-07-08T02:52:55.123456789Z",
+            ),
+        ] {
+            record.set_header(WarcHeader::Date, input).unwrap();
+            assert_eq!(
+                record.header(WarcHeader::Date).unwrap(),
+                expected,
+                "{input}"
+            );
+        }
+    }
+
     /// A sub-second `WARC-Date` survives a set/get round trip unchanged.
     #[test]
     fn set_header_preserves_subsecond_date() {
