@@ -882,11 +882,7 @@ impl fmt::Display for Record<BufferedBody> {
 }
 impl fmt::Display for Record<EmptyBody> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Giving the record an empty body reuses the header rendering the buffered
-        // implementation gets from `into_raw_parts`, which puts back the headers this type
-        // stores outside the map.
-        let (headers, _) = self.clone().add_body(Vec::new()).into_raw_parts();
-        write!(f, "Record({headers}, Empty)")
+        write!(f, "Record({}, Empty)", self.to_raw_header())
     }
 }
 
@@ -1090,6 +1086,32 @@ mod record_tests {
         assert_eq!(
             stripped.header(WarcHeader::TargetURI).as_deref(),
             Some("https://example.com/")
+        );
+    }
+
+    /// `Display` for a buffered record renders the full header block (version line and derived
+    /// fields included) followed by the body bytes.
+    #[test]
+    fn display_buffered_record_renders_full_header_block() {
+        let mut record = Record::<BufferedBody>::default();
+        record.replace_body(b"hello".to_vec());
+        record
+            .set_header(WarcHeader::TargetURI, "https://example.com/")
+            .unwrap();
+        let rendered = record.to_string();
+        assert!(rendered.starts_with("Record(WARC/1.1\r\n"), "{rendered}");
+        for expected in [
+            "warc-type: resource\r\n",
+            &format!("warc-record-id: {}\r\n", record.warc_id()),
+            "warc-date: ",
+            "warc-target-uri: https://example.com/\r\n",
+            "content-length: 5\r\n",
+        ] {
+            assert!(rendered.contains(expected), "{expected:?} in {rendered}");
+        }
+        assert!(
+            rendered.ends_with(&format!("{:?})", b"hello")),
+            "{rendered}"
         );
     }
 
