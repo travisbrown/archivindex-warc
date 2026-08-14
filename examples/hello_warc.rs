@@ -1,11 +1,11 @@
+use archivindex_warc::{RawRecordHeader, Record, RecordType, WarcHeader};
 use chrono::prelude::*;
-use warc::{RawRecordHeader, Record, RecordType, WarcHeader};
 
 fn main() {
     let body = "hello warc! 👋".to_owned();
 
     let headers = RawRecordHeader {
-        version: warc::WarcVersion::V1_0,
+        version: archivindex_warc::WarcVersion::V1_0,
         headers: vec![
             (
                 WarcHeader::RecordID,

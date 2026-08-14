@@ -1,7 +1,7 @@
 mod common;
 
+use archivindex_warc::{Record, RecordType, WarcHeader, WarcWriter};
 use chrono::prelude::*;
-use warc::{Record, RecordType, WarcHeader, WarcWriter};
 
 fn main() -> Result<(), std::io::Error> {
     let date = Utc::now();
