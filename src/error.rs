@@ -13,6 +13,10 @@ pub enum Error {
     /// A required header is not well-formed according to the standard.
     #[error("Malformed header: {0}: {1}")]
     MalformedHeader(WarcHeader, String),
+    /// A named field other than `WARC-Concurrent-To` appeared more than once in a record. The
+    /// record was well-formed, but invalid.
+    #[error("Duplicate header: {0}")]
+    DuplicateHeader(WarcHeader),
     /// The underlying read from the data source failed.
     #[error("Error reading data source.")]
     ReadData(#[source] std::io::Error),
@@ -66,6 +70,11 @@ mod tests {
             (
                 Error::MalformedHeader(WarcHeader::Date, "not a W3C-DTF timestamp".to_string()),
                 "Malformed header: warc-date: not a W3C-DTF timestamp",
+                false,
+            ),
+            (
+                Error::DuplicateHeader(WarcHeader::TargetURI),
+                "Duplicate header: warc-target-uri",
                 false,
             ),
             (Error::ReadData(io), "Error reading data source.", true),

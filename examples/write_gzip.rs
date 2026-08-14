@@ -28,6 +28,7 @@ fn main() -> Result<(), std::io::Error> {
         ]
         .into_iter()
         .collect(),
+        concurrent_to: Vec::new(),
     };
 
     let mut file = WarcWriter::from_path_gzip("warc_example.warc.gz")?;
