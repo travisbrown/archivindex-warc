@@ -331,7 +331,7 @@ mod write_raw_tests {
         assert_rejected(wrong_length);
 
         let mut no_length = valid_headers();
-        no_length.as_mut().remove(&WarcHeader::ContentLength);
+        no_length.as_mut().shift_remove(&WarcHeader::ContentLength);
         assert_rejected(no_length);
 
         let mut writer = WarcWriter::new(Vec::new());

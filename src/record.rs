@@ -164,74 +164,46 @@ pub fn validate_header(header: &WarcHeader, value: &[u8]) -> Result<(), WarcErro
     Ok(())
 }
 
+/// Remove `header` from the raw headers, decoding its value as UTF-8.
+fn take_utf8_header(
+    headers: &mut RawRecordHeader,
+    header: &WarcHeader,
+) -> Result<Option<String>, WarcError> {
+    headers
+        .as_mut()
+        .shift_remove(header)
+        .map(|value| {
+            String::from_utf8(value).map_err(|_| {
+                WarcError::MalformedHeader(header.clone(), "not a UTF-8 string".to_string())
+            })
+        })
+        .transpose()
+}
+
+/// Like `take_utf8_header`, but fail if `header` is missing.
+fn take_required_utf8_header(
+    headers: &mut RawRecordHeader,
+    header: &WarcHeader,
+) -> Result<String, WarcError> {
+    take_utf8_header(headers, header)?.ok_or_else(|| WarcError::MissingHeader(header.clone()))
+}
+
 impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
     type Error = WarcError;
     fn try_from(mut headers: RawRecordHeader) -> Result<Self, WarcError> {
         normalize_raw_headers(&mut headers)?;
-        headers
-            .as_mut()
-            .shift_remove(&WarcHeader::ContentLength)
-            .ok_or(WarcError::MissingHeader(WarcHeader::ContentLength))
-            .and_then(|vec| {
-                String::from_utf8(vec).map_err(|_| {
-                    WarcError::MalformedHeader(
-                        WarcHeader::ContentLength,
-                        "not a UTF-8 string".to_string(),
-                    )
-                })
-            })
+        take_required_utf8_header(&mut headers, &WarcHeader::ContentLength)
             .and_then(|len| Record::parse_content_length(&len))?;
 
-        let record_type = headers
-            .as_mut()
-            .shift_remove(&WarcHeader::WarcType)
-            .ok_or(WarcError::MissingHeader(WarcHeader::WarcType))
-            .and_then(|vec| {
-                String::from_utf8(vec).map_err(|_| {
-                    WarcError::MalformedHeader(
-                        WarcHeader::WarcType,
-                        "not a UTF-8 string".to_string(),
-                    )
-                })
-            })
-            .map(|rtype| rtype.into())?;
+        let record_type: RecordType =
+            take_required_utf8_header(&mut headers, &WarcHeader::WarcType)?.into();
 
-        let record_id = headers
-            .as_mut()
-            .shift_remove(&WarcHeader::RecordID)
-            .ok_or(WarcError::MissingHeader(WarcHeader::RecordID))
-            .and_then(|vec| {
-                String::from_utf8(vec).map_err(|_| {
-                    WarcError::MalformedHeader(
-                        WarcHeader::RecordID,
-                        "not a UTF-8 string".to_string(),
-                    )
-                })
-            })?;
+        let record_id = take_required_utf8_header(&mut headers, &WarcHeader::RecordID)?;
 
-        let record_date = headers
-            .as_mut()
-            .shift_remove(&WarcHeader::Date)
-            .ok_or(WarcError::MissingHeader(WarcHeader::Date))
-            .and_then(|vec| {
-                String::from_utf8(vec).map_err(|_| {
-                    WarcError::MalformedHeader(WarcHeader::Date, "not a UTF-8 string".to_string())
-                })
-            })
+        let record_date = take_required_utf8_header(&mut headers, &WarcHeader::Date)
             .and_then(|date| Record::parse_record_date(&headers.version, &date))?;
 
-        let truncated_type = headers
-            .as_mut()
-            .remove(&WarcHeader::Truncated)
-            .map(|vec| {
-                String::from_utf8(vec).map_err(|_| {
-                    WarcError::MalformedHeader(
-                        WarcHeader::Truncated,
-                        "not a UTF-8 string".to_string(),
-                    )
-                })
-            })
-            .transpose()?
+        let truncated_type = take_utf8_header(&mut headers, &WarcHeader::Truncated)?
             .map(|value| TruncatedType::from(&value));
 
         // `Record` guarantees UTF-8 header values; reject the record otherwise.
