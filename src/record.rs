@@ -38,6 +38,10 @@ mod streaming_trait {
         declared_content_len: u64,
         /// The unread portion of the body, shared with the iterator that handed it out.
         remaining_len: &'t mut u64,
+        /// Set once the record's `\r\n\r\n` terminator has been consumed and verified, so that
+        /// the owning `StreamingIter` does not read it a second time. `None` for bodies built
+        /// over external streams, which carry no terminator contract.
+        terminator_consumed: Option<&'t mut bool>,
     }
     impl<'t, T: Read> StreamingBody<'t, T> {
         pub(crate) const fn new(stream: &'t mut T, remaining_len: &'t mut u64) -> Self {
@@ -45,12 +49,52 @@ mod streaming_trait {
                 declared_content_len: *remaining_len,
                 stream,
                 remaining_len,
+                terminator_consumed: None,
+            }
+        }
+
+        /// A body whose record terminator is managed jointly with the owning iterator through
+        /// the given flag.
+        pub(crate) const fn with_terminator_flag(
+            stream: &'t mut T,
+            remaining_len: &'t mut u64,
+            terminator_consumed: &'t mut bool,
+        ) -> Self {
+            Self {
+                declared_content_len: *remaining_len,
+                stream,
+                remaining_len,
+                terminator_consumed: Some(terminator_consumed),
             }
         }
 
         /// The unread portion of the body, shrinking as the stream is consumed.
         pub(crate) const fn remaining_len(&self) -> u64 {
             *self.remaining_len
+        }
+
+        /// Read and verify the record's `\r\n\r\n` terminator, recording the consumption for
+        /// the owning iterator. Bodies over external streams are left untouched.
+        pub(crate) fn consume_terminator(&mut self) -> Result<(), crate::Error> {
+            let Some(flag) = self.terminator_consumed.as_deref_mut() else {
+                return Ok(());
+            };
+
+            let mut crlfs = [0; 4];
+            match self.stream.read_exact(&mut crlfs) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Err(crate::Error::UnexpectedEOB);
+                }
+                Err(io) => return Err(crate::Error::ReadData(io)),
+            }
+
+            if &crlfs != b"\r\n\r\n" {
+                return Err(crate::Error::MalformedRecordTerminator);
+            }
+
+            *flag = true;
+            Ok(())
         }
     }
     impl<T: Read> BodyKind for StreamingBody<'_, T> {
@@ -667,12 +711,31 @@ impl Record<EmptyBody> {
 
     /// Add a streaming body to this record, whose expected size may not match the actual stream
     /// length.
+    ///
+    /// The stream is treated as a bare body source: unlike records produced by
+    /// `WarcReader::stream_records`, no `\r\n\r\n` record terminator is expected after it.
+    #[must_use]
     pub fn add_fixed_stream<'r, R: Read>(
         self,
         stream: &'r mut R,
         len: &'r mut u64,
-    ) -> std::io::Result<Record<StreamingBody<'r, R>>> {
-        Ok(self.with_body_kind(StreamingBody::new(stream, len)))
+    ) -> Record<StreamingBody<'r, R>> {
+        self.with_body_kind(StreamingBody::new(stream, len))
+    }
+
+    /// Add a streaming body positioned within a WARC stream, coordinating consumption of the
+    /// record's `\r\n\r\n` terminator with the owning iterator through the given flag.
+    pub(crate) fn add_managed_stream<'r, R: Read>(
+        self,
+        stream: &'r mut R,
+        len: &'r mut u64,
+        terminator_consumed: &'r mut bool,
+    ) -> Record<StreamingBody<'r, R>> {
+        self.with_body_kind(StreamingBody::with_terminator_flag(
+            stream,
+            len,
+            terminator_consumed,
+        ))
     }
 }
 
@@ -712,18 +775,34 @@ impl Record<BufferedBody> {
 impl<T: Read> Record<StreamingBody<'_, T>> {
     /// Returns a record with a buffered body by collecting the streaming body.
     ///
+    /// The body must be complete: a stream that ends before `Content-Length` bytes have been
+    /// read fails with [`Error::UnexpectedEOB`](crate::Error::UnexpectedEOB) instead of
+    /// yielding a silently truncated record. For records produced by
+    /// `WarcReader::stream_records`, the record's `\r\n\r\n` terminator is also read and
+    /// verified.
+    ///
     /// # Errors
     ///
-    /// This method can fail if the underlying stream returns an error. If this happens, the
-    /// state of the stream is not guaranteed.
-    pub fn into_buffered(mut self) -> std::io::Result<Record<BufferedBody>> {
+    /// Fails if the underlying stream returns an error, ends before the declared body length,
+    /// or (for streamed WARC records) is not followed by a well-formed record terminator. On
+    /// failure, the state of the stream is not guaranteed.
+    pub fn into_buffered(mut self) -> Result<Record<BufferedBody>, WarcError> {
         // Size the buffer to the body, but cap the speculative allocation at `MB` so a bogus
         // `Content-Length` cannot force a huge up-front allocation.
         let capacity = usize::try_from(self.body.remaining_len())
             .unwrap_or(usize::MAX)
             .min(crate::MB);
         let mut buf = Vec::with_capacity(capacity);
-        self.body.read_to_end(&mut buf)?;
+        self.body
+            .read_to_end(&mut buf)
+            .map_err(WarcError::ReadData)?;
+
+        // `read_to_end` stops early only when the underlying stream is exhausted.
+        if self.body.remaining_len() > 0 {
+            return Err(WarcError::UnexpectedEOB);
+        }
+
+        self.body.consume_terminator()?;
 
         Ok(self.with_body_kind(BufferedBody(buf)))
     }
