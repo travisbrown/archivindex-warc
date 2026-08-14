@@ -32,14 +32,14 @@ mod streaming_trait {
     }
 
     /// An associated type indicating the body is streamed from a reader.
-    pub struct StreamingBody<'t, T: Read + 't> {
+    pub struct StreamingBody<'t, T: Read> {
         stream: &'t mut T,
         /// The declared `Content-Length`, unaffected by reads.
         declared_content_len: u64,
         /// The unread portion of the body, shared with the iterator that handed it out.
         remaining_len: &'t mut u64,
     }
-    impl<'t, T: Read + 't> StreamingBody<'t, T> {
+    impl<'t, T: Read> StreamingBody<'t, T> {
         pub(crate) fn new(stream: &'t mut T, remaining_len: &'t mut u64) -> StreamingBody<'t, T> {
             StreamingBody {
                 stream,
@@ -53,13 +53,13 @@ mod streaming_trait {
             *self.remaining_len
         }
     }
-    impl<'t, T: Read + 't> BodyKind for StreamingBody<'t, T> {
+    impl<'t, T: Read> BodyKind for StreamingBody<'t, T> {
         fn content_length(&self) -> u64 {
             self.declared_content_len
         }
     }
 
-    impl<'t, T: Read + 't> Read for StreamingBody<'t, T> {
+    impl<'t, T: Read> Read for StreamingBody<'t, T> {
         fn read(&mut self, data: &mut [u8]) -> std::io::Result<usize> {
             let max_read = std::cmp::min(data.len(), *self.remaining_len as usize);
             self.stream.read(&mut data[..max_read]).inspect(|&n| {
@@ -570,7 +570,7 @@ impl Record<EmptyBody> {
 
     /// Add a streaming body to this record, whose expected size may not match the actual stream
     /// length.
-    pub fn add_fixed_stream<'r, R: Read + 'r>(
+    pub fn add_fixed_stream<'r, R: Read>(
         self,
         stream: &'r mut R,
         len: &'r mut u64,
@@ -681,7 +681,7 @@ impl Record<BufferedBody> {
     }
 }
 
-impl<'t, T: Read + 't> Record<StreamingBody<'t, T>> {
+impl<'t, T: Read> Record<StreamingBody<'t, T>> {
     /// Returns a record with a buffered body by collecting the streaming body.
     ///
     /// # Errors
@@ -717,7 +717,7 @@ impl<'t, T: Read + 't> Record<StreamingBody<'t, T>> {
     }
 }
 
-impl<'t, T: Read + 't> Read for Record<StreamingBody<'t, T>> {
+impl<'t, T: Read> Read for Record<StreamingBody<'t, T>> {
     fn read(&mut self, dst: &mut [u8]) -> Result<usize, std::io::Error> {
         self.body.read(dst)
     }
