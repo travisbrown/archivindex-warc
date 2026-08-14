@@ -107,3 +107,33 @@ impl<S: AsRef<str>> From<S> for WarcHeader {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// The `with_serde` derives round-trip headers through their string names.
+    #[cfg(feature = "with_serde")]
+    #[test]
+    fn serde_round_trip() {
+        use super::WarcHeader;
+
+        for header in [
+            WarcHeader::ContentLength,
+            WarcHeader::TargetURI,
+            WarcHeader::Unknown("x-custom".to_string()),
+        ] {
+            let encoded = serde_json::to_string(&header).unwrap();
+            assert_eq!(encoded, format!("\"{header}\""));
+            assert_eq!(
+                serde_json::from_str::<WarcHeader>(&encoded).unwrap(),
+                header
+            );
+        }
+
+        // Deserialization goes through `From<String>`, so names are normalized like any
+        // other header-name conversion.
+        assert_eq!(
+            serde_json::from_str::<WarcHeader>("\"WARC-Type\"").unwrap(),
+            WarcHeader::WarcType
+        );
+    }
+}
