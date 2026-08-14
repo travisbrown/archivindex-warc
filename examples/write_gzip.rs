@@ -33,7 +33,7 @@ fn main() -> Result<(), std::io::Error> {
 
     let mut file = WarcWriter::from_path_gzip("warc_example.warc.gz")?;
 
-    let bytes_written = file.write_raw(headers, &body)?;
+    let bytes_written = file.write_raw(&headers, &body)?;
 
     // NB: the compression stream must be finish()ed, or the file will be truncated
     let gzip_stream = file.into_inner()?;

@@ -16,21 +16,21 @@ pub struct WarcWriter<W> {
 
 impl<W: Write> WarcWriter<W> {
     /// Create a new writer.
-    pub fn new(w: W) -> Self {
-        WarcWriter { writer: w }
+    pub const fn new(w: W) -> Self {
+        Self { writer: w }
     }
 
     /// Write a single record.
     ///
     /// The number of bytes written is returned upon success.
     pub fn write(&mut self, record: &Record<BufferedBody>) -> io::Result<usize> {
-        self.write_raw(record.to_raw_header(), &record.body())
+        self.write_raw(&record.to_raw_header(), &record.body())
     }
 
     /// Write a single raw record.
     ///
     /// The number of bytes written is returned upon success.
-    pub fn write_raw<B>(&mut self, headers: RawRecordHeader, body: &B) -> io::Result<usize>
+    pub fn write_raw<B>(&mut self, headers: &RawRecordHeader, body: &B) -> io::Result<usize>
     where
         B: AsRef<[u8]>,
     {
@@ -38,7 +38,7 @@ impl<W: Write> WarcWriter<W> {
 
         // Validate the whole header block against the body it frames before emitting anything,
         // so that a rejected record leaves no partial bytes in the output.
-        validate_raw_header(&headers, body.len() as u64).map_err(invalid_input)?;
+        validate_raw_header(headers, body.len() as u64).map_err(invalid_input)?;
 
         let writer = &mut self.writer;
         let mut bytes_written = 0;
@@ -54,7 +54,7 @@ impl<W: Write> WarcWriter<W> {
         emit(headers.version.as_bytes())?;
         emit(b"\r\n")?;
 
-        for (token, value) in headers.as_ref().iter() {
+        for (token, value) in headers.as_ref() {
             emit(token.to_string().as_bytes())?;
             emit(b": ")?;
             emit(value)?;
@@ -123,7 +123,7 @@ impl WarcWriter<BufWriter<fs::File>> {
             .open(&path)?;
         let writer = BufWriter::with_capacity(MB, file);
 
-        Ok(WarcWriter::new(writer))
+        Ok(Self::new(writer))
     }
 }
 
@@ -147,7 +147,7 @@ impl WarcWriter<BufWriter<GzipWriter<std::fs::File>>> {
         let gzip_stream = GzipWriter::new(file)?;
         let writer = BufWriter::with_capacity(MB, gzip_stream);
 
-        Ok(WarcWriter::new(writer))
+        Ok(Self::new(writer))
     }
 }
 
@@ -218,7 +218,7 @@ mod write_raw_tests {
 
     /// Assert that writing the given raw header block fails with `InvalidInput` and emits no
     /// bytes.
-    fn assert_rejected(headers: RawRecordHeader) {
+    fn assert_rejected(headers: &RawRecordHeader) {
         let mut writer = WarcWriter::new(Vec::new());
         let error = writer
             .write_raw(headers, b"body!")
@@ -237,21 +237,21 @@ mod write_raw_tests {
             WarcHeader::TargetURI,
             b"https://a/\r\nwarc-type: evil".to_vec(),
         );
-        assert_rejected(injected_value);
+        assert_rejected(&injected_value);
 
         let mut invalid_name = valid_headers();
         invalid_name
             .as_mut()
             .insert(WarcHeader::Unknown("evil name".to_string()), b"v".to_vec());
-        assert_rejected(invalid_name);
+        assert_rejected(&invalid_name);
 
         let mut injected_version = valid_headers();
         injected_version.version = "1.1\r\nevil: x".to_owned();
-        assert_rejected(injected_version);
+        assert_rejected(&injected_version);
 
         // The block the three are derived from is written without complaint.
         let mut writer = WarcWriter::new(Vec::new());
-        writer.write_raw(valid_headers(), b"body!").unwrap();
+        writer.write_raw(&valid_headers(), b"body!").unwrap();
     }
 
     /// Typed setters that bypass `set_header` are caught when the record is written.
@@ -279,7 +279,7 @@ mod write_raw_tests {
 
         let (headers, body) = record.into_raw_parts();
         let mut raw_writer = WarcWriter::new(Vec::new());
-        let raw_len = raw_writer.write_raw(headers, &body).unwrap();
+        let raw_len = raw_writer.write_raw(&headers, &body).unwrap();
 
         assert_eq!(record_writer.writer, raw_writer.writer);
         assert_eq!(record_len, raw_len);
@@ -388,7 +388,7 @@ mod write_raw_tests {
         };
 
         let mut writer = WarcWriter::new(TrickleWriter(Vec::new()));
-        let bytes_written = writer.write_raw(headers, b"12345").unwrap();
+        let bytes_written = writer.write_raw(&headers, b"12345").unwrap();
 
         // The field order follows the header map's iteration order, so check the lines
         // rather than one fixed serialization of the block.
@@ -411,14 +411,14 @@ mod write_raw_tests {
         wrong_length
             .as_mut()
             .insert(WarcHeader::ContentLength, b"99".to_vec());
-        assert_rejected(wrong_length);
+        assert_rejected(&wrong_length);
 
         let mut no_length = valid_headers();
         no_length.as_mut().shift_remove(&WarcHeader::ContentLength);
-        assert_rejected(no_length);
+        assert_rejected(&no_length);
 
         let mut writer = WarcWriter::new(Vec::new());
-        writer.write_raw(valid_headers(), b"body!").unwrap();
+        writer.write_raw(&valid_headers(), b"body!").unwrap();
     }
 }
 
@@ -453,22 +453,22 @@ mod from_path_tests {
 
         let mut writer = WarcWriter::from_path(&path).unwrap();
         writer
-            .write_raw(record_with_body(first_body), &first_body)
+            .write_raw(&record_with_body(first_body), &first_body)
             .unwrap();
         writer.into_inner().unwrap();
 
         let mut writer = WarcWriter::from_path(&path).unwrap();
         writer
-            .write_raw(record_with_body(second_body), &second_body)
+            .write_raw(&record_with_body(second_body), &second_body)
             .unwrap();
         writer.into_inner().unwrap();
 
         let mut expected_writer = WarcWriter::new(Vec::new());
         expected_writer
-            .write_raw(record_with_body(first_body), &first_body)
+            .write_raw(&record_with_body(first_body), &first_body)
             .unwrap();
         expected_writer
-            .write_raw(record_with_body(second_body), &second_body)
+            .write_raw(&record_with_body(second_body), &second_body)
             .unwrap();
 
         assert_eq!(std::fs::read(&path).unwrap(), expected_writer.writer);
@@ -485,7 +485,7 @@ mod from_path_tests {
 
         for body in [&first_body, &second_body] {
             let mut writer = WarcWriter::from_path_gzip(&path).unwrap();
-            writer.write_raw(record_with_body(body), body).unwrap();
+            writer.write_raw(&record_with_body(body), body).unwrap();
             // The compression stream must be finish()ed, or the member will be truncated.
             let gzip_stream = writer
                 .into_inner()

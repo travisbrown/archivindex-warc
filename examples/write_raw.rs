@@ -33,7 +33,7 @@ fn main() -> Result<(), std::io::Error> {
 
     let mut file = WarcWriter::from_path("warc_example.warc")?;
 
-    let bytes_written = file.write_raw(headers, &body)?;
+    let bytes_written = file.write_raw(&headers, &body)?;
 
     println!("{} bytes written.", bytes_written);
 
