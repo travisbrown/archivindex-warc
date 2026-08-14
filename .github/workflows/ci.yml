@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  format:
+    name: Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - name: Check library formatting
+        run: cargo +nightly fmt --all -- --check
+      - name: Check validator formatting
+        run: cargo +nightly fmt --manifest-path validator/Cargo.toml --all -- --check
+
+  build:
+    name: Build, test, lint, and document
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            validator -> target
+      - name: Lint library
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Lint validator
+        run: >-
+          cargo clippy --locked --manifest-path validator/Cargo.toml
+          --all-targets --all-features -- -D warnings
+      - name: Check documentation
+        run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Build library targets
+        run: cargo build --all-targets --all-features
+      - name: Build validator
+        run: >-
+          cargo build --locked --manifest-path validator/Cargo.toml
+          --all-targets --all-features
+      - name: Test library with all features
+        run: cargo test --all-features
+      - name: Test library without default features
+        run: cargo test --no-default-features
+      - name: Test validator
+        run: >-
+          cargo test --locked --manifest-path validator/Cargo.toml
+          --all-features
+      - name: Run examples
+        run: ./examples/run.sh
+
+  msrv:
+    name: Rust 1.85 compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            validator -> target
+      - name: Check library
+        run: cargo check --all-targets --all-features
+      - name: Check validator
+        run: >-
+          cargo check --locked --manifest-path validator/Cargo.toml
+          --all-targets --all-features
+
+  platforms:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            validator -> target
+      - name: Test library
+        run: cargo test --all-features
+      - name: Test validator
+        run: >-
+          cargo test --locked --manifest-path validator/Cargo.toml
+          --all-features
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate library coverage
+        run: >-
+          cargo llvm-cov --all-features --lcov
+          --output-path lcov.info
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # Fork pull requests do not have access to the token.
+          fail_ci_if_error: false
