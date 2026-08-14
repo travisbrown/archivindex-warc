@@ -24,6 +24,11 @@ pub enum Error {
     /// invalid.
     #[error("Read further than expected.")]
     ReadOverflow,
+    /// The record's declared `Content-Length` is too large for its body to be buffered in
+    /// memory on this platform. Such a record may still be readable with
+    /// `WarcReader::stream_records`, which does not buffer bodies.
+    #[error("Record body too large to buffer.")]
+    BodyTooLarge,
     /// The end of the record's body was found unexpectedly.
     #[error("Unexpected end of body.")]
     UnexpectedEOB,
@@ -79,6 +84,11 @@ mod tests {
             ),
             (Error::ReadData(io), "Error reading data source.", true),
             (Error::ReadOverflow, "Read further than expected.", false),
+            (
+                Error::BodyTooLarge,
+                "Record body too large to buffer.",
+                false,
+            ),
             (Error::UnexpectedEOB, "Unexpected end of body.", false),
             (
                 Error::MalformedVersion("0.9".to_string()),
