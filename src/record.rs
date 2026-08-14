@@ -485,8 +485,8 @@ impl<T: BodyKind> Record<T> {
     }
 
     /// Return the WARC-Date header for this record.
-    pub const fn date(&self) -> &DateTime<Utc> {
-        &self.record_date
+    pub const fn date(&self) -> DateTime<Utc> {
+        self.record_date
     }
 
     /// Set the WARC-Date header for this record.
@@ -1075,13 +1075,13 @@ mod record_tests {
         record.set_truncated_type(TruncatedType::Length);
 
         let record_id = record.warc_id().to_owned();
-        let date = *record.date();
+        let date = record.date();
 
         let stripped = record.strip_body();
 
         assert_eq!(stripped.content_length(), 0);
         assert_eq!(stripped.warc_id(), record_id);
-        assert_eq!(stripped.date(), &date);
+        assert_eq!(stripped.date(), date);
         assert_eq!(stripped.warc_type(), &RecordType::Resource);
         assert_eq!(stripped.truncated_type(), &Some(TruncatedType::Length));
         assert_eq!(
@@ -1126,8 +1126,8 @@ mod record_tests {
         assert_eq!(record.content_length(), 0);
         assert_eq!(record.warc_version(), crate::WarcVersion::V1_1);
         assert_eq!(record.warc_type(), &RecordType::Resource);
-        assert!(record.date() > &before);
-        assert!(record.date() < &after);
+        assert!(record.date() > before);
+        assert!(record.date() < after);
     }
 
     #[test]
