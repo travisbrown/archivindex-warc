@@ -510,7 +510,7 @@ impl<T: BodyKind> Record<T> {
             WarcHeader::Truncated => {
                 let old_type = self.truncated_type.take();
                 self.truncated_type = Some(TruncatedType::from(&value));
-                Ok(old_type.map(|old| (Cow::Owned(old.to_string()))))
+                Ok(old_type.map(|old| Cow::Owned(old.to_string())))
             }
             WarcHeader::ContentLength => {
                 let content_length = self.body.content_length();
