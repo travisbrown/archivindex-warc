@@ -49,11 +49,11 @@ fn main() -> std::io::Result<()> {
 
 fn has_matching_filename(u: &str, matches: &[String]) -> bool {
     let url = url::Url::parse(u).expect("Target URI is not a URI!?");
-    let iter = match url.path_segments() {
+    let mut iter = match url.path_segments() {
         None => return false,
         Some(it) => it,
     };
-    let last_segment = match iter.last() {
+    let last_segment = match iter.next_back() {
         None => return false,
         Some(s) => s.to_string(),
     };
