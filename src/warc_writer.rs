@@ -82,12 +82,23 @@ impl<W: Write> WarcWriter<BufWriter<W>> {
     ///
     /// This method is necessary to be called at the end of a GZIP-compressed stream. An extra call
     /// is needed to flush the buffer of data, and write a trailer to the output stream.
-    ///
-    /// ```ignore
-    /// let gzip_stream = writer.into_inner()?;
-    /// gzip_writer.finish().into_result()?;
-    /// ```
-    ///
+    #[cfg_attr(
+        feature = "gzip",
+        doc = r#"
+
+```
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let dir = tempfile::tempdir()?;
+let writer = warc::WarcWriter::from_path_gzip(dir.path().join("example.warc.gz"))?;
+// ... write records ...
+let gzip_stream = writer
+    .into_inner()
+    .map_err(std::io::IntoInnerError::into_error)?;
+gzip_stream.finish().into_result()?;
+# Ok(())
+# }
+```"#
+    )]
     pub fn into_inner(self) -> Result<W, std::io::IntoInnerError<BufWriter<W>>> {
         self.writer.into_inner()
     }
