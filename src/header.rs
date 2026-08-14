@@ -53,11 +53,13 @@ impl WarcHeader {
             header => header,
         }
     }
-}
 
-impl Display for WarcHeader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let stringified = match self {
+    /// The header's serialized field name: the standard lower-case name for known headers,
+    /// or the stored name for unknown ones. Borrowing this beats `to_string` on hot write
+    /// paths, which would otherwise allocate per header line.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
             Self::ContentLength => "content-length",
             Self::ContentType => "content-type",
             Self::BlockDigest => "warc-block-digest",
@@ -80,8 +82,13 @@ impl Display for WarcHeader {
             Self::WarcType => "warc-type",
             Self::WarcInfoID => "warc-warcinfo-id",
             Self::Unknown(string) => string,
-        };
-        write!(f, "{stringified}")
+        }
+    }
+}
+
+impl Display for WarcHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
     }
 }
 

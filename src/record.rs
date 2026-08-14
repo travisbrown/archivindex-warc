@@ -672,6 +672,38 @@ impl<T: BodyKind> Record<T> {
         }
     }
 
+    /// Visit every header line of this record as a `(name, value)` pair, in the same
+    /// serialization order [`to_raw_header`](Self::to_raw_header) produces, borrowing stored
+    /// header values instead of cloning them into a raw block.
+    ///
+    /// The derived `WARC-Date` and `Content-Length` values are materialized once per call;
+    /// every other name and value is borrowed from the record.
+    pub(crate) fn visit_header_lines<E, F>(&self, mut visit: F) -> Result<(), E>
+    where
+        F: FnMut(&WarcHeader, &[u8]) -> Result<(), E>,
+    {
+        let date = self
+            .record_date
+            .to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let content_length = self.body.content_length().to_string();
+
+        visit(&WarcHeader::WarcType, self.record_type.as_str().as_bytes())?;
+        visit(&WarcHeader::RecordID, self.record_id.as_bytes())?;
+        visit(&WarcHeader::Date, date.as_bytes())?;
+        if let Some(truncated_type) = &self.truncated_type {
+            visit(&WarcHeader::Truncated, truncated_type.as_str().as_bytes())?;
+        }
+        for (header, value) in self.headers.as_ref() {
+            visit(header, value)?;
+        }
+        visit(&WarcHeader::ContentLength, content_length.as_bytes())?;
+        for value in &self.headers.concurrent_to {
+            visit(&WarcHeader::ConcurrentTo, value)?;
+        }
+
+        Ok(())
+    }
+
     /// Build the raw header block for this record without consuming it.
     ///
     /// Headers appear in conventional WARC order: record-level headers first,
