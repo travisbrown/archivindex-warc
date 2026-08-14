@@ -107,17 +107,11 @@ fn check_header_block_end(remainder: &[u8]) -> Result<(), Error> {
         .position(|&byte| byte == b'\r' || byte == b'\n')
         .unwrap_or(remainder.len());
 
-    Err(Error::ParseHeaders(nom::Err::Error((
-        remainder[..line_len].to_vec(),
-        nom::error::ErrorKind::Verify,
-    ))))
-}
-
-/// The error reported for a record whose body is not followed by the `\r\n\r\n` terminator.
-fn malformed_terminator() -> Error {
-    Error::ParseHeaders(nom::Err::Failure((
-        b"\r\n\r\n".to_vec(),
-        nom::error::ErrorKind::Tag,
+    Err(Error::ParseHeaders(nom::Err::Error(
+        nom::error::Error::new(
+            remainder[..line_len].to_vec(),
+            nom::error::ErrorKind::Verify,
+        ),
     )))
 }
 
@@ -153,8 +147,12 @@ fn read_header_block<R: BufRead>(
 /// A record without `Content-Length` cannot be framed: there is no way to know where its body
 /// ends, so the missing field is reported rather than defaulted.
 fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, usize), Error> {
-    let (remainder, (version, headers, expected_body_len)) = parser::headers(buffer)
-        .map_err(|e| Error::ParseHeaders(e.map(|inner| (inner.input.to_owned(), inner.code))))?;
+    let (remainder, (version, headers, expected_body_len)) =
+        parser::headers(buffer).map_err(|e| {
+            Error::ParseHeaders(
+                e.map(|inner| nom::error::Error::new(inner.input.to_owned(), inner.code)),
+            )
+        })?;
     check_header_block_end(remainder)?;
 
     let expected_body_len =
@@ -188,7 +186,7 @@ fn read_body<R: BufRead>(reader: &mut R, expected_body_len: usize) -> Result<Vec
             // The terminator is what separates one record from the next, so a body followed by
             // anything else has not been framed as the header block said it was.
             if &body_buffer[expected_body_len..] != b"\r\n\r\n" {
-                return Err(malformed_terminator());
+                return Err(Error::MalformedRecordTerminator);
             }
             body_buffer.truncate(expected_body_len);
             return Ok(body_buffer);
@@ -342,12 +340,10 @@ impl<R: BufRead> StreamingIter<'_, R> {
             Err(io) => return Err(Error::ReadData(io)),
         }
 
-        if &crlfs == b"\x0d\x0a\x0d\x0a" {
+        if &crlfs == b"\r\n\r\n" {
             Ok(())
         } else {
-            let synthetic_err: nom::Err<(Vec<u8>, nom::error::ErrorKind)> =
-                nom::Err::Failure((vec![0x0d, 0x0a, 0x0d, 0x0a], nom::error::ErrorKind::Tag));
-            Err(Error::ParseHeaders(synthetic_err))
+            Err(Error::MalformedRecordTerminator)
         }
     }
 
@@ -563,7 +559,7 @@ mod iter_raw_tests {
 
         let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
         match reader.next().unwrap() {
-            Err(Error::ParseHeaders(_)) => {}
+            Err(Error::MalformedRecordTerminator) => {}
             other => panic!(
                 "expected a parse error for an invalid record terminator, got {:?}",
                 other.map(|(headers, body)| (headers, String::from_utf8_lossy(&body).to_string()))
@@ -587,8 +583,8 @@ mod iter_raw_tests {
 
         let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
         match reader.next().unwrap() {
-            Err(Error::ParseHeaders(nom::Err::Error((input, _)))) => {
-                assert_eq!(input, b"bad header line without a colon".to_vec());
+            Err(Error::ParseHeaders(nom::Err::Error(inner))) => {
+                assert_eq!(inner.input, b"bad header line without a colon".to_vec());
             }
             other => panic!(
                 "expected a parse error naming the malformed line, got {:?}",

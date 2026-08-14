@@ -7,7 +7,7 @@ use crate::header::WarcHeader;
 #[derive(Debug)]
 pub enum Error {
     /// An error occured identifing or parsing headers.
-    ParseHeaders(nom::Err<(Vec<u8>, nom::error::ErrorKind)>),
+    ParseHeaders(nom::Err<nom::error::Error<Vec<u8>>>),
     /// A header required by the standard is missing from the record. The record was well-formed,
     /// but invalid.
     MissingHeader(WarcHeader),
@@ -30,6 +30,9 @@ pub enum Error {
         /// The length of the body the record actually carries.
         actual: u64,
     },
+    /// The `\r\n\r\n` terminator after the record's body was missing or malformed. The record
+    /// was read completely, but is invalid.
+    MalformedRecordTerminator,
 }
 
 impl fmt::Display for Error {
@@ -49,6 +52,7 @@ impl fmt::Display for Error {
                 "Content-Length declares {} bytes, but the body is {}.",
                 declared, actual
             ),
+            Error::MalformedRecordTerminator => write!(f, "Malformed record terminator."),
         }
     }
 }
