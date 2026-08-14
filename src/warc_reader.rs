@@ -116,6 +116,89 @@ fn check_header_block_end(remainder: &[u8]) -> Result<(), Error> {
     ))))
 }
 
+/// The error reported for a record whose body is not followed by the `\r\n\r\n` terminator.
+fn malformed_terminator() -> Error {
+    Error::ParseHeaders(nom::Err::Failure((
+        b"\r\n\r\n".to_vec(),
+        nom::error::ErrorKind::Tag,
+    )))
+}
+
+/// Read lines up to and including the blank line that terminates a header block.
+///
+/// Returns `None` on a clean end-of-stream at a record boundary.
+fn read_header_block<R: BufRead>(reader: &mut R) -> Option<Result<Vec<u8>, Error>> {
+    let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
+    loop {
+        let bytes_read = match reader.read_until(b'\n', &mut header_buffer) {
+            Err(io) => return Some(Err(Error::ReadData(io))),
+            Ok(len) => len,
+        };
+
+        if bytes_read == 0 {
+            return None;
+        }
+
+        if bytes_read == 2 && header_buffer.ends_with(b"\r\n") {
+            return Some(Ok(header_buffer));
+        }
+    }
+}
+
+/// Parse a raw header block into its headers and the expected body length.
+///
+/// A record without `Content-Length` cannot be framed: there is no way to know where its body
+/// ends, so the missing field is reported rather than defaulted.
+fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, usize), Error> {
+    let (remainder, (version, headers, expected_body_len)) = parser::headers(buffer)
+        .map_err(|e| Error::ParseHeaders(e.map(|inner| (inner.input.to_owned(), inner.code))))?;
+    check_header_block_end(remainder)?;
+
+    let expected_body_len =
+        expected_body_len.ok_or(Error::MissingHeader(WarcHeader::ContentLength))?;
+
+    let headers = RawRecordHeader {
+        version: version.to_owned(),
+        headers: collect_headers(headers),
+    };
+
+    Ok((headers, expected_body_len))
+}
+
+/// Read a record body of the given length, plus the `\r\n\r\n` record terminator.
+fn read_body<R: BufRead>(reader: &mut R, expected_body_len: usize) -> Result<Vec<u8>, Error> {
+    let mut body_buffer: Vec<u8> = Vec::with_capacity(MB);
+    let mut body_bytes_read = 0;
+    let maximum_read_range = expected_body_len + 4;
+    loop {
+        let bytes_read = match reader.read_until(b'\n', &mut body_buffer) {
+            Err(io) => return Err(Error::ReadData(io)),
+            Ok(len) => len,
+        };
+
+        body_bytes_read += bytes_read;
+
+        // we expect 4 characters (`\r\n\r\n`) after the body
+        if bytes_read == 2 && body_bytes_read == maximum_read_range {
+            // The terminator is what separates one record from the next, so a body followed by
+            // anything else has not been framed as the header block said it was.
+            if &body_buffer[expected_body_len..] != b"\r\n\r\n" {
+                return Err(malformed_terminator());
+            }
+            body_buffer.truncate(expected_body_len);
+            return Ok(body_buffer);
+        }
+
+        if bytes_read == 0 {
+            return Err(Error::UnexpectedEOB);
+        }
+
+        if body_bytes_read > maximum_read_range {
+            return Err(Error::ReadOverflow);
+        }
+    }
+}
+
 /// An iterator of raw records streamed from a reader. See `RawRecord` for more information.
 ///
 /// Every error this iterator returns is stream-level: it leaves the reader at an unspecified
@@ -135,91 +218,21 @@ impl<R: BufRead> RawRecordIter<R> {
 
     /// Read the next record; the `Iterator` impl wraps this with the fusing logic.
     fn next_record(&mut self) -> Option<<Self as Iterator>::Item> {
-        let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
-        let mut found_headers = false;
-        while !found_headers {
-            let bytes_read = match self.reader.read_until(b'\n', &mut header_buffer) {
-                Err(io) => return Some(Err(Error::ReadData(io))),
-                Ok(len) => len,
-            };
-
-            if bytes_read == 0 {
-                return None;
-            }
-
-            if bytes_read == 2 {
-                let last_two_chars = header_buffer.len() - 2;
-                if &header_buffer[last_two_chars..] == b"\r\n" {
-                    found_headers = true;
-                }
-            }
-        }
-
-        let headers_parsed = match parser::headers(&header_buffer) {
-            Err(e) => {
-                return Some(Err(Error::ParseHeaders(
-                    e.map(|inner| (inner.input.to_owned(), inner.code)),
-                )));
-            }
-            Ok((remainder, parsed)) => {
-                if let Err(e) = check_header_block_end(remainder) {
-                    return Some(Err(e));
-                }
-                parsed
-            }
-        };
-        let version_ref = headers_parsed.0;
-        let headers_ref = headers_parsed.1;
-        // A record without `Content-Length` cannot be framed: there is no way to know where
-        // its body ends.
-        let expected_body_len = match headers_parsed.2 {
-            Some(len) => len,
-            None => {
-                return Some(Err(Error::MissingHeader(WarcHeader::ContentLength)));
-            }
+        let header_buffer = match read_header_block(&mut self.reader)? {
+            Ok(buffer) => buffer,
+            Err(e) => return Some(Err(e)),
         };
 
-        let mut body_buffer: Vec<u8> = Vec::with_capacity(MB);
-        let mut found_body = false;
-        let mut body_bytes_read = 0;
-        let maximum_read_range = expected_body_len + 4;
-        while !found_body {
-            let bytes_read = match self.reader.read_until(b'\n', &mut body_buffer) {
-                Err(io) => return Some(Err(Error::ReadData(io))),
-                Ok(len) => len,
-            };
-
-            body_bytes_read += bytes_read;
-
-            // we expect 4 characters (\r\n\r\n) after the body
-            if bytes_read == 2 && body_bytes_read == maximum_read_range {
-                if &body_buffer[expected_body_len..] != b"\r\n\r\n" {
-                    let synthetic_err: nom::Err<(Vec<u8>, nom::error::ErrorKind)> =
-                        nom::Err::Failure((
-                            vec![0x0d, 0x0a, 0x0d, 0x0a],
-                            nom::error::ErrorKind::Tag,
-                        ));
-                    return Some(Err(Error::ParseHeaders(synthetic_err)));
-                }
-                found_body = true;
-            }
-
-            if bytes_read == 0 {
-                return Some(Err(Error::UnexpectedEOB));
-            }
-
-            if body_bytes_read > maximum_read_range {
-                return Some(Err(Error::ReadOverflow));
-            }
-        }
-
-        let body_ref = &body_buffer[..expected_body_len];
-
-        let headers = RawRecordHeader {
-            version: version_ref.to_owned(),
-            headers: collect_headers(headers_ref),
+        let (headers, expected_body_len) = match parse_header_block(&header_buffer) {
+            Ok(parsed) => parsed,
+            Err(e) => return Some(Err(e)),
         };
-        let body = body_ref.to_owned();
+
+        let body = match read_body(&mut self.reader, expected_body_len) {
+            Ok(body) => body,
+            Err(e) => return Some(Err(e)),
+        };
+
         Some(Ok((headers, body)))
     }
 }
@@ -349,61 +362,27 @@ impl<R: BufRead> StreamingIter<'_, R> {
             return Some(Err(e));
         }
 
-        let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
-        let mut found_headers = false;
-        while !found_headers {
-            let bytes_read = match self.reader.read_until(b'\n', &mut header_buffer) {
-                Err(io) => {
-                    self.finished = true;
-                    return Some(Err(Error::ReadData(io)));
-                }
-                Ok(len) => len,
-            };
-
-            if bytes_read == 0 {
+        let header_buffer = match read_header_block(self.reader) {
+            None => {
                 self.finished = true;
                 return None;
             }
-
-            if bytes_read == 2 {
-                let last_two_chars = header_buffer.len() - 2;
-                if &header_buffer[last_two_chars..] == b"\r\n" {
-                    found_headers = true;
-                }
+            Some(Ok(buffer)) => buffer,
+            Some(Err(e)) => {
+                self.finished = true;
+                return Some(Err(e));
             }
-        }
+        };
 
-        let headers_parsed = match parser::headers(&header_buffer) {
+        let (headers, expected_body_len) = match parse_header_block(&header_buffer) {
+            Ok(parsed) => parsed,
             Err(e) => {
                 self.finished = true;
-                return Some(Err(Error::ParseHeaders(
-                    e.map(|inner| (inner.input.to_owned(), inner.code)),
-                )));
-            }
-            Ok((remainder, parsed)) => {
-                if let Err(e) = check_header_block_end(remainder) {
-                    self.finished = true;
-                    return Some(Err(e));
-                }
-                parsed
+                return Some(Err(e));
             }
         };
-        let version_ref = headers_parsed.0;
-        let headers_ref = headers_parsed.1;
-        // A record without `Content-Length` cannot be framed: there is no way to know where
-        // its body ends.
-        self.current_item_size = match headers_parsed.2 {
-            Some(len) => len as u64,
-            None => {
-                self.finished = true;
-                return Some(Err(Error::MissingHeader(WarcHeader::ContentLength)));
-            }
-        };
+        self.current_item_size = expected_body_len as u64;
 
-        let headers = RawRecordHeader {
-            version: version_ref.to_owned(),
-            headers: collect_headers(headers_ref),
-        };
         match headers.try_into() {
             Ok(b) => {
                 let record: Record<_> = b;
