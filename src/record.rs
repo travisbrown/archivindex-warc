@@ -82,17 +82,20 @@ mod streaming_trait {
 ///
 /// It is guaranteed to be well-formed, but may not be valid according to the specification.
 ///
-/// Each named field is held at most once: when a parsed record repeats a field, the first
-/// occurrence is kept. This means repeated `WARC-Concurrent-To` fields, which the
-/// specification permits, are reduced to the first one.
+/// Each named field is held at most once in `headers`: parsing a record that repeats a field
+/// fails with `Error::DuplicateHeader`. The one exception is `WARC-Concurrent-To`, the only
+/// field the specification allows to repeat: all of its values are held in `concurrent_to`.
 ///
 /// Use the `Display` trait to generate the formatted representation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RawRecordHeader {
     /// The WARC standard version this record reports conformance to.
     pub version: String,
-    /// All headers that are part of this record, in insertion order.
+    /// All headers other than `WARC-Concurrent-To` that are part of this record, in insertion
+    /// order.
     pub headers: IndexMap<WarcHeader, Vec<u8>>,
+    /// The values of the repeatable `WARC-Concurrent-To` header, in order of appearance.
+    pub concurrent_to: Vec<Vec<u8>>,
 }
 
 impl AsRef<IndexMap<WarcHeader, Vec<u8>>> for RawRecordHeader {
@@ -206,11 +209,25 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
         let truncated_type = take_utf8_header(&mut headers, &WarcHeader::Truncated)?
             .map(|value| TruncatedType::from(&value));
 
+        // Tolerate raw headers constructed by hand with `WARC-Concurrent-To` in the map: all
+        // values of the repeatable field belong in `concurrent_to`.
+        if let Some(value) = headers.as_mut().shift_remove(&WarcHeader::ConcurrentTo) {
+            headers.concurrent_to.insert(0, value);
+        }
+
         // `Record` guarantees UTF-8 header values; reject the record otherwise.
         for (header, value) in headers.as_ref().iter() {
             if std::str::from_utf8(value).is_err() {
                 return Err(WarcError::MalformedHeader(
                     header.clone(),
+                    "not a UTF-8 string".to_string(),
+                ));
+            }
+        }
+        for value in &headers.concurrent_to {
+            if std::str::from_utf8(value).is_err() {
+                return Err(WarcError::MalformedHeader(
+                    WarcHeader::ConcurrentTo,
                     "not a UTF-8 string".to_string(),
                 ));
             }
@@ -234,6 +251,14 @@ impl std::fmt::Display for RawRecordHeader {
         write!(w, "WARC/{}\r\n", self.version)?;
         for (key, value) in self.as_ref().iter() {
             write!(w, "{}: {}\r\n", key, String::from_utf8_lossy(value))?;
+        }
+        for value in &self.concurrent_to {
+            write!(
+                w,
+                "{}: {}\r\n",
+                WarcHeader::ConcurrentTo,
+                String::from_utf8_lossy(value)
+            )?;
         }
         write!(w, "\r\n")?;
 
@@ -433,6 +458,12 @@ impl<T: BodyKind> Record<T> {
                 .truncated_type
                 .as_ref()
                 .map(|truncated_type| Cow::Owned(truncated_type.to_string())),
+            WarcHeader::ConcurrentTo => self.headers.concurrent_to.first().map(|value| {
+                Cow::Borrowed(
+                    std::str::from_utf8(value)
+                        .expect("invariant violation: record header value is not UTF-8"),
+                )
+            }),
             _ => self.headers.as_ref().get(&header).map(|value| {
                 Cow::Borrowed(
                     std::str::from_utf8(value)
@@ -447,6 +478,9 @@ impl<T: BodyKind> Record<T> {
     /// `Content-Length` is derived from the body and cannot be changed here: an equivalent
     /// value is accepted and returns the canonical previous value, while a mismatch is an
     /// error.
+    ///
+    /// Setting `WARC-Concurrent-To` replaces every value of the repeatable field, returning
+    /// the first previous value; to append a value instead, use `add_concurrent_to`.
     ///
     /// # Errors
     ///
@@ -484,6 +518,16 @@ impl<T: BodyKind> Record<T> {
                 self.truncated_type = Some(TruncatedType::from(&value));
                 Ok(old_type.map(|old| Cow::Owned(old.to_string())))
             }
+            WarcHeader::ConcurrentTo => {
+                let old_values =
+                    std::mem::replace(&mut self.headers.concurrent_to, vec![value.into_bytes()]);
+                Ok(old_values.into_iter().next().map(|old| {
+                    Cow::Owned(
+                        String::from_utf8(old)
+                            .expect("invariant violation: record header value is not UTF-8"),
+                    )
+                }))
+            }
             WarcHeader::ContentLength => {
                 let content_length = self.body.content_length();
                 if Record::parse_content_length(&value)? != content_length {
@@ -506,6 +550,22 @@ impl<T: BodyKind> Record<T> {
                     )
                 })),
         }
+    }
+
+    /// Return all values of the repeatable `WARC-Concurrent-To` header, in order of appearance.
+    pub fn concurrent_to(&self) -> impl Iterator<Item = &str> {
+        self.headers.concurrent_to.iter().map(|value| {
+            std::str::from_utf8(value)
+                .expect("invariant violation: record header value is not UTF-8")
+        })
+    }
+
+    /// Add a `WARC-Concurrent-To` header to this record, keeping any values already present.
+    ///
+    /// `WARC-Concurrent-To` is the only header the specification allows to repeat. To replace
+    /// the existing values instead, use `set_header`.
+    pub fn add_concurrent_to<S: Into<String>>(&mut self, id: S) {
+        self.headers.concurrent_to.push(id.into().into_bytes());
     }
 
     /// Return the Content-Length header for this record.
@@ -568,6 +628,7 @@ impl<T: BodyKind> Record<T> {
         RawRecordHeader {
             version: self.headers.version.clone(),
             headers,
+            concurrent_to: self.headers.concurrent_to.clone(),
         }
     }
 }
@@ -646,6 +707,7 @@ impl<T: BodyKind + Default> Default for Record<T> {
             headers: RawRecordHeader {
                 version: "1.1".to_string(),
                 headers: IndexMap::new(),
+                concurrent_to: Vec::new(),
             },
             record_date: Utc::now(),
             record_id: Record::generate_record_id(),
@@ -1038,6 +1100,40 @@ mod record_tests {
         );
     }
 
+    /// `WARC-Concurrent-To` is the one repeatable header: `add_concurrent_to` appends,
+    /// `header` reads the first value, and `set_header` replaces every value.
+    #[test]
+    fn concurrent_to_repeats() {
+        let mut record = Record::<BufferedBody>::default();
+        assert!(record.header(WarcHeader::ConcurrentTo).is_none());
+
+        record.add_concurrent_to("<urn:test:concurrent:record-1>");
+        record.add_concurrent_to("<urn:test:concurrent:record-2>");
+        assert_eq!(
+            record.concurrent_to().collect::<Vec<_>>(),
+            vec![
+                "<urn:test:concurrent:record-1>",
+                "<urn:test:concurrent:record-2>",
+            ]
+        );
+        assert_eq!(
+            record.header(WarcHeader::ConcurrentTo).unwrap(),
+            "<urn:test:concurrent:record-1>"
+        );
+
+        assert_eq!(
+            record
+                .set_header(WarcHeader::ConcurrentTo, "<urn:test:concurrent:record-3>")
+                .unwrap()
+                .unwrap(),
+            "<urn:test:concurrent:record-1>"
+        );
+        assert_eq!(
+            record.concurrent_to().collect::<Vec<_>>(),
+            vec!["<urn:test:concurrent:record-3>"]
+        );
+    }
+
     /// The truncation reason is a header like any other, so it is readable through the
     /// untyped accessor as well as the typed one.
     #[test]
@@ -1346,6 +1442,7 @@ mod raw_tests {
         let headers = RawRecordHeader {
             version: "1.0".to_owned(),
             headers: IndexMap::new(),
+            concurrent_to: Vec::new(),
         };
 
         assert_eq!(headers.as_ref().len(), 0);
@@ -1361,6 +1458,7 @@ mod raw_tests {
             )]
             .into_iter()
             .collect(),
+            concurrent_to: Vec::new(),
         };
 
         assert_eq!(headers.as_ref().len(), 1);
@@ -1381,6 +1479,7 @@ mod raw_tests {
             ]
             .into_iter()
             .collect(),
+            concurrent_to: Vec::new(),
         };
 
         assert!(Record::<EmptyBody>::try_from(headers).is_ok());
@@ -1400,6 +1499,7 @@ mod raw_tests {
             ]
             .into_iter()
             .collect(),
+            concurrent_to: Vec::new(),
         };
 
         assert!(Record::<EmptyBody>::try_from(headers).is_err());
@@ -1419,6 +1519,7 @@ mod raw_tests {
             ]
             .into_iter()
             .collect(),
+            concurrent_to: Vec::new(),
         };
 
         assert!(Record::<EmptyBody>::try_from(headers).is_err());
@@ -1435,6 +1536,7 @@ mod raw_tests {
             ]
             .into_iter()
             .collect(),
+            concurrent_to: Vec::new(),
         };
 
         assert!(Record::<EmptyBody>::try_from(headers).is_err());
@@ -1454,6 +1556,7 @@ mod raw_tests {
             ]
             .into_iter()
             .collect(),
+            concurrent_to: Vec::new(),
         };
 
         assert!(Record::<EmptyBody>::try_from(headers).is_err());
@@ -1474,6 +1577,7 @@ mod raw_tests {
             ]
             .into_iter()
             .collect(),
+            concurrent_to: Vec::new(),
         };
         headers.as_mut().insert(header, value);
         headers
@@ -1536,6 +1640,7 @@ mod raw_tests {
             ]
             .into_iter()
             .collect(),
+            concurrent_to: Vec::new(),
         };
 
         let record = Record::<EmptyBody>::try_from(headers).unwrap();
@@ -1565,6 +1670,7 @@ mod raw_tests {
             headers: vec![(WarcHeader::WarcType, b"resource".to_vec())]
                 .into_iter()
                 .collect(),
+            concurrent_to: Vec::new(),
         };
 
         assert_eq!(
@@ -1583,6 +1689,7 @@ mod raw_tests {
         let headers = RawRecordHeader {
             version: "1.0".to_owned(),
             headers: header_entries.into_iter().collect(),
+            concurrent_to: Vec::new(),
         };
 
         let output = headers.to_string();
@@ -1681,6 +1788,7 @@ mod builder_tests {
             )]
             .into_iter()
             .collect(),
+            concurrent_to: Vec::new(),
         };
 
         assert_eq!(headers.as_ref().len(), 1);
@@ -1701,6 +1809,7 @@ mod builder_tests {
             ]
             .into_iter()
             .collect(),
+            concurrent_to: Vec::new(),
         };
 
         assert!(Record::<EmptyBody>::try_from(headers).is_ok());
