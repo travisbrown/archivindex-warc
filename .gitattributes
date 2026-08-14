@@ -1,0 +1,3 @@
+tests/data/warcio/*.warc -diff -text
+tests/data/warcio/*.gz -diff -text
+tests/data/warcio/*.bad -diff -text
