@@ -1,5 +1,5 @@
 use crate::header::WarcHeader;
-use crate::{BufferedBody, RawRecordHeader, Record};
+use crate::{BufferedBody, MB, RawRecordHeader, Record};
 
 use std::fs;
 use std::io;
@@ -8,8 +8,6 @@ use std::path::Path;
 
 #[cfg(feature = "gzip")]
 use libflate::gzip::Encoder as GzipWriter;
-
-const MB: usize = 1_048_576;
 
 /// A writer which writes records to an output stream.
 pub struct WarcWriter<W> {
