@@ -9,6 +9,7 @@ license = "MIT"
 authors = ["Reza Akhavan <reza@akhavan.me>"]
 keywords = ["warc", "web", "archive"]
 edition = "2024"
+rust-version = "1.85"
 
 [dependencies]
 chrono = "0.4"
