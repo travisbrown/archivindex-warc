@@ -1,5 +1,6 @@
-use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
 use std::fmt::{Display, Formatter};
+
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
 
 use crate::{Error, WarcHeader, WarcVersion};
 

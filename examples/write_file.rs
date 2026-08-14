@@ -1,7 +1,6 @@
 mod common;
 
 use chrono::prelude::*;
-
 use warc::{Record, RecordType, WarcHeader, WarcWriter};
 
 fn main() -> Result<(), std::io::Error> {

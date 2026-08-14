@@ -1,7 +1,5 @@
 use chrono::prelude::*;
-
-use warc::WarcHeader;
-use warc::{RawRecordHeader, Record, RecordType};
+use warc::{RawRecordHeader, Record, RecordType, WarcHeader};
 
 fn main() {
     let body = "hello warc! 👋".to_owned();

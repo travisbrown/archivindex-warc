@@ -1,9 +1,11 @@
-use chrono::Utc;
-use indexmap::IndexMap;
 use std::borrow::Cow;
 use std::fmt;
 use std::io::Read;
 
+use chrono::Utc;
+use indexmap::IndexMap;
+use streaming_trait::BodyKind;
+pub use streaming_trait::{BufferedBody, EmptyBody, StreamingBody};
 use uuid::Uuid;
 
 use crate::Error as WarcError;
@@ -12,9 +14,6 @@ use crate::record_type::RecordType;
 use crate::truncated_type::TruncatedType;
 use crate::version::WarcVersion;
 use crate::warc_date::WarcDate;
-
-use streaming_trait::BodyKind;
-pub use streaming_trait::{BufferedBody, EmptyBody, StreamingBody};
 
 mod streaming_trait {
     use std::io::Read;
@@ -1015,10 +1014,10 @@ impl RecordBuilder {
 
 #[cfg(test)]
 mod record_tests {
+    use chrono::prelude::*;
+
     use crate::header::WarcHeader;
     use crate::{BufferedBody, EmptyBody, Error, Record, RecordType, TruncatedType};
-
-    use chrono::prelude::*;
 
     /// Stripping the body keeps every other field of the record and zeroes its length.
     #[test]
@@ -1566,11 +1565,12 @@ mod record_tests {
 
 #[cfg(test)]
 mod raw_tests {
-    use crate::header::WarcHeader;
-    use crate::{EmptyBody, Error, RawRecordHeader, Record, RecordType, TruncatedType};
+    use std::convert::TryFrom;
 
     use indexmap::IndexMap;
-    use std::convert::TryFrom;
+
+    use crate::header::WarcHeader;
+    use crate::{EmptyBody, Error, RawRecordHeader, Record, RecordType, TruncatedType};
 
     #[test]
     fn create() {
@@ -1852,12 +1852,12 @@ mod raw_tests {
 
 #[cfg(test)]
 mod builder_tests {
+    use std::convert::TryFrom;
+
     use crate::header::WarcHeader;
     use crate::{
         EmptyBody, Error, RawRecordHeader, Record, RecordBuilder, RecordType, TruncatedType,
     };
-
-    use std::convert::TryFrom;
 
     #[test]
     fn default() {

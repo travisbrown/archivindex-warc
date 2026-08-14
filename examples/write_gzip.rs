@@ -1,9 +1,7 @@
 mod common;
 
 use chrono::prelude::*;
-
-use warc::WarcHeader;
-use warc::{RawRecordHeader, Record, RecordType, WarcWriter};
+use warc::{RawRecordHeader, Record, RecordType, WarcHeader, WarcWriter};
 
 fn main() -> Result<(), std::io::Error> {
     let date = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
