@@ -1,0 +1,187 @@
+mod external;
+mod install;
+mod model;
+mod warc_validator;
+mod warcat_validator;
+
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use anyhow::{Context, Result};
+use clap::{Parser, ValueEnum};
+use directories::ProjectDirs;
+
+use crate::external::{run_jwat_tools, run_warchaeology, run_warcio};
+use crate::install::ToolResolver;
+use crate::model::{Status, ValidationResult};
+use crate::warc_validator::run_warc;
+use crate::warcat_validator::run_warcat;
+
+#[derive(Debug, Parser)]
+#[command(version, about)]
+struct Cli {
+    /// WARC file to validate.
+    #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+    file: PathBuf,
+
+    /// Run only this validator; may be supplied more than once.
+    #[arg(long, value_enum)]
+    validator: Vec<ValidatorName>,
+
+    /// Do not try to install missing external validators locally.
+    #[arg(long)]
+    no_install: bool,
+
+    /// Directory used for locally installed validator tools.
+    #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
+    tools_dir: Option<PathBuf>,
+
+    /// Show captured validator output and warcat-rs problem details.
+    #[arg(short, long)]
+    verbose: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum)]
+enum ValidatorName {
+    Warc,
+    #[value(name = "warcat-rs")]
+    WarcatRs,
+    #[value(alias = "warcheology")]
+    Warchaeology,
+    #[value(name = "jwat-tools")]
+    JwatTools,
+    Warcio,
+}
+
+const ALL_VALIDATORS: [ValidatorName; 5] = [
+    ValidatorName::Warc,
+    ValidatorName::WarcatRs,
+    ValidatorName::Warchaeology,
+    ValidatorName::JwatTools,
+    ValidatorName::Warcio,
+];
+
+fn main() -> ExitCode {
+    match run(Cli::parse()) {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(error) => {
+            eprintln!("error: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<bool> {
+    let file = cli
+        .file
+        .canonicalize()
+        .with_context(|| format!("cannot open {}", cli.file.display()))?;
+    if !file.is_file() {
+        anyhow::bail!("{} is not a regular file", file.display());
+    }
+
+    let selected: HashSet<_> = if cli.validator.is_empty() {
+        ALL_VALIDATORS.into_iter().collect()
+    } else {
+        cli.validator.into_iter().collect()
+    };
+
+    let tools_dir = cli.tools_dir.map(Ok).unwrap_or_else(default_tools_dir)?;
+    let resolver = ToolResolver::new(tools_dir, !cli.no_install);
+    let mut results = Vec::new();
+
+    for validator in ALL_VALIDATORS {
+        if !selected.contains(&validator) {
+            continue;
+        }
+
+        let result = match validator {
+            ValidatorName::Warc => run_warc(&file),
+            ValidatorName::WarcatRs => run_warcat(&file),
+            ValidatorName::Warchaeology => run_warchaeology(&file, &resolver),
+            ValidatorName::JwatTools => run_jwat_tools(&file, &resolver),
+            ValidatorName::Warcio => run_warcio(&file, &resolver),
+        };
+        results.push(result);
+    }
+
+    print_summary(&file, &results, cli.verbose);
+    Ok(results.iter().all(ValidationResult::is_success))
+}
+
+fn default_tools_dir() -> Result<PathBuf> {
+    let dirs = ProjectDirs::from("org", "archivindex", "archivindex-warc-validator")
+        .context("cannot determine the platform cache directory; use --tools-dir")?;
+    Ok(dirs.cache_dir().join("tools"))
+}
+
+fn print_summary(file: &std::path::Path, results: &[ValidationResult], verbose: bool) {
+    println!("{}", file.display());
+    println!();
+    println!("{:<16} {:<12} Summary", "Validator", "Status");
+    println!("{:-<16} {:-<12} {:-<40}", "", "", "");
+
+    for result in results {
+        println!(
+            "{:<16} {:<12} {}",
+            result.validator,
+            result.status.label(),
+            result.summary
+        );
+    }
+
+    let passed = results
+        .iter()
+        .filter(|result| result.status == Status::Passed)
+        .count();
+    let failed = results.len() - passed;
+    println!();
+    println!("Result: {passed} passed, {failed} failed or unavailable");
+
+    if verbose {
+        for result in results.iter().filter(|result| !result.details.is_empty()) {
+            println!();
+            println!("--- {} details ---", result.validator);
+            println!("{}", result.details.trim_end());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::*;
+
+    #[test]
+    fn clap_definition_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn validator_names_match_commands() {
+        assert_eq!(
+            ValidatorName::WarcatRs
+                .to_possible_value()
+                .unwrap()
+                .get_name(),
+            "warcat-rs"
+        );
+        assert_eq!(
+            ValidatorName::JwatTools
+                .to_possible_value()
+                .unwrap()
+                .get_name(),
+            "jwat-tools"
+        );
+    }
+
+    #[test]
+    fn accepts_the_common_warcheology_spelling() {
+        let cli = Cli::try_parse_from(["warc-validator", "--validator", "warcheology", "x.warc"])
+            .unwrap();
+        assert_eq!(cli.validator, vec![ValidatorName::Warchaeology]);
+    }
+}
