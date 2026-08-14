@@ -1,3 +1,5 @@
+mod common;
+
 use chrono::prelude::*;
 
 use warc::WarcHeader;
@@ -31,7 +33,7 @@ fn main() -> Result<(), std::io::Error> {
         concurrent_to: Vec::new(),
     };
 
-    let mut file = WarcWriter::from_path_gzip("warc_example.warc.gz")?;
+    let mut file = WarcWriter::from_path_gzip(common::tmp_path("warc_example.warc.gz")?)?;
 
     let bytes_written = file.write_raw(&headers, &body)?;
 

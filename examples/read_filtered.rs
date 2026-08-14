@@ -1,3 +1,5 @@
+mod common;
+
 use warc::WarcHeader;
 use warc::WarcReader;
 
@@ -19,7 +21,7 @@ fn main() -> std::io::Result<()> {
         Err(usage_err!("one or more filtered file names not supplied"))?;
     }
 
-    let mut file = WarcReader::from_path_gzip(warc_name)?;
+    let mut file = WarcReader::from_path_gzip(common::tmp_path(warc_name)?)?;
 
     let mut count = 0;
     let mut skipped = 0;

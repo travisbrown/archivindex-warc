@@ -1,3 +1,3 @@
 target
 Cargo.lock
-warc_example.warc
+examples/tmp/

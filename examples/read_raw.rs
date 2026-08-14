@@ -1,8 +1,10 @@
+mod common;
+
 use warc::WarcHeader;
 use warc::WarcReader;
 
 fn main() -> Result<(), std::io::Error> {
-    let file = WarcReader::from_path("warc_example.warc")?;
+    let file = WarcReader::from_path(common::tmp_path("warc_example.warc")?)?;
 
     let mut count = 0;
     for record in file.iter_raw_records() {
