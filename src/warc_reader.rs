@@ -3,7 +3,8 @@ use crate::{BufferedBody, EmptyBody, Error, RawRecordHeader, Record, StreamingBo
 
 use crate::header::WarcHeader;
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
+
 use std::convert::TryInto;
 use std::fs;
 use std::io;
@@ -83,8 +84,8 @@ impl WarcReader<BufReader<GzipReader<BufReader<fs::File>>>> {
 /// headers reported always match the body actually read.
 fn collect_headers<'a>(
     parsed: Vec<(&'a str, std::borrow::Cow<'a, [u8]>)>,
-) -> HashMap<WarcHeader, Vec<u8>> {
-    let mut headers = HashMap::with_capacity(parsed.len());
+) -> IndexMap<WarcHeader, Vec<u8>> {
+    let mut headers = IndexMap::with_capacity(parsed.len());
     for (token, value) in parsed {
         headers
             .entry(WarcHeader::from(token))
@@ -457,7 +458,7 @@ mod from_path_tests {
 
 #[cfg(test)]
 mod iter_raw_tests {
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
     use std::io::{BufReader, Cursor};
     use std::iter::FromIterator;
 
@@ -480,7 +481,7 @@ mod iter_raw_tests {
         ";
 
         let expected_version = "1.0";
-        let expected_headers: HashMap<WarcHeader, Vec<u8>> = HashMap::from_iter(vec![
+        let expected_headers: IndexMap<WarcHeader, Vec<u8>> = IndexMap::from_iter(vec![
             (WarcHeader::WarcType, b"dunno".to_vec()),
             (WarcHeader::ContentLength, b"5".to_vec()),
             (
@@ -522,7 +523,7 @@ mod iter_raw_tests {
         let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
         {
             let expected_version = "1.0";
-            let expected_headers: HashMap<WarcHeader, Vec<u8>> = HashMap::from_iter(vec![
+            let expected_headers: IndexMap<WarcHeader, Vec<u8>> = IndexMap::from_iter(vec![
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
                 (
@@ -541,7 +542,7 @@ mod iter_raw_tests {
 
         {
             let expected_version = "1.0";
-            let expected_headers: HashMap<WarcHeader, Vec<u8>> = HashMap::from_iter(vec![
+            let expected_headers: IndexMap<WarcHeader, Vec<u8>> = IndexMap::from_iter(vec![
                 (WarcHeader::WarcType, b"another".to_vec()),
                 (WarcHeader::ContentLength, b"6".to_vec()),
                 (
