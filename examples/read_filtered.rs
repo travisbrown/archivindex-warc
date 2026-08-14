@@ -1,6 +1,6 @@
 mod common;
 
-use warc::{WarcHeader, WarcReader};
+use archivindex_warc::{WarcHeader, WarcReader};
 
 macro_rules! usage_err {
     ($str:expr) => {
