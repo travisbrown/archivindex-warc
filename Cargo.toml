@@ -17,6 +17,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 chrono = "0.4"
+indexmap = "2"
 nom = "8"
 uuid = { version = "1", features = ["v4"] }
 
