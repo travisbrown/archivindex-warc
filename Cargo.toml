@@ -14,7 +14,7 @@ rust-version = "1.85"
 [features]
 default = ["gzip"]
 gzip = ["dep:flate2"]
-with_serde = ["serde"]
+serde = ["dep:serde"]
 
 [dependencies]
 chrono = "0.4"
