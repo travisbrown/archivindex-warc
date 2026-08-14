@@ -1,8 +1,10 @@
+mod common;
+
 use warc::WarcHeader;
 use warc::WarcReader;
 
 fn main() -> Result<(), std::io::Error> {
-    let file = WarcReader::from_path_gzip("warc_example.warc.gz")?;
+    let file = WarcReader::from_path_gzip(common::tmp_path("warc_example.warc.gz")?)?;
 
     let mut count = 0;
     for record in file.iter_records() {
