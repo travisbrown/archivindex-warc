@@ -19,6 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 chrono = "0.4"
 indexmap = "2"
 nom = "8"
+thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [dependencies.libflate]
