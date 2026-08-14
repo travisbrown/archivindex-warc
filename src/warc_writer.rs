@@ -53,23 +53,23 @@ impl<W: Write> WarcWriter<W> {
             Ok(())
         };
 
-        emit(&[87, 65, 82, 67, 47])?;
+        emit(b"WARC/")?;
         emit(headers.version.as_bytes())?;
-        emit(&[13, 10])?;
+        emit(b"\r\n")?;
 
         let mut headers: Vec<_> = headers.as_ref().iter().collect();
         headers.sort();
         for (token, value) in &headers {
             emit(token.to_string().as_bytes())?;
-            emit(&[58, 32])?;
+            emit(b": ")?;
             emit(value)?;
-            emit(&[13, 10])?;
+            emit(b"\r\n")?;
         }
-        emit(&[13, 10])?;
+        emit(b"\r\n")?;
 
         emit(body)?;
-        emit(&[13, 10])?;
-        emit(&[13, 10])?;
+        emit(b"\r\n")?;
+        emit(b"\r\n")?;
 
         Ok(bytes_written)
     }
