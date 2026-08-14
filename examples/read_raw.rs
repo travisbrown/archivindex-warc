@@ -1,7 +1,6 @@
 mod common;
 
-use warc::WarcHeader;
-use warc::WarcReader;
+use warc::{WarcHeader, WarcReader};
 
 fn main() -> Result<(), std::io::Error> {
     let file = WarcReader::from_path(common::tmp_path("warc_example.warc")?)?;

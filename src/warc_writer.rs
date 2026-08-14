@@ -1,13 +1,11 @@
-use crate::header::WarcHeader;
-use crate::{BufferedBody, MB, RawRecordHeader, Record};
-
-use std::fs;
-use std::io;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::{fs, io};
 
 #[cfg(feature = "gzip")]
 use flate2::write::GzEncoder as GzipWriter;
+
+use crate::{BufferedBody, MB, RawRecordHeader, Record, WarcHeader};
 
 /// A writer which writes records to an output stream.
 pub struct WarcWriter<W> {
@@ -231,9 +229,10 @@ fn validate_raw_header(headers: &RawRecordHeader, body_len: u64) -> Result<(), c
 
 #[cfg(test)]
 mod write_raw_tests {
+    use std::io::{self, Write};
+
     use super::WarcWriter;
     use crate::{BufferedBody, RawRecordHeader, Record, WarcHeader};
-    use std::io::{self, Write};
 
     /// A block that any writer should accept, to derive rejected blocks from.
     fn valid_headers() -> RawRecordHeader {

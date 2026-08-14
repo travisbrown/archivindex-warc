@@ -58,9 +58,10 @@ pub enum Error {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error as _;
+
     use super::Error;
     use crate::header::WarcHeader;
-    use std::error::Error as _;
 
     /// The derived messages and sources match the previous hand-written implementation.
     #[test]
