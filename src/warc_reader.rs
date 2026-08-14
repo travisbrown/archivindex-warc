@@ -1112,3 +1112,129 @@ mod next_item_tests {
         assert!(stream_iter.next_item().is_none());
     }
 }
+
+#[cfg(all(test, feature = "gzip"))]
+mod gzip_tests {
+    use std::io::Write;
+
+    use crate::{
+        BufferedBody, Record, RecordBuilder, RecordType, WarcHeader, WarcReader, WarcWriter,
+    };
+
+    fn record(body: &[u8], url: &str) -> Record<BufferedBody> {
+        RecordBuilder::default()
+            .warc_type(RecordType::Response)
+            .header(WarcHeader::TargetURI, url)
+            .body(body.to_vec())
+            .build()
+            .expect("record should build")
+    }
+
+    /// Records written through the gzip writer read back through the gzip reader.
+    #[test]
+    fn gzip_path_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("round-trip.warc.gz");
+
+        let mut writer = WarcWriter::from_path_gzip(&path).unwrap();
+        writer
+            .write(&record(b"first body", "https://example.com/1"))
+            .unwrap();
+        writer
+            .write(&record(b"second body", "https://example.com/2"))
+            .unwrap();
+        // The gzip stream must be finished, or the file is truncated.
+        let gzip_stream = writer
+            .into_inner()
+            .map_err(std::io::IntoInnerError::into_error)
+            .unwrap();
+        gzip_stream.finish().into_result().unwrap();
+
+        let reader = WarcReader::from_path_gzip(&path).unwrap();
+        let records = reader
+            .iter_records()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].body(), b"first body");
+        assert_eq!(
+            records[0].header(WarcHeader::TargetURI).as_deref(),
+            Some("https://example.com/1")
+        );
+        assert_eq!(records[1].body(), b"second body");
+        assert_eq!(
+            records[1].header(WarcHeader::TargetURI).as_deref(),
+            Some("https://example.com/2")
+        );
+    }
+
+    /// A `.warc.gz` holding each record as its own gzip member — the conventional layout for
+    /// compressed WARC files, and the case the multi-member decoder exists for — reads back
+    /// as a single record stream.
+    #[test]
+    fn gzip_multi_member_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("multi-member.warc.gz");
+
+        let mut file = std::fs::File::create(&path).unwrap();
+        for (body, url) in [
+            (&b"first body"[..], "https://example.com/1"),
+            (&b"second body"[..], "https://example.com/2"),
+        ] {
+            let mut encoder = libflate::gzip::Encoder::new(Vec::new()).unwrap();
+            WarcWriter::new(&mut encoder)
+                .write(&record(body, url))
+                .unwrap();
+            let member = encoder.finish().into_result().unwrap();
+            file.write_all(&member).unwrap();
+        }
+        drop(file);
+
+        let reader = WarcReader::from_path_gzip(&path).unwrap();
+        let records = reader
+            .iter_records()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].body(), b"first body");
+        assert_eq!(records[1].body(), b"second body");
+    }
+
+    /// The streaming iterator reads gzip input like any other, skipping and buffering across
+    /// member boundaries.
+    #[test]
+    fn gzip_streaming_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("streaming.warc.gz");
+
+        let mut writer = WarcWriter::from_path_gzip(&path).unwrap();
+        writer
+            .write(&record(b"first body", "https://example.com/1"))
+            .unwrap();
+        writer
+            .write(&record(b"second body", "https://example.com/2"))
+            .unwrap();
+        let gzip_stream = writer
+            .into_inner()
+            .map_err(std::io::IntoInnerError::into_error)
+            .unwrap();
+        gzip_stream.finish().into_result().unwrap();
+
+        let mut reader = WarcReader::from_path_gzip(&path).unwrap();
+        let mut stream_iter = reader.stream_records();
+
+        // Skip the first record's body entirely, then buffer the second.
+        let _skipped = stream_iter.next_item().unwrap().unwrap();
+        let second = stream_iter
+            .next_item()
+            .unwrap()
+            .unwrap()
+            .into_buffered()
+            .unwrap();
+
+        assert_eq!(second.body(), b"second body");
+        assert!(stream_iter.next_item().is_none());
+    }
+}
