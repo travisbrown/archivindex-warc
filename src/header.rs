@@ -80,31 +80,39 @@ impl Display for WarcHeader {
     }
 }
 
+const KNOWN_HEADERS: [(&str, WarcHeader); 19] = [
+    ("content-length", WarcHeader::ContentLength),
+    ("content-type", WarcHeader::ContentType),
+    ("warc-block-digest", WarcHeader::BlockDigest),
+    ("warc-concurrent-to", WarcHeader::ConcurrentTo),
+    ("warc-date", WarcHeader::Date),
+    ("warc-filename", WarcHeader::Filename),
+    (
+        "warc-identified-payload-type",
+        WarcHeader::IdentifiedPayloadType,
+    ),
+    ("warc-ip-address", WarcHeader::IPAddress),
+    ("warc-payload-digest", WarcHeader::PayloadDigest),
+    ("warc-profile", WarcHeader::Profile),
+    ("warc-record-id", WarcHeader::RecordID),
+    ("warc-refers-to", WarcHeader::RefersTo),
+    ("warc-segment-number", WarcHeader::SegmentNumber),
+    ("warc-segment-origin-id", WarcHeader::SegmentOriginID),
+    ("warc-segment-total-length", WarcHeader::SegmentTotalLength),
+    ("warc-target-uri", WarcHeader::TargetURI),
+    ("warc-truncated", WarcHeader::Truncated),
+    ("warc-type", WarcHeader::WarcType),
+    ("warc-warcinfo-id", WarcHeader::WarcInfoID),
+];
+
 impl<S: AsRef<str>> From<S> for WarcHeader {
     fn from(string: S) -> Self {
-        let lower: String = string.as_ref().to_lowercase();
-        match lower.as_str() {
-            "content-length" => WarcHeader::ContentLength,
-            "content-type" => WarcHeader::ContentType,
-            "warc-block-digest" => WarcHeader::BlockDigest,
-            "warc-concurrent-to" => WarcHeader::ConcurrentTo,
-            "warc-date" => WarcHeader::Date,
-            "warc-filename" => WarcHeader::Filename,
-            "warc-identified-payload-type" => WarcHeader::IdentifiedPayloadType,
-            "warc-ip-address" => WarcHeader::IPAddress,
-            "warc-payload-digest" => WarcHeader::PayloadDigest,
-            "warc-profile" => WarcHeader::Profile,
-            "warc-record-id" => WarcHeader::RecordID,
-            "warc-refers-to" => WarcHeader::RefersTo,
-            "warc-segment-number" => WarcHeader::SegmentNumber,
-            "warc-segment-origin-id" => WarcHeader::SegmentOriginID,
-            "warc-segment-total-length" => WarcHeader::SegmentTotalLength,
-            "warc-target-uri" => WarcHeader::TargetURI,
-            "warc-truncated" => WarcHeader::Truncated,
-            "warc-type" => WarcHeader::WarcType,
-            "warc-warcinfo-id" => WarcHeader::WarcInfoID,
-            _ => WarcHeader::Unknown(lower),
-        }
+        let string = string.as_ref();
+        KNOWN_HEADERS
+            .iter()
+            .find(|(name, _)| string.eq_ignore_ascii_case(name))
+            .map(|(_, header)| header.clone())
+            .unwrap_or_else(|| WarcHeader::Unknown(string.to_lowercase()))
     }
 }
 

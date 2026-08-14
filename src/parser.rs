@@ -98,7 +98,7 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>
             Ok(token) => token,
         };
 
-        if content_length.is_none() && token_str.to_lowercase() == "content-length" {
+        if content_length.is_none() && token_str.eq_ignore_ascii_case("content-length") {
             let value_str = match str::from_utf8(&header.1) {
                 Err(_) => {
                     return Err(nom::Err::Error(nom::error::Error::new(

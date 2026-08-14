@@ -23,15 +23,20 @@ impl Display for TruncatedType {
     }
 }
 
+const KNOWN_TYPES: [(&str, TruncatedType); 4] = [
+    ("length", TruncatedType::Length),
+    ("time", TruncatedType::Time),
+    ("disconnect", TruncatedType::Disconnect),
+    ("unspecified", TruncatedType::Unspecified),
+];
+
 impl<S: AsRef<str>> From<S> for TruncatedType {
     fn from(string: S) -> Self {
-        let lower: String = string.as_ref().to_lowercase();
-        match lower.as_str() {
-            "length" => TruncatedType::Length,
-            "time" => TruncatedType::Time,
-            "disconnect" => TruncatedType::Disconnect,
-            "unspecified" => TruncatedType::Unspecified,
-            _ => TruncatedType::Unknown(lower),
-        }
+        let string = string.as_ref();
+        KNOWN_TYPES
+            .iter()
+            .find(|(name, _)| string.eq_ignore_ascii_case(name))
+            .map(|(_, truncated_type)| truncated_type.clone())
+            .unwrap_or_else(|| TruncatedType::Unknown(string.to_lowercase()))
     }
 }
