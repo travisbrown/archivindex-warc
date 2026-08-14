@@ -1406,7 +1406,7 @@ mod record_tests {
 
         let mut writer = crate::WarcWriter::new(std::io::BufWriter::new(Vec::new()));
         writer.write(&record).unwrap();
-        let bytes = writer.into_inner().unwrap();
+        let bytes = writer.finish().unwrap();
 
         let block = String::from_utf8(bytes).unwrap();
         assert_eq!(
