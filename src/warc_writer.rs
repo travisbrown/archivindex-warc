@@ -122,7 +122,7 @@ impl<W: Write> WarcWriter<BufWriter<W>> {
 ```
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 # let dir = tempfile::tempdir()?;
-let writer = warc::WarcWriter::from_path_gzip(dir.path().join("example.warc.gz"))?;
+let writer = archivindex_warc::WarcWriter::from_path_gzip(dir.path().join("example.warc.gz"))?;
 // ... write records ...
 let gzip_stream = writer
     .into_inner()

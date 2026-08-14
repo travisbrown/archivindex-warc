@@ -1,7 +1,7 @@
 mod common;
 
+use archivindex_warc::{RawRecordHeader, Record, RecordType, WarcHeader, WarcWriter};
 use chrono::prelude::*;
-use warc::{RawRecordHeader, Record, RecordType, WarcHeader, WarcWriter};
 
 fn main() -> Result<(), std::io::Error> {
     let date = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
@@ -9,7 +9,7 @@ fn main() -> Result<(), std::io::Error> {
     let body = body.into_bytes();
 
     let headers = RawRecordHeader {
-        version: warc::WarcVersion::V1_0,
+        version: archivindex_warc::WarcVersion::V1_0,
         headers: vec![
             (
                 WarcHeader::RecordID,

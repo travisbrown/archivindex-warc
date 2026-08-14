@@ -1,12 +1,15 @@
 [package]
-name = "warc"
+name = "archivindex-warc"
 version = "0.4.0"
-description = "A Rust library for reading and writing WARC files."
+description = "A Rust library for reading and writing WARC files"
 readme = "README.md"
-repository = "https://github.com/jedireza/warc"
-documentation = "https://docs.rs/crate/warc/"
+repository = "https://github.com/travisbrown/archivindex-warc"
+documentation = "https://docs.rs/crate/archivindex-warc/"
 license = "MIT"
-authors = ["Reza Akhavan <reza@akhavan.me>"]
+authors = [
+    "Reza Akhavan <reza@akhavan.me>",
+    "Travis Brown <travisrobertbrown@gmail.com>",
+]
 keywords = ["warc", "web", "archive"]
 edition = "2024"
 rust-version = "1.85"
