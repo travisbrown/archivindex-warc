@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::str;
 
-use nom::bytes::streaming::{tag, take, take_while1};
+use nom::bytes::streaming::{tag, take_while1};
 use nom::character::streaming::{line_ending, not_line_ending, space0, space1};
 use nom::combinator::complete;
 use nom::error::ErrorKind;
@@ -98,25 +98,6 @@ pub fn headers(
     Ok((input, (version, warc_headers, content_length)))
 }
 
-/// Parse an entire WARC record.
-///
-/// A record without a `Content-Length` field cannot be framed (there is no way to know where
-/// its body ends), so parsing one fails with an error pointing at its header block.
-#[allow(clippy::type_complexity)]
-pub fn record(
-    input: &[u8],
-) -> IResult<&[u8], (crate::WarcVersion, Vec<(&str, Cow<'_, [u8]>)>, &[u8])> {
-    let (remainder, (headers, _)) = (headers, line_ending).parse(input)?;
-    let content_length = headers.2.ok_or_else(|| verify_error(input))?;
-    // The body of an in-memory record must fit in a slice, so a length beyond the address
-    // space cannot possibly be satisfied by `input` and is rejected as invalid.
-    let content_length = usize::try_from(content_length).map_err(|_| verify_error(input))?;
-    let (remainder, (body, _, _)) =
-        (take(content_length), line_ending, line_ending).parse(remainder)?;
-
-    Ok((remainder, (headers.0, headers.1, body)))
-}
-
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
@@ -124,7 +105,7 @@ mod tests {
     use nom::error::ErrorKind;
     use nom::{Err, Needed};
 
-    use super::{header, headers, record, version};
+    use super::{header, headers, version};
 
     #[test]
     fn version_parsing() {
@@ -294,60 +275,6 @@ mod tests {
                     None
                 )
             ))
-        );
-    }
-
-    #[test]
-    fn parse_record() {
-        let raw = b"\
-            WARC/1.0\r\n\
-            Warc-Type: dunno\r\n\
-            Content-Length: 5\r\n\
-            \r\n\
-            12345\r\n\
-            \r\n\
-            WARC/1.0\r\n\
-            Warc-Type: another\r\n\
-            Content-Length: 6\r\n\
-            \r\n\
-            123456\r\n\
-            \r\n\
-        ";
-
-        let expected_version = crate::WarcVersion::V1_0;
-        let expected_headers: Vec<(&str, Cow<'_, [u8]>)> = vec![
-            ("Warc-Type", Cow::Borrowed(b"dunno")),
-            ("Content-Length", Cow::Borrowed(b"5")),
-        ];
-        let expected_body: &[u8] = b"12345";
-
-        assert_eq!(
-            record(&raw[..]),
-            Ok((
-                &b"WARC/1.0\r\nWarc-Type: another\r\nContent-Length: 6\r\n\r\n123456\r\n\r\n"[..],
-                (expected_version, expected_headers, expected_body)
-            ))
-        );
-    }
-
-    /// A record without `Content-Length` cannot be framed, so parsing it fails with an error
-    /// pointing at its header block.
-    #[test]
-    fn parse_record_without_content_length() {
-        let raw = b"\
-            WARC/1.0\r\n\
-            Warc-Type: dunno\r\n\
-            \r\n\
-            12345\r\n\
-            \r\n\
-        ";
-
-        assert_eq!(
-            record(&raw[..]),
-            Err(Err::Error(nom::error::Error::new(
-                &raw[..],
-                ErrorKind::Verify
-            )))
         );
     }
 }
