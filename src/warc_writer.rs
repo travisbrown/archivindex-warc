@@ -56,13 +56,7 @@ impl<W: Write> WarcWriter<W> {
     pub fn write(&mut self, record: &Record<BufferedBody>) -> io::Result<usize> {
         // Validate every header line before emitting anything, mirroring `write_raw`, so that a
         // rejected record leaves no partial bytes in the output.
-        let version = record.warc_version();
-        record
-            .visit_header_lines(|header, value| {
-                crate::record::validate_header(header, value)?;
-                crate::record::validate_header_version(version, header)
-            })
-            .map_err(invalid_input)?;
+        validate_record(record).map_err(invalid_input)?;
 
         let writer = &mut self.writer;
         let mut bytes_written = 0;
@@ -214,10 +208,75 @@ impl WarcWriter<BufWriter<GzipWriter<std::fs::File>>> {
     }
 }
 
+#[cfg(feature = "gzip")]
+impl<W: Write> WarcWriter<W> {
+    /// Write a single record as an independent gzip member.
+    ///
+    /// This follows the record-at-a-time compression convention for gzip WARC files: each
+    /// record is compressed as its own complete gzip member, so the returned length frames a
+    /// range that can be located by an index and decompressed on its own, and consecutive
+    /// calls produce a valid multi-member stream (as read by
+    /// [`WarcReader::from_path_gzip`](crate::WarcReader::from_path_gzip)). The member is
+    /// finished before this method returns, so no separate finishing step is needed.
+    ///
+    /// The number of compressed bytes written is returned upon success.
+    pub fn write_gzip(&mut self, record: &Record<BufferedBody>) -> io::Result<usize> {
+        // Validate before constructing the encoder: an encoder emits a gzip header even for
+        // an empty stream when it is finished or dropped, and a rejected record must leave no
+        // bytes in the output.
+        validate_record(record).map_err(invalid_input)?;
+
+        // The compressed length is what frames the member for indexing, so the encoder's
+        // output is counted rather than its input.
+        let mut counter = CountingWriter {
+            writer: &mut self.writer,
+            bytes_written: 0,
+        };
+        let mut encoder = GzipWriter::new(&mut counter, flate2::Compression::default());
+        WarcWriter::new(&mut encoder).write(record)?;
+        // Finishing flushes the compressed data and writes the gzip trailer, completing the
+        // member; it also releases the encoder's borrow of the counter.
+        encoder.finish()?;
+
+        Ok(counter.bytes_written)
+    }
+}
+
+/// A writer which counts the bytes passing through it.
+#[cfg(feature = "gzip")]
+struct CountingWriter<W> {
+    writer: W,
+    bytes_written: usize,
+}
+
+#[cfg(feature = "gzip")]
+impl<W: Write> Write for CountingWriter<W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let written = self.writer.write(buffer)?;
+        self.bytes_written += written;
+
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
+}
+
 /// Map a header-validation failure to the `InvalidInput` I/O error reported by the write
 /// path, preserving the typed error as its source.
 fn invalid_input(error: crate::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, error)
+}
+
+/// Reject a record whose header lines would serialize to a record no reader could parse back
+/// (see `validate_raw_header`), or that carry fields undefined at the record's WARC version.
+fn validate_record(record: &Record<BufferedBody>) -> Result<(), crate::Error> {
+    let version = record.warc_version();
+    record.visit_header_lines(|header, value| {
+        crate::record::validate_header(header, value)?;
+        crate::record::validate_header_version(version, header)
+    })
 }
 
 /// Reject a raw header block that would serialize to a record no reader could parse back: a
@@ -623,5 +682,70 @@ mod from_path_tests {
             .map(|record| record.unwrap().1)
             .collect();
         assert_eq!(bodies, vec![first_body, second_body]);
+    }
+}
+
+#[cfg(all(test, feature = "gzip"))]
+mod write_gzip_tests {
+    use std::io::{self, BufReader, Read};
+
+    use super::WarcWriter;
+
+    /// Parse the records in a plain (uncompressed) WARC byte stream.
+    fn read_records(bytes: &[u8]) -> Vec<crate::Record<crate::BufferedBody>> {
+        crate::WarcReader::new(bytes)
+            .iter_records()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    /// Each record becomes its own complete gzip member: the returned lengths frame ranges
+    /// that decompress independently, and the concatenation reads back as a multi-member
+    /// stream.
+    #[test]
+    fn each_record_is_an_independently_framed_gzip_member() {
+        let first = crate::Record::with_body("the first payload");
+        let second = crate::Record::with_body("the second payload");
+
+        let mut writer = WarcWriter::new(Vec::new());
+        let first_length = writer.write_gzip(&first).unwrap();
+        let second_length = writer.write_gzip(&second).unwrap();
+        let bytes = writer.into_inner();
+
+        // The returned lengths tile the output exactly, as index offsets require.
+        assert_eq!(first_length + second_length, bytes.len());
+
+        // Each framed range is a complete gzip member on its own; a single-member decoder
+        // must be able to decode it in isolation.
+        let (first_member, second_member) = bytes.split_at(first_length);
+        for (member, record) in [(first_member, &first), (second_member, &second)] {
+            let mut decoded = Vec::new();
+            flate2::read::GzDecoder::new(member)
+                .read_to_end(&mut decoded)
+                .unwrap();
+            assert_eq!(read_records(&decoded), vec![record.clone()]);
+        }
+
+        // The whole stream reads back through the multi-member gzip reader.
+        let reader = crate::WarcReader::new(BufReader::new(flate2::bufread::MultiGzDecoder::new(
+            bytes.as_slice(),
+        )));
+        let read_back: Vec<_> = reader.iter_records().collect::<Result<_, _>>().unwrap();
+        assert_eq!(read_back, vec![first, second]);
+    }
+
+    /// A rejected record leaves no bytes in the output, not even a gzip header.
+    #[test]
+    fn rejected_record_writes_no_bytes() {
+        let mut record = crate::Record::<crate::BufferedBody>::default();
+        record.set_warc_id("<urn:a>\r\nevil: x");
+
+        let mut writer = WarcWriter::new(Vec::new());
+        let error = writer
+            .write_gzip(&record)
+            .expect_err("injection should be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(writer.get_ref().is_empty(), "no partial member is written");
     }
 }
