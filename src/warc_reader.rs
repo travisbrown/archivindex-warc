@@ -14,7 +14,6 @@ use std::path::Path;
 #[cfg(feature = "gzip")]
 use libflate::gzip::MultiDecoder as GzipReader;
 
-const KB: usize = 1_024;
 const MB: usize = 1_048_576;
 
 /// A reader which iteratively parses WARC records from a stream.
@@ -126,11 +125,17 @@ fn malformed_terminator() -> Error {
 
 /// Read lines up to and including the blank line that terminates a header block.
 ///
+/// The header block is left in `header_buffer`, which is cleared first so callers can reuse
+/// one buffer across records.
+///
 /// Returns `None` on a clean end-of-stream at a record boundary.
-fn read_header_block<R: BufRead>(reader: &mut R) -> Option<Result<Vec<u8>, Error>> {
-    let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
+fn read_header_block<R: BufRead>(
+    reader: &mut R,
+    header_buffer: &mut Vec<u8>,
+) -> Option<Result<(), Error>> {
+    header_buffer.clear();
     loop {
-        let bytes_read = match reader.read_until(b'\n', &mut header_buffer) {
+        let bytes_read = match reader.read_until(b'\n', header_buffer) {
             Err(io) => return Some(Err(Error::ReadData(io))),
             Ok(len) => len,
         };
@@ -140,7 +145,7 @@ fn read_header_block<R: BufRead>(reader: &mut R) -> Option<Result<Vec<u8>, Error
         }
 
         if bytes_read == 2 && header_buffer.ends_with(b"\r\n") {
-            return Some(Ok(header_buffer));
+            return Some(Ok(()));
         }
     }
 }
@@ -167,7 +172,9 @@ fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, usize), Error> 
 
 /// Read a record body of the given length, plus the `\r\n\r\n` record terminator.
 fn read_body<R: BufRead>(reader: &mut R, expected_body_len: usize) -> Result<Vec<u8>, Error> {
-    let mut body_buffer: Vec<u8> = Vec::with_capacity(MB);
+    // Size the buffer to the record, but cap the speculative allocation at `MB` so a bogus
+    // `Content-Length` cannot force a huge up-front allocation.
+    let mut body_buffer: Vec<u8> = Vec::with_capacity(std::cmp::min(expected_body_len + 4, MB));
     let mut body_bytes_read = 0;
     let maximum_read_range = expected_body_len + 4;
     loop {
@@ -206,6 +213,7 @@ fn read_body<R: BufRead>(reader: &mut R, expected_body_len: usize) -> Result<Vec
 pub struct RawRecordIter<R> {
     reader: R,
     finished: bool,
+    header_buffer: Vec<u8>,
 }
 
 impl<R: BufRead> RawRecordIter<R> {
@@ -213,17 +221,18 @@ impl<R: BufRead> RawRecordIter<R> {
         RawRecordIter {
             reader,
             finished: false,
+            header_buffer: Vec::new(),
         }
     }
 
     /// Read the next record; the `Iterator` impl wraps this with the fusing logic.
     fn next_record(&mut self) -> Option<<Self as Iterator>::Item> {
-        let header_buffer = match read_header_block(&mut self.reader)? {
-            Ok(buffer) => buffer,
+        match read_header_block(&mut self.reader, &mut self.header_buffer)? {
+            Ok(()) => {}
             Err(e) => return Some(Err(e)),
-        };
+        }
 
-        let (headers, expected_body_len) = match parse_header_block(&header_buffer) {
+        let (headers, expected_body_len) = match parse_header_block(&self.header_buffer) {
             Ok(parsed) => parsed,
             Err(e) => return Some(Err(e)),
         };
@@ -296,6 +305,7 @@ pub struct StreamingIter<'r, R> {
     /// Set once a stream-level error has been returned, so that further calls do not read
     /// from a stream left at an unspecified position.
     finished: bool,
+    header_buffer: Vec<u8>,
 }
 
 impl<R: BufRead> StreamingIter<'_, R> {
@@ -305,6 +315,7 @@ impl<R: BufRead> StreamingIter<'_, R> {
             current_item_size: 0,
             first_record: true,
             finished: false,
+            header_buffer: Vec::new(),
         }
     }
 
@@ -362,19 +373,19 @@ impl<R: BufRead> StreamingIter<'_, R> {
             return Some(Err(e));
         }
 
-        let header_buffer = match read_header_block(self.reader) {
+        match read_header_block(self.reader, &mut self.header_buffer) {
             None => {
                 self.finished = true;
                 return None;
             }
-            Some(Ok(buffer)) => buffer,
+            Some(Ok(())) => {}
             Some(Err(e)) => {
                 self.finished = true;
                 return Some(Err(e));
             }
-        };
+        }
 
-        let (headers, expected_body_len) = match parse_header_block(&header_buffer) {
+        let (headers, expected_body_len) = match parse_header_block(&self.header_buffer) {
             Ok(parsed) => parsed,
             Err(e) => {
                 self.finished = true;
