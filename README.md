@@ -1,14 +1,40 @@
-# WARC (Web ARChive)
+# archivindex-warc
 
-![GitHub last commit](https://img.shields.io/github/last-commit/jedireza/warc)
-[![Build Status](https://github.com/jedireza/warc/workflows/Code%20Quality%20Pipeline/badge.svg)](https://github.com/jedireza/warc/actions)
-[![license](https://img.shields.io/github/license/jedireza/warc)](https://github.com/license/jedireza/warc)
-[![crates.io](https://img.shields.io/crates/v/warc.svg)](https://crates.io/crates/warc/)
-[![crates.io](https://img.shields.io/crates/d/warc)](https://crates.io/crates/warc/)
-[![API Docs](https://docs.rs/warc/badge.svg)](https://docs.rs/warc/)
+![GitHub last commit](https://img.shields.io/github/last-commit/travisbrown/archivindex-warc)
+[![build](https://github.com/travisbrown/archivindex-warc/actions/workflows/ci.yml/badge.svg)](https://github.com/travisbrown/archivindex-warc/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/travisbrown/archivindex-warc/branch/main/graph/badge.svg)](https://codecov.io/gh/travisbrown/archivindex-warc)
+[![license](https://img.shields.io/github/license/travisbrown/archivindex-warc)](https://github.com/travisbrown/archivindex-warc/blob/main/LICENSE)
+[![crates.io](https://img.shields.io/crates/v/archivindex-warc.svg)](https://crates.io/crates/archivindex-warc/)
+[![crates.io](https://img.shields.io/crates/d/archivindex-warc)](https://crates.io/crates/archivindex-warc/)
+[![API Docs](https://docs.rs/archivindex-warc/badge.svg)](https://docs.rs/archivindex-warc/)
 
-A Rust library for reading and writing WARC files.
+A Rust library for reading and writing WARC 1.0 and 1.1 files. It provides raw, grammar-checked,
+and semantic record representations, with support for record-at-a-time gzip compression.
+
+## Status
+
+This project began as a fork of [Reza Akhavan][jedireza]'s [`warc` crate][warc-crate], which is
+[no longer maintained][warc-unmaintained]. It now has a substantially different API and
+implementation, including WARC 1.1 support, layered validation, semantic record builders, and
+record framing for indexed access.
+
+- Migration from [`libflate`][libflate] to [`flate2`][flate2]
+- Updates for all dependencies (including [`nom`][nom], from 7 to 8)
+- [WARC 1.1][warc-1.1] support
+- Many minor bug fixes, mostly related to edge cases
+- A separate [`validator`](validator/) Rust project providing an easy way to compare several
+  independent WARC validators
+
+The first iteration of the Archivindex project was [supported][archivindex-prototype-fund] by [the
+Prototype Fund][prototype-fund].
 
 ## License
 
-MIT
+This project is licensed under the [MIT License](https://opensource.org/license/mit). See
+[LICENSE](LICENSE) for the full text.
+
+[archivindex-prototype-fund]: https://www.prototypefund.de/en/projects/archivindex-builder
+[jedireza]: https://github.com/jedireza
+[prototype-fund]: https://www.prototypefund.de/en/
+[warc-crate]: https://crates.io/crates/warc/
+[warc-unmaintained]: https://github.com/jedireza/warc/issues/54
