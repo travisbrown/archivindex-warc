@@ -135,7 +135,6 @@ fn collect_records<R: BufRead>(reader: WarcReader<R>) -> Result<Vec<RawRecord>, 
 pub fn header<'a>(record: &'a RawRecord, name: &WarcHeader) -> Option<&'a str> {
     record
         .0
-        .headers
         .get(name)
         .map(|value| std::str::from_utf8(value).unwrap())
 }

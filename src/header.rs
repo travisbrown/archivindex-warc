@@ -42,6 +42,54 @@ impl From<WarcHeader> for String {
 }
 
 impl WarcHeader {
+    /// The header's serialized field name: the standard name lower-cased for known headers,
+    /// or the stored name for unknown ones. Borrowing this beats `to_string` on hot write
+    /// paths, which would otherwise allocate per header line.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.names().0
+    }
+
+    /// The header's field name as the standard itself prints it, which is the spelling
+    /// archives overwhelmingly use. An unknown name has only the spelling it was parsed
+    /// with, which is already lower-cased.
+    #[must_use]
+    pub fn standard_name(&self) -> &str {
+        self.names().1
+    }
+
+    /// Both spellings of the field name, as `(lower-case, standard)`. Keeping them in one
+    /// table is what stops them from drifting apart.
+    fn names(&self) -> (&str, &str) {
+        match self {
+            Self::ContentLength => ("content-length", "Content-Length"),
+            Self::ContentType => ("content-type", "Content-Type"),
+            Self::BlockDigest => ("warc-block-digest", "WARC-Block-Digest"),
+            Self::ConcurrentTo => ("warc-concurrent-to", "WARC-Concurrent-To"),
+            Self::Date => ("warc-date", "WARC-Date"),
+            Self::Filename => ("warc-filename", "WARC-Filename"),
+            Self::IdentifiedPayloadType => (
+                "warc-identified-payload-type",
+                "WARC-Identified-Payload-Type",
+            ),
+            Self::IPAddress => ("warc-ip-address", "WARC-IP-Address"),
+            Self::PayloadDigest => ("warc-payload-digest", "WARC-Payload-Digest"),
+            Self::Profile => ("warc-profile", "WARC-Profile"),
+            Self::RecordID => ("warc-record-id", "WARC-Record-ID"),
+            Self::RefersTo => ("warc-refers-to", "WARC-Refers-To"),
+            Self::RefersToDate => ("warc-refers-to-date", "WARC-Refers-To-Date"),
+            Self::RefersToTargetURI => ("warc-refers-to-target-uri", "WARC-Refers-To-Target-URI"),
+            Self::SegmentNumber => ("warc-segment-number", "WARC-Segment-Number"),
+            Self::SegmentOriginID => ("warc-segment-origin-id", "WARC-Segment-Origin-ID"),
+            Self::SegmentTotalLength => ("warc-segment-total-length", "WARC-Segment-Total-Length"),
+            Self::TargetURI => ("warc-target-uri", "WARC-Target-URI"),
+            Self::Truncated => ("warc-truncated", "WARC-Truncated"),
+            Self::WarcType => ("warc-type", "WARC-Type"),
+            Self::WarcInfoID => ("warc-warcinfo-id", "WARC-Warcinfo-ID"),
+            Self::Unknown(string) => (string, string),
+        }
+    }
+
     /// Fold an `Unknown` spelling of a well-known field name (in any case) into that field's
     /// variant, and lower-case genuinely unknown names, exactly as parsing does. This keeps
     /// `Unknown("warc-date")` from bypassing the lookups and interception keyed on the
@@ -51,37 +99,6 @@ impl WarcHeader {
         match self {
             Self::Unknown(name) => Self::from(name.as_str()),
             header => header,
-        }
-    }
-
-    /// The header's serialized field name: the standard lower-case name for known headers,
-    /// or the stored name for unknown ones. Borrowing this beats `to_string` on hot write
-    /// paths, which would otherwise allocate per header line.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        match self {
-            Self::ContentLength => "content-length",
-            Self::ContentType => "content-type",
-            Self::BlockDigest => "warc-block-digest",
-            Self::ConcurrentTo => "warc-concurrent-to",
-            Self::Date => "warc-date",
-            Self::Filename => "warc-filename",
-            Self::IdentifiedPayloadType => "warc-identified-payload-type",
-            Self::IPAddress => "warc-ip-address",
-            Self::PayloadDigest => "warc-payload-digest",
-            Self::Profile => "warc-profile",
-            Self::RecordID => "warc-record-id",
-            Self::RefersTo => "warc-refers-to",
-            Self::RefersToDate => "warc-refers-to-date",
-            Self::RefersToTargetURI => "warc-refers-to-target-uri",
-            Self::SegmentNumber => "warc-segment-number",
-            Self::SegmentOriginID => "warc-segment-origin-id",
-            Self::SegmentTotalLength => "warc-segment-total-length",
-            Self::TargetURI => "warc-target-uri",
-            Self::Truncated => "warc-truncated",
-            Self::WarcType => "warc-type",
-            Self::WarcInfoID => "warc-warcinfo-id",
-            Self::Unknown(string) => string,
         }
     }
 
@@ -107,31 +124,30 @@ impl Display for WarcHeader {
     }
 }
 
-const KNOWN_HEADERS: [(&str, WarcHeader); 21] = [
-    ("content-length", WarcHeader::ContentLength),
-    ("content-type", WarcHeader::ContentType),
-    ("warc-block-digest", WarcHeader::BlockDigest),
-    ("warc-concurrent-to", WarcHeader::ConcurrentTo),
-    ("warc-date", WarcHeader::Date),
-    ("warc-filename", WarcHeader::Filename),
-    (
-        "warc-identified-payload-type",
-        WarcHeader::IdentifiedPayloadType,
-    ),
-    ("warc-ip-address", WarcHeader::IPAddress),
-    ("warc-payload-digest", WarcHeader::PayloadDigest),
-    ("warc-profile", WarcHeader::Profile),
-    ("warc-record-id", WarcHeader::RecordID),
-    ("warc-refers-to", WarcHeader::RefersTo),
-    ("warc-refers-to-date", WarcHeader::RefersToDate),
-    ("warc-refers-to-target-uri", WarcHeader::RefersToTargetURI),
-    ("warc-segment-number", WarcHeader::SegmentNumber),
-    ("warc-segment-origin-id", WarcHeader::SegmentOriginID),
-    ("warc-segment-total-length", WarcHeader::SegmentTotalLength),
-    ("warc-target-uri", WarcHeader::TargetURI),
-    ("warc-truncated", WarcHeader::Truncated),
-    ("warc-type", WarcHeader::WarcType),
-    ("warc-warcinfo-id", WarcHeader::WarcInfoID),
+/// Every field the standard names, looked up by `From<S>` below. The names themselves live on
+/// `WarcHeader::names`, so this list carries only the variants.
+const KNOWN_HEADERS: [WarcHeader; 21] = [
+    WarcHeader::ContentLength,
+    WarcHeader::ContentType,
+    WarcHeader::BlockDigest,
+    WarcHeader::ConcurrentTo,
+    WarcHeader::Date,
+    WarcHeader::Filename,
+    WarcHeader::IdentifiedPayloadType,
+    WarcHeader::IPAddress,
+    WarcHeader::PayloadDigest,
+    WarcHeader::Profile,
+    WarcHeader::RecordID,
+    WarcHeader::RefersTo,
+    WarcHeader::RefersToDate,
+    WarcHeader::RefersToTargetURI,
+    WarcHeader::SegmentNumber,
+    WarcHeader::SegmentOriginID,
+    WarcHeader::SegmentTotalLength,
+    WarcHeader::TargetURI,
+    WarcHeader::Truncated,
+    WarcHeader::WarcType,
+    WarcHeader::WarcInfoID,
 ];
 
 impl<S: AsRef<str>> From<S> for WarcHeader {
@@ -139,18 +155,180 @@ impl<S: AsRef<str>> From<S> for WarcHeader {
         let string = string.as_ref();
         KNOWN_HEADERS
             .iter()
-            .find(|(name, _)| string.eq_ignore_ascii_case(name))
-            .map_or_else(
-                || Self::Unknown(string.to_lowercase()),
-                |(_, header)| header.clone(),
-            )
+            .find(|header| string.eq_ignore_ascii_case(header.name()))
+            .map_or_else(|| Self::Unknown(string.to_lowercase()), Clone::clone)
+    }
+}
+
+/// How a field name was spelled in the record it was read from.
+///
+/// The two spellings archives actually use are held as tags rather than strings, so reading a
+/// record allocates nothing for its field names.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Spelling {
+    /// The lower-case name, as [`WarcHeader::name`] renders it.
+    Lower,
+    /// The name as the standard prints it, as [`WarcHeader::standard_name`] renders it.
+    Standard,
+    /// Any other mixture of cases, held as it was read.
+    Other(Box<str>),
+}
+
+/// A field name as it appeared in a record's header block.
+///
+/// WARC field names are case-insensitive, so a name is identified by the field it denotes:
+/// two names that differ only in spelling are equal. The spelling is carried alongside so
+/// that a record read from an archive can be written back out with its field names unchanged.
+///
+/// ```
+/// use archivindex_warc::{FieldName, WarcHeader};
+///
+/// let as_read = FieldName::as_read("WARC-Target-URI");
+/// assert_eq!(as_read.header(), &WarcHeader::TargetURI);
+/// assert_eq!(as_read.name(), "WARC-Target-URI");
+///
+/// // The two spell the same field, so they are the same name.
+/// assert_eq!(as_read, FieldName::new(WarcHeader::TargetURI));
+/// assert_eq!(FieldName::new(WarcHeader::TargetURI).name(), "warc-target-uri");
+/// ```
+#[derive(Clone, Debug, Eq)]
+pub struct FieldName {
+    header: WarcHeader,
+    spelling: Spelling,
+}
+
+impl FieldName {
+    /// A field name in its lower-case spelling.
+    #[must_use]
+    pub const fn new(header: WarcHeader) -> Self {
+        Self {
+            header,
+            spelling: Spelling::Lower,
+        }
+    }
+
+    /// A field name spelled as it appeared in an archive.
+    #[must_use]
+    pub fn as_read(name: &str) -> Self {
+        let header = WarcHeader::from(name);
+        let (lower, standard) = header.names();
+        let spelling = if name == lower {
+            Spelling::Lower
+        } else if name == standard {
+            Spelling::Standard
+        } else {
+            Spelling::Other(Box::from(name))
+        };
+
+        Self { header, spelling }
+    }
+
+    /// The field this name denotes.
+    #[must_use]
+    pub const fn header(&self) -> &WarcHeader {
+        &self.header
+    }
+
+    /// The name as it will be serialized: the spelling it was read with, or the lower-case
+    /// name for a field named by its variant.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match &self.spelling {
+            Spelling::Lower => self.header.name(),
+            Spelling::Standard => self.header.standard_name(),
+            Spelling::Other(name) => name,
+        }
+    }
+
+    /// Consume this name, returning the field it denotes.
+    #[must_use]
+    pub fn into_header(self) -> WarcHeader {
+        self.header
+    }
+
+    /// Fold an `Unknown` spelling of a well-known field name into that field's variant,
+    /// keeping the name as it would be serialized. See [`WarcHeader::normalized`].
+    pub fn normalize(&mut self) {
+        if matches!(self.header, WarcHeader::Unknown(_)) {
+            *self = Self::as_read(self.name());
+        }
+    }
+}
+
+/// Names are compared by the field they denote, since WARC field names are case-insensitive.
+impl PartialEq for FieldName {
+    fn eq(&self, other: &Self) -> bool {
+        self.header == other.header
+    }
+}
+
+impl From<WarcHeader> for FieldName {
+    fn from(header: WarcHeader) -> Self {
+        Self::new(header)
+    }
+}
+
+impl Display for FieldName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::WarcHeader;
+    use super::{FieldName, WarcHeader};
     use crate::WarcVersion;
+
+    /// A name is written back out with the spelling it was read with, whichever of the three
+    /// forms that spelling takes.
+    #[test]
+    fn field_name_keeps_the_spelling_it_was_read_with() {
+        for name in [
+            "warc-target-uri",
+            "WARC-Target-URI",
+            "Warc-Target-Uri",
+            "WARC-TARGET-URI",
+        ] {
+            let field_name = FieldName::as_read(name);
+            assert_eq!(field_name.name(), name);
+            assert_eq!(field_name.header(), &WarcHeader::TargetURI);
+        }
+    }
+
+    /// Field names are case-insensitive, so names that differ only in spelling are equal,
+    /// while a name built from its variant serializes lower-case.
+    #[test]
+    fn field_names_are_equal_whatever_their_spelling() {
+        assert_eq!(
+            FieldName::as_read("Warc-Type"),
+            FieldName::new(WarcHeader::WarcType)
+        );
+        assert_eq!(FieldName::new(WarcHeader::WarcType).name(), "warc-type");
+    }
+
+    /// An unrecognized name is kept as it was spelled but denotes the lower-cased field, so
+    /// two spellings of one extension field are still the same field.
+    #[test]
+    fn unknown_field_names_are_matched_case_insensitively() {
+        let field_name = FieldName::as_read("X-Extension");
+        assert_eq!(field_name.name(), "X-Extension");
+        assert_eq!(
+            field_name.header(),
+            &WarcHeader::Unknown("x-extension".to_string())
+        );
+        assert_eq!(field_name, FieldName::as_read("x-extension"));
+    }
+
+    /// Normalizing folds a hand-built `Unknown` spelling of a well-known field into that
+    /// field's variant, leaving the spelling alone.
+    #[test]
+    fn normalizing_a_field_name_folds_unknown_spellings() {
+        let mut field_name = FieldName::new(WarcHeader::Unknown("WARC-Target-URI".to_string()));
+        field_name.normalize();
+
+        assert_eq!(field_name.header(), &WarcHeader::TargetURI);
+        assert_eq!(field_name.name(), "WARC-Target-URI");
+    }
 
     /// The `serde` derives round-trip headers through their string names.
     #[cfg(feature = "serde")]

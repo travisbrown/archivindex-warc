@@ -23,7 +23,7 @@ mod support;
 
 use std::io::BufWriter;
 
-use archivindex_warc::{WarcHeader, WarcVersion};
+use archivindex_warc::WarcVersion;
 use support::{fixture_bytes, roundtrip};
 
 /// The number of bytes of a header value shown when a comparison fails.
@@ -66,17 +66,9 @@ fn normalize(output: &[u8]) -> Result<Vec<NormalizedRecord>, String> {
         .iter_raw_records()
         .map(|record| {
             let (header, body) = record.map_err(|error| error.to_string())?;
-            // `WARC-Concurrent-To` is repeatable and so is held apart from the other fields;
-            // each of its values is one more header for comparison purposes.
-            let concurrent_to = header
-                .concurrent_to
-                .iter()
-                .map(|value| (WarcHeader::ConcurrentTo.name().to_owned(), value.clone()));
             let mut headers = header
-                .headers
                 .iter()
-                .map(|(name, value)| (name.name().to_ascii_lowercase(), value.clone()))
-                .chain(concurrent_to)
+                .map(|(name, value)| (name.name().to_ascii_lowercase(), value.to_vec()))
                 .collect::<Vec<_>>();
             headers.sort_unstable();
 

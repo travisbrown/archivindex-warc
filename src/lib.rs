@@ -60,7 +60,7 @@ mod warc_writer;
 pub use warc_writer::*;
 
 mod header;
-pub use header::WarcHeader;
+pub use header::{FieldName, WarcHeader};
 
 /// Core functions for parsing. Not recommended for direct use.
 pub mod parser;

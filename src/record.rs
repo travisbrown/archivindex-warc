@@ -1,15 +1,15 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::fmt;
 use std::io::Read;
 
 use chrono::Utc;
-use indexmap::IndexMap;
 use streaming_trait::BodyKind;
 pub use streaming_trait::{BufferedBody, EmptyBody, StreamingBody};
 use uuid::Uuid;
 
 use crate::Error as WarcError;
-use crate::header::WarcHeader;
+use crate::header::{FieldName, WarcHeader};
 use crate::record_type::RecordType;
 use crate::truncated_type::TruncatedType;
 use crate::version::WarcVersion;
@@ -130,84 +130,194 @@ mod streaming_trait {
 ///
 /// It is guaranteed to be well-formed, but may not be valid according to the specification.
 ///
-/// Each named field is held at most once in `headers`: parsing a record that repeats a field
-/// fails with `Error::DuplicateHeader`. The one exception is `WARC-Concurrent-To`, the only
-/// field the specification allows to repeat: all of its values are held in `concurrent_to`.
+/// A header block is an ordered sequence of field lines rather than a map, so a record read
+/// from an archive keeps its field names in the spelling and the position they were read in
+/// and can be written back out byte for byte. Reading a record that repeats a field fails
+/// with `Error::DuplicateHeader`, except for `WARC-Concurrent-To`, the one field the
+/// specification allows to repeat.
 ///
 /// Use the `Display` trait to generate the formatted representation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawRecordHeader {
     /// The WARC standard version this record reports conformance to.
     pub version: WarcVersion,
-    /// All headers other than `WARC-Concurrent-To` that are part of this record, in insertion
-    /// order.
-    pub headers: IndexMap<WarcHeader, Vec<u8>>,
-    /// The values of the repeatable `WARC-Concurrent-To` header, in order of appearance.
-    pub concurrent_to: Vec<Vec<u8>>,
+    // NB: invariant: every name is normalized, so that two spellings of one well-known field
+    // are one field to the lookups below.
+    /// Every field line of the block, in order of appearance.
+    fields: Vec<(FieldName, Vec<u8>)>,
 }
 
-impl AsRef<IndexMap<WarcHeader, Vec<u8>>> for RawRecordHeader {
-    fn as_ref(&self) -> &IndexMap<WarcHeader, Vec<u8>> {
-        &self.headers
+impl RawRecordHeader {
+    /// An empty header block declaring the given WARC version.
+    #[must_use]
+    pub const fn new(version: WarcVersion) -> Self {
+        Self {
+            version,
+            fields: Vec::new(),
+        }
     }
-}
 
-impl AsMut<IndexMap<WarcHeader, Vec<u8>>> for RawRecordHeader {
-    fn as_mut(&mut self) -> &mut IndexMap<WarcHeader, Vec<u8>> {
-        &mut self.headers
+    /// A header block of the given field lines, in the order they are to appear.
+    pub fn from_fields<N, V, I>(version: WarcVersion, fields: I) -> Self
+    where
+        N: Into<FieldName>,
+        V: Into<Vec<u8>>,
+        I: IntoIterator<Item = (N, V)>,
+    {
+        Self {
+            version,
+            fields: fields
+                .into_iter()
+                .map(|(name, value)| (normalized_name(name), value.into()))
+                .collect(),
+        }
     }
-}
 
-/// Fold `Unknown` spellings of well-known field names in a hand-built raw header block into
-/// their variants, so that the typed extraction in `try_from` sees them; a spelling that
-/// collides with a field already present is exactly the duplicate the reader would reject.
-///
-/// Header blocks built by the parser never contain such spellings, so the rebuild only runs
-/// when an `Unknown` key is present.
-fn normalize_raw_headers(headers: &mut RawRecordHeader) -> Result<(), WarcError> {
-    let needs_normalizing = headers
-        .as_ref()
-        .keys()
-        .any(|header| matches!(header, WarcHeader::Unknown(_)));
+    /// The number of field lines in this block.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.fields.len()
+    }
 
-    if needs_normalizing {
-        let mut normalized = IndexMap::with_capacity(headers.as_ref().len());
-        for (header, value) in std::mem::take(headers.as_mut()) {
-            let header = header.normalized();
-            if normalized.insert(header.clone(), value).is_some() {
-                return Err(WarcError::MalformedHeader(
-                    header,
-                    "duplicate header".to_string(),
-                ));
+    /// Whether this block has no field lines.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+
+    /// Every field line, in order.
+    pub fn iter(&self) -> impl Iterator<Item = (&FieldName, &[u8])> {
+        self.fields
+            .iter()
+            .map(|(name, value)| (name, value.as_slice()))
+    }
+
+    /// Every field name, in order.
+    pub fn names(&self) -> impl Iterator<Item = &FieldName> {
+        self.fields.iter().map(|(name, _)| name)
+    }
+
+    /// The value of the first line naming `header`, if any.
+    #[must_use]
+    pub fn get(&self, header: &WarcHeader) -> Option<&[u8]> {
+        self.fields
+            .iter()
+            .find(|(name, _)| name.header() == header)
+            .map(|(_, value)| value.as_slice())
+    }
+
+    /// The values of every line naming `header`, in order. Only `WARC-Concurrent-To` can
+    /// have more than one in a block read from an archive.
+    pub fn get_all<'a>(&'a self, header: &WarcHeader) -> impl Iterator<Item = &'a [u8]> {
+        // The iterator outlives the borrow of `header`, so the filter owns its copy; every
+        // variant but `Unknown` clones for free.
+        let header = header.clone();
+        self.fields
+            .iter()
+            .filter(move |(name, _)| *name.header() == header)
+            .map(|(_, value)| value.as_slice())
+    }
+
+    /// Whether any line names `header`.
+    #[must_use]
+    pub fn contains(&self, header: &WarcHeader) -> bool {
+        self.fields.iter().any(|(name, _)| name.header() == header)
+    }
+
+    /// Append a field line, keeping any line already naming the same field.
+    ///
+    /// This is how the repeatable `WARC-Concurrent-To` is added; every other field should be
+    /// set with [`insert`](Self::insert), which cannot leave a duplicate behind.
+    pub fn push<N: Into<FieldName>, V: Into<Vec<u8>>>(&mut self, name: N, value: V) {
+        self.fields.push((normalized_name(name), value.into()));
+    }
+
+    /// Set a field, replacing every line that names it with a single line in the position of
+    /// the first and returning that line's value, or appending one if the field is absent.
+    pub fn insert<N: Into<FieldName>, V: Into<Vec<u8>>>(
+        &mut self,
+        name: N,
+        value: V,
+    ) -> Option<Vec<u8>> {
+        let name = normalized_name(name);
+        let value = value.into();
+        let Some(index) = self.fields.iter().position(|(stored, _)| *stored == name) else {
+            self.fields.push((name, value));
+            return None;
+        };
+
+        let previous = std::mem::replace(&mut self.fields[index].1, value);
+        // Any further line naming the same field would serialize as a duplicate, so only the
+        // line just replaced survives.
+        let mut kept = false;
+        self.fields
+            .retain(|(stored, _)| *stored != name || !std::mem::replace(&mut kept, true));
+
+        Some(previous)
+    }
+
+    /// Remove every line naming `header`, returning the value of the first.
+    pub fn remove(&mut self, header: &WarcHeader) -> Option<Vec<u8>> {
+        let index = self
+            .fields
+            .iter()
+            .position(|(name, _)| name.header() == header)?;
+        let (_, first) = self.fields.remove(index);
+        self.fields.retain(|(name, _)| name.header() != header);
+
+        Some(first)
+    }
+
+    /// Reject a block that names any field twice, `WARC-Concurrent-To` excepted.
+    ///
+    /// This is what upholds the guarantee that only the repeatable field can appear more than
+    /// once. Two spellings of one field are one field here, since every stored name is
+    /// normalized.
+    pub(crate) fn check_for_duplicates(&self) -> Result<(), WarcError> {
+        // Blocks are small, but the reader admits up to a megabyte of them, so the check is
+        // hashed rather than quadratic.
+        let mut seen = HashSet::with_capacity(self.fields.len());
+        for (name, _) in &self.fields {
+            let header = name.header();
+            if header != &WarcHeader::ConcurrentTo && !seen.insert(header) {
+                return Err(WarcError::DuplicateHeader(header.clone()));
             }
         }
-        *headers.as_mut() = normalized;
-    }
 
-    Ok(())
+        Ok(())
+    }
+}
+
+/// Fold an `Unknown` spelling of a well-known field name into that field's variant, so that
+/// the two spell one field wherever a block is looked up by field.
+fn normalized_name<N: Into<FieldName>>(name: N) -> FieldName {
+    let mut name = name.into();
+    name.normalize();
+
+    name
 }
 
 /// Reject a header whose name or value would serialize to a record no reader could parse
-/// back: an unknown name outside the parser's token grammar, or a value containing the bare
-/// `\r` or `\n` that would inject header lines or terminate the block early.
+/// back: a name outside the parser's token grammar, or a value containing the bare `\r` or
+/// `\n` that would inject header lines or terminate the block early.
 ///
 /// # Errors
 ///
 /// Returns `Error::MalformedHeader` naming the header at fault.
-pub fn validate_header(header: &WarcHeader, value: &[u8]) -> Result<(), WarcError> {
-    if let WarcHeader::Unknown(name) = header {
-        let valid_token = !name.is_empty() && name.bytes().all(crate::is_header_token_char);
-        if !valid_token {
-            return Err(WarcError::MalformedHeader(
-                header.clone(),
-                "name is not a valid header token".to_string(),
-            ));
-        }
+pub fn validate_header(name: &FieldName, value: &[u8]) -> Result<(), WarcError> {
+    // The serialized spelling is what has to parse back, and a name read from an archive or
+    // named by its variant always does; only a hand-built one can fail here.
+    let serialized = name.name();
+    if serialized.is_empty() || !serialized.bytes().all(crate::is_header_token_char) {
+        return Err(WarcError::MalformedHeader(
+            name.header().clone(),
+            "name is not a valid header token".to_string(),
+        ));
     }
 
     if value.contains(&b'\r') || value.contains(&b'\n') {
         return Err(WarcError::MalformedHeader(
-            header.clone(),
+            name.header().clone(),
             "value contains a line break".to_string(),
         ));
     }
@@ -233,8 +343,7 @@ fn take_utf8_header(
     header: &WarcHeader,
 ) -> Result<Option<String>, WarcError> {
     headers
-        .as_mut()
-        .shift_remove(header)
+        .remove(header)
         .map(|value| {
             String::from_utf8(value).map_err(|_| {
                 WarcError::MalformedHeader(header.clone(), "not a UTF-8 string".to_string())
@@ -254,7 +363,7 @@ fn take_required_utf8_header(
 impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
     type Error = WarcError;
     fn try_from(mut headers: RawRecordHeader) -> Result<Self, WarcError> {
-        normalize_raw_headers(&mut headers)?;
+        headers.check_for_duplicates()?;
         take_required_utf8_header(&mut headers, &WarcHeader::ContentLength)
             .and_then(|len| Self::parse_content_length(&len))?;
 
@@ -268,11 +377,11 @@ impl Record<EmptyBody> {
     /// above — so that the parsed value flows through instead of being parsed a second time
     /// from the stored bytes.
     pub(crate) fn from_validated_raw(mut headers: RawRecordHeader) -> Result<Self, WarcError> {
-        for header in headers.as_ref().keys() {
-            validate_header_version(headers.version, header)?;
+        for name in headers.names() {
+            validate_header_version(headers.version, name.header())?;
         }
 
-        headers.as_mut().shift_remove(&WarcHeader::ContentLength);
+        headers.remove(&WarcHeader::ContentLength);
 
         let record_type: RecordType =
             take_required_utf8_header(&mut headers, &WarcHeader::WarcType)?.into();
@@ -285,25 +394,11 @@ impl Record<EmptyBody> {
         let truncated_type = take_utf8_header(&mut headers, &WarcHeader::Truncated)?
             .map(|value| TruncatedType::from(&value));
 
-        // Tolerate raw headers constructed by hand with `WARC-Concurrent-To` in the map: all
-        // values of the repeatable field belong in `concurrent_to`.
-        if let Some(value) = headers.as_mut().shift_remove(&WarcHeader::ConcurrentTo) {
-            headers.concurrent_to.insert(0, value);
-        }
-
         // `Record` guarantees UTF-8 header values; reject the record otherwise.
-        for (header, value) in headers.as_ref() {
+        for (name, value) in headers.iter() {
             if std::str::from_utf8(value).is_err() {
                 return Err(WarcError::MalformedHeader(
-                    header.clone(),
-                    "not a UTF-8 string".to_string(),
-                ));
-            }
-        }
-        for value in &headers.concurrent_to {
-            if std::str::from_utf8(value).is_err() {
-                return Err(WarcError::MalformedHeader(
-                    WarcHeader::ConcurrentTo,
+                    name.header().clone(),
                     "not a UTF-8 string".to_string(),
                 ));
             }
@@ -325,16 +420,8 @@ impl std::fmt::Display for RawRecordHeader {
     // with CRLF, so this cannot use `writeln!` (which emits a bare LF).
     fn fmt(&self, w: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(w, "WARC/{}\r\n", self.version)?;
-        for (key, value) in self.as_ref() {
-            write!(w, "{}: {}\r\n", key, String::from_utf8_lossy(value))?;
-        }
-        for value in &self.concurrent_to {
-            write!(
-                w,
-                "{}: {}\r\n",
-                WarcHeader::ConcurrentTo,
-                String::from_utf8_lossy(value)
-            )?;
+        for (name, value) in self.iter() {
+            write!(w, "{}: {}\r\n", name, String::from_utf8_lossy(value))?;
         }
         write!(w, "\r\n")?;
 
@@ -346,7 +433,7 @@ impl std::fmt::Display for RawRecordHeader {
 #[derive(Clone, Default)]
 pub struct RecordBuilder {
     value: Record<BufferedBody>,
-    broken_headers: IndexMap<WarcHeader, Vec<u8>>,
+    broken_headers: Vec<(WarcHeader, Vec<u8>)>,
 }
 
 /// A single WARC record.
@@ -535,13 +622,9 @@ impl<T: BodyKind> Record<T> {
                 .truncated_type
                 .as_ref()
                 .map(|truncated_type| Cow::Owned(truncated_type.to_string())),
-            WarcHeader::ConcurrentTo => self.headers.concurrent_to.first().map(|value| {
-                Cow::Borrowed(
-                    std::str::from_utf8(value)
-                        .expect("invariant violation: record header value is not UTF-8"),
-                )
-            }),
-            _ => self.headers.as_ref().get(&header).map(|value| {
+            // `WARC-Concurrent-To` is stored in the block like any other field, so the first
+            // of its lines is what the general lookup below returns.
+            _ => self.headers.get(&header).map(|value| {
                 Cow::Borrowed(
                     std::str::from_utf8(value)
                         .expect("invariant violation: record header value is not UTF-8"),
@@ -577,9 +660,9 @@ impl<T: BodyKind> Record<T> {
         V: Into<String>,
     {
         let value = value.into();
-        let header = header.normalized();
-        validate_header(&header, value.as_bytes())?;
-        match &header {
+        let name = FieldName::new(header.normalized());
+        validate_header(&name, value.as_bytes())?;
+        match name.header() {
             WarcHeader::Date => {
                 let version = self.warc_version();
                 let new_date = Record::parse_record_date(version, &value)?;
@@ -599,16 +682,6 @@ impl<T: BodyKind> Record<T> {
                 self.truncated_type = Some(TruncatedType::from(&value));
                 Ok(old_type.map(|old| Cow::Owned(old.to_string())))
             }
-            WarcHeader::ConcurrentTo => {
-                let old_values =
-                    std::mem::replace(&mut self.headers.concurrent_to, vec![value.into_bytes()]);
-                Ok(old_values.into_iter().next().map(|old| {
-                    Cow::Owned(
-                        String::from_utf8(old)
-                            .expect("invariant violation: record header value is not UTF-8"),
-                    )
-                }))
-            }
             WarcHeader::ContentLength => {
                 let content_length = self.body.content_length();
                 if Record::<EmptyBody>::parse_content_length(&value)? == content_length {
@@ -620,16 +693,14 @@ impl<T: BodyKind> Record<T> {
                     ))
                 }
             }
-            _ => Ok(self
-                .headers
-                .as_mut()
-                .insert(header, Vec::from(value))
-                .map(|v| {
-                    Cow::Owned(
-                        String::from_utf8(v)
-                            .expect("invariant violation: record header value is not UTF-8"),
-                    )
-                })),
+            // `insert` collapses the repeatable `WARC-Concurrent-To` to a single line in the
+            // position of the first, which is what setting it is defined to do.
+            _ => Ok(self.headers.insert(name, value).map(|previous| {
+                Cow::Owned(
+                    String::from_utf8(previous)
+                        .expect("invariant violation: record header value is not UTF-8"),
+                )
+            })),
         }
     }
 
@@ -640,10 +711,12 @@ impl<T: BodyKind> Record<T> {
     /// Panics if a stored header value is not UTF-8, which construction of the record
     /// prevents.
     pub fn concurrent_to(&self) -> impl Iterator<Item = &str> {
-        self.headers.concurrent_to.iter().map(|value| {
-            std::str::from_utf8(value)
-                .expect("invariant violation: record header value is not UTF-8")
-        })
+        self.headers
+            .get_all(&WarcHeader::ConcurrentTo)
+            .map(|value| {
+                std::str::from_utf8(value)
+                    .expect("invariant violation: record header value is not UTF-8")
+            })
     }
 
     /// Add a `WARC-Concurrent-To` header to this record, keeping any values already present.
@@ -651,7 +724,8 @@ impl<T: BodyKind> Record<T> {
     /// `WARC-Concurrent-To` is the only header the specification allows to repeat. To replace
     /// the existing values instead, use `set_header`.
     pub fn add_concurrent_to<S: Into<String>>(&mut self, id: S) {
-        self.headers.concurrent_to.push(id.into().into_bytes());
+        self.headers
+            .push(WarcHeader::ConcurrentTo, id.into().into_bytes());
     }
 
     /// Return the Content-Length header for this record.
@@ -684,24 +758,31 @@ impl<T: BodyKind> Record<T> {
     /// every other name and value is borrowed from the record.
     pub(crate) fn visit_header_lines<E, F>(&self, mut visit: F) -> Result<(), E>
     where
-        F: FnMut(&WarcHeader, &[u8]) -> Result<(), E>,
+        F: FnMut(&FieldName, &[u8]) -> Result<(), E>,
     {
         let date = self.record_date.to_string_for_version(self.warc_version());
         let content_length = self.body.content_length().to_string();
 
-        visit(&WarcHeader::WarcType, self.record_type.as_str().as_bytes())?;
-        visit(&WarcHeader::RecordID, self.record_id.as_bytes())?;
-        visit(&WarcHeader::Date, date.as_bytes())?;
+        // The derived fields are not stored, so their names have no spelling to preserve and
+        // are serialized lower-case.
+        let name = FieldName::new;
+
+        visit(
+            &name(WarcHeader::WarcType),
+            self.record_type.as_str().as_bytes(),
+        )?;
+        visit(&name(WarcHeader::RecordID), self.record_id.as_bytes())?;
+        visit(&name(WarcHeader::Date), date.as_bytes())?;
         if let Some(truncated_type) = &self.truncated_type {
-            visit(&WarcHeader::Truncated, truncated_type.as_str().as_bytes())?;
+            visit(
+                &name(WarcHeader::Truncated),
+                truncated_type.as_str().as_bytes(),
+            )?;
         }
-        for (header, value) in self.headers.as_ref() {
-            visit(header, value)?;
+        for (stored, value) in self.headers.iter() {
+            visit(stored, value)?;
         }
-        visit(&WarcHeader::ContentLength, content_length.as_bytes())?;
-        for value in &self.headers.concurrent_to {
-            visit(&WarcHeader::ConcurrentTo, value)?;
-        }
+        visit(&name(WarcHeader::ContentLength), content_length.as_bytes())?;
 
         Ok(())
     }
@@ -711,40 +792,16 @@ impl<T: BodyKind> Record<T> {
     /// Headers appear in conventional WARC order: record-level headers first,
     /// `Content-Length` last.
     pub fn to_raw_header(&self) -> RawRecordHeader {
-        let stored_headers = self.headers.as_ref();
-        let mut headers: IndexMap<WarcHeader, Vec<u8>> =
-            IndexMap::with_capacity(stored_headers.len() + 5);
-        headers.insert(WarcHeader::WarcType, self.record_type.to_string().into());
-        headers.insert(WarcHeader::RecordID, self.record_id.clone().into());
-        headers.insert(
-            WarcHeader::Date,
-            self.record_date
-                .to_string_for_version(self.warc_version())
-                .into(),
-        );
-        if let Some(truncated_type) = &self.truncated_type {
-            headers.insert(WarcHeader::Truncated, truncated_type.to_string().into());
-        }
-        headers.extend(
-            stored_headers
-                .iter()
-                .map(|(header, value)| (header.clone(), value.clone())),
-        );
-        headers.insert(
-            WarcHeader::ContentLength,
-            self.body.content_length().to_string().into(),
-        );
-
-        debug_assert_eq!(
-            headers.len(),
-            stored_headers.len() + 4 + usize::from(self.truncated_type.is_some()),
-            "invariant violation: raw struct contains externally stored fields"
-        );
+        let mut fields = Vec::with_capacity(self.headers.len() + 5);
+        self.visit_header_lines::<std::convert::Infallible, _>(|name, value| {
+            fields.push((name.clone(), value.to_vec()));
+            Ok(())
+        })
+        .unwrap_or_else(|infallible| match infallible {});
 
         RawRecordHeader {
             version: self.headers.version,
-            headers,
-            concurrent_to: self.headers.concurrent_to.clone(),
+            fields,
         }
     }
 }
@@ -863,11 +920,7 @@ impl<T: Read> Read for Record<StreamingBody<'_, T>> {
 impl<T: BodyKind + Default> Default for Record<T> {
     fn default() -> Self {
         Self {
-            headers: RawRecordHeader {
-                version: WarcVersion::V1_1,
-                headers: IndexMap::new(),
-                concurrent_to: Vec::new(),
-            },
+            headers: RawRecordHeader::new(WarcVersion::V1_1),
             record_date: Utc::now().into(),
             record_id: Record::generate_record_id(),
             record_type: RecordType::Resource,
@@ -964,13 +1017,18 @@ impl RecordBuilder {
     pub fn header<V: Into<Vec<u8>>>(mut self, key: WarcHeader, value: V) -> Self {
         let key = key.normalized();
         let value = value.into();
+        // A header set successfully is no longer broken, and one set twice is retried only
+        // once, in the position it was first set.
         match Self::set_raw_header(&mut self.value, key.clone(), &value) {
-            Ok(()) => {
-                self.broken_headers.shift_remove(&key);
-            }
-            Err(_) => {
-                self.broken_headers.insert(key, value);
-            }
+            Ok(()) => self.broken_headers.retain(|(broken, _)| broken != &key),
+            Err(_) => match self
+                .broken_headers
+                .iter_mut()
+                .find(|(broken, _)| broken == &key)
+            {
+                Some((_, previous)) => *previous = value,
+                None => self.broken_headers.push((key, value)),
+            },
         }
 
         self
@@ -1016,7 +1074,7 @@ impl RecordBuilder {
 mod record_tests {
     use chrono::prelude::*;
 
-    use crate::header::WarcHeader;
+    use crate::header::{FieldName, WarcHeader};
     use crate::{BufferedBody, EmptyBody, Error, Record, RecordType, TruncatedType};
 
     /// Stripping the body keeps every other field of the record and zeroes its length.
@@ -1121,9 +1179,9 @@ mod record_tests {
             .unwrap();
 
         let (headers, _) = record.into_raw_parts();
-        let keys: Vec<&WarcHeader> = headers.as_ref().keys().collect();
+        let names: Vec<&WarcHeader> = headers.names().map(FieldName::header).collect();
         assert_eq!(
-            keys,
+            names,
             vec![
                 &WarcHeader::WarcType,
                 &WarcHeader::RecordID,
@@ -1567,43 +1625,34 @@ mod record_tests {
 mod raw_tests {
     use std::convert::TryFrom;
 
-    use indexmap::IndexMap;
-
     use crate::header::WarcHeader;
     use crate::{EmptyBody, Error, RawRecordHeader, Record, RecordType, TruncatedType};
 
     #[test]
     fn create() {
-        let headers = RawRecordHeader {
-            version: crate::WarcVersion::V1_0,
-            headers: IndexMap::new(),
-            concurrent_to: Vec::new(),
-        };
+        let headers = RawRecordHeader::new(crate::WarcVersion::V1_0);
 
-        assert_eq!(headers.as_ref().len(), 0);
+        assert_eq!(headers.len(), 0);
     }
 
     #[test]
     fn create_with_headers() {
-        let headers = RawRecordHeader {
-            version: crate::WarcVersion::V1_0,
-            headers: vec![(
+        let headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [(
                 WarcHeader::WarcType,
                 RecordType::WarcInfo.to_string().into_bytes(),
-            )]
-            .into_iter()
-            .collect(),
-            concurrent_to: Vec::new(),
-        };
+            )],
+        );
 
-        assert_eq!(headers.as_ref().len(), 1);
+        assert_eq!(headers.len(), 1);
     }
 
     #[test]
     fn verify_ok() {
-        let headers = RawRecordHeader {
-            version: crate::WarcVersion::V1_0,
-            headers: vec![
+        let headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
                 (
@@ -1611,97 +1660,82 @@ mod raw_tests {
                     b"<urn:test:basic-record:record-0>".to_vec(),
                 ),
                 (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-            ]
-            .into_iter()
-            .collect(),
-            concurrent_to: Vec::new(),
-        };
+            ],
+        );
 
         assert!(Record::<EmptyBody>::try_from(headers).is_ok());
     }
 
     #[test]
     fn verify_missing_type() {
-        let headers = RawRecordHeader {
-            version: crate::WarcVersion::V1_0,
-            headers: vec![
+        let headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
                 (WarcHeader::ContentLength, b"5".to_vec()),
                 (
                     WarcHeader::RecordID,
                     b"<urn:test:basic-record:record-0>".to_vec(),
                 ),
                 (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-            ]
-            .into_iter()
-            .collect(),
-            concurrent_to: Vec::new(),
-        };
+            ],
+        );
 
         assert!(Record::<EmptyBody>::try_from(headers).is_err());
     }
 
     #[test]
     fn verify_missing_content_length() {
-        let headers = RawRecordHeader {
-            version: crate::WarcVersion::V1_0,
-            headers: vec![
+        let headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (
                     WarcHeader::RecordID,
                     b"<urn:test:basic-record:record-0>".to_vec(),
                 ),
                 (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-            ]
-            .into_iter()
-            .collect(),
-            concurrent_to: Vec::new(),
-        };
+            ],
+        );
 
         assert!(Record::<EmptyBody>::try_from(headers).is_err());
     }
 
     #[test]
     fn verify_missing_record_id() {
-        let headers = RawRecordHeader {
-            version: crate::WarcVersion::V1_0,
-            headers: vec![
+        let headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
                 (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-            ]
-            .into_iter()
-            .collect(),
-            concurrent_to: Vec::new(),
-        };
+            ],
+        );
 
         assert!(Record::<EmptyBody>::try_from(headers).is_err());
     }
 
     #[test]
     fn verify_missing_date() {
-        let headers = RawRecordHeader {
-            version: crate::WarcVersion::V1_0,
-            headers: vec![
+        let headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
                 (
                     WarcHeader::RecordID,
                     b"<urn:test:basic-record:record-0>".to_vec(),
                 ),
-            ]
-            .into_iter()
-            .collect(),
-            concurrent_to: Vec::new(),
-        };
+            ],
+        );
 
         assert!(Record::<EmptyBody>::try_from(headers).is_err());
     }
 
     /// A block that converts cleanly, with one field replaced by the given value.
     fn headers_with(header: WarcHeader, value: Vec<u8>) -> RawRecordHeader {
-        let mut headers = RawRecordHeader {
-            version: crate::WarcVersion::V1_0,
-            headers: vec![
+        let mut headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
                 (
@@ -1709,12 +1743,9 @@ mod raw_tests {
                     b"<urn:test:basic-record:record-0>".to_vec(),
                 ),
                 (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-            ]
-            .into_iter()
-            .collect(),
-            concurrent_to: Vec::new(),
-        };
-        headers.as_mut().insert(header, value);
+            ],
+        );
+        headers.insert(header, value);
         headers
     }
 
@@ -1759,9 +1790,9 @@ mod raw_tests {
     /// into the typed field.
     #[test]
     fn verify_unknown_spelling_is_normalized() {
-        let headers = RawRecordHeader {
-            version: crate::WarcVersion::V1_0,
-            headers: vec![
+        let headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_1,
+            [
                 (
                     WarcHeader::Unknown("Warc-Type".to_string()),
                     b"dunno".to_vec(),
@@ -1772,11 +1803,8 @@ mod raw_tests {
                     b"<urn:test:unknown-spelling:record-0>".to_vec(),
                 ),
                 (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-            ]
-            .into_iter()
-            .collect(),
-            concurrent_to: Vec::new(),
-        };
+            ],
+        );
 
         let record = Record::<EmptyBody>::try_from(headers).unwrap();
         assert_eq!(
@@ -1785,28 +1813,56 @@ mod raw_tests {
         );
     }
 
-    /// An `Unknown` spelling that collides with a field already present is a duplicate, and
-    /// a duplicate of a field the record can hold only once is rejected.
+    /// A line whose `Unknown` spelling collides with a field already in the block is the
+    /// duplicate the reader would reject.
     #[test]
     fn verify_unknown_spelling_collision_is_rejected() {
+        let headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
+                (WarcHeader::WarcType, b"dunno".to_vec()),
+                (WarcHeader::ContentLength, b"5".to_vec()),
+                (
+                    WarcHeader::RecordID,
+                    b"<urn:test:basic-record:record-0>".to_vec(),
+                ),
+                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
+                (
+                    WarcHeader::Unknown("WARC-Date".to_string()),
+                    b"2021-01-01T00:00:00Z".to_vec(),
+                ),
+            ],
+        );
+
+        assert!(matches!(
+            Record::<EmptyBody>::try_from(headers),
+            Err(Error::DuplicateHeader(WarcHeader::Date))
+        ));
+    }
+
+    /// Setting a field under an `Unknown` spelling of its name replaces the field itself,
+    /// rather than adding a line that would serialize as a duplicate.
+    #[test]
+    fn setting_an_unknown_spelling_replaces_the_field() {
         let headers = headers_with(
             WarcHeader::Unknown("WARC-Date".to_string()),
             b"2021-01-01T00:00:00Z".to_vec(),
         );
 
-        assert!(Record::<EmptyBody>::try_from(headers).is_err());
+        assert_eq!(headers.len(), 4);
+        assert_eq!(
+            headers.get(&WarcHeader::Date).unwrap(),
+            b"2021-01-01T00:00:00Z"
+        );
     }
 
     /// The formatted header block is terminated by CRLF throughout, as the grammar requires.
     #[test]
     fn display_uses_crlf_line_endings() {
-        let headers = RawRecordHeader {
-            version: crate::WarcVersion::V1_1,
-            headers: vec![(WarcHeader::WarcType, b"resource".to_vec())]
-                .into_iter()
-                .collect(),
-            concurrent_to: Vec::new(),
-        };
+        let headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_1,
+            [(WarcHeader::WarcType, b"resource".to_vec())],
+        );
 
         assert_eq!(
             headers.to_string(),
@@ -1821,11 +1877,7 @@ mod raw_tests {
             (WarcHeader::Date, b"2024-01-01T00:00:00Z".to_vec()),
         ];
 
-        let headers = RawRecordHeader {
-            version: crate::WarcVersion::V1_0,
-            headers: header_entries.into_iter().collect(),
-            concurrent_to: Vec::new(),
-        };
+        let headers = RawRecordHeader::from_fields(crate::WarcVersion::V1_0, header_entries);
 
         let output = headers.to_string();
 
@@ -1864,7 +1916,7 @@ mod builder_tests {
         let (headers, body) = RecordBuilder::default().build_raw().unwrap();
         assert_eq!(headers.version, crate::WarcVersion::V1_1);
         assert_eq!(
-            headers.as_ref().get(&WarcHeader::ContentLength).unwrap(),
+            headers.get(&WarcHeader::ContentLength).unwrap(),
             &b"0".to_vec()
         );
         assert!(body.is_empty());
@@ -1882,7 +1934,7 @@ mod builder_tests {
             .unwrap();
         assert_eq!(headers.version, crate::WarcVersion::V1_1);
         assert_eq!(
-            headers.as_ref().get(&WarcHeader::ContentLength).unwrap(),
+            headers.get(&WarcHeader::ContentLength).unwrap(),
             &b"6".to_vec()
         );
         assert_eq!(body.as_slice(), b"abcdef");
@@ -1916,25 +1968,22 @@ mod builder_tests {
 
     #[test]
     fn create_with_headers() {
-        let headers = RawRecordHeader {
-            version: crate::WarcVersion::V1_0,
-            headers: vec![(
+        let headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [(
                 WarcHeader::WarcType,
                 RecordType::WarcInfo.to_string().into_bytes(),
-            )]
-            .into_iter()
-            .collect(),
-            concurrent_to: Vec::new(),
-        };
+            )],
+        );
 
-        assert_eq!(headers.as_ref().len(), 1);
+        assert_eq!(headers.len(), 1);
     }
 
     #[test]
     fn verify_ok() {
-        let headers = RawRecordHeader {
-            version: crate::WarcVersion::V1_0,
-            headers: vec![
+        let headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
                 (
@@ -1942,11 +1991,8 @@ mod builder_tests {
                     b"<urn:test:basic-record:record-0>".to_vec(),
                 ),
                 (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-            ]
-            .into_iter()
-            .collect(),
-            concurrent_to: Vec::new(),
-        };
+            ],
+        );
 
         assert!(Record::<EmptyBody>::try_from(headers).is_ok());
     }
@@ -1962,7 +2008,6 @@ mod builder_tests {
                 .unwrap()
                 .into_raw_parts()
                 .0
-                .as_ref()
                 .get(&WarcHeader::ContentLength)
                 .unwrap(),
             &b"5".to_vec()
@@ -1974,7 +2019,6 @@ mod builder_tests {
                 .build_raw()
                 .unwrap()
                 .0
-                .as_ref()
                 .get(&WarcHeader::ContentLength)
                 .unwrap(),
             &b"5".to_vec()
@@ -2024,14 +2068,10 @@ mod builder_tests {
 
         let (headers, _) = builder.build_raw().unwrap();
         assert_eq!(
-            headers.as_ref().get(&WarcHeader::Date).unwrap(),
+            headers.get(&WarcHeader::Date).unwrap(),
             b"2020-07-08T02:52:55Z"
         );
-        assert!(
-            !headers
-                .as_ref()
-                .contains_key(&WarcHeader::Unknown("WARC-Date".to_string()))
-        );
+        assert!(!headers.contains(&WarcHeader::Unknown("WARC-Date".to_string())));
     }
 
     /// A `Content-Length` set before the body it describes is retried against the finished
@@ -2072,12 +2112,8 @@ mod builder_tests {
 
         assert_eq!(record1, record2);
         assert_eq!(
-            record1
-                .into_raw_parts()
-                .0
-                .as_ref()
-                .get(&WarcHeader::WarcType),
-            Some(&b"request".to_vec())
+            record1.into_raw_parts().0.get(&WarcHeader::WarcType),
+            Some(&b"request"[..])
         );
     }
 
@@ -2092,13 +2128,8 @@ mod builder_tests {
 
         let record = builder.clone().build().unwrap();
         assert_eq!(
-            record
-                .into_raw_parts()
-                .0
-                .as_ref()
-                .get(&WarcHeader::Date)
-                .unwrap(),
-            &DATE_STRING_0.as_bytes()
+            record.into_raw_parts().0.get(&WarcHeader::Date).unwrap(),
+            DATE_STRING_0.as_bytes()
         );
         assert_eq!(
             builder
@@ -2106,22 +2137,16 @@ mod builder_tests {
                 .build_raw()
                 .unwrap()
                 .0
-                .as_ref()
                 .get(&WarcHeader::Date)
                 .unwrap(),
-            &DATE_STRING_0.as_bytes()
+            DATE_STRING_0.as_bytes()
         );
 
         builder = builder.header(WarcHeader::Date, DATE_STRING_1.to_vec());
         let record = builder.clone().build().unwrap();
         assert_eq!(
-            record
-                .into_raw_parts()
-                .0
-                .as_ref()
-                .get(&WarcHeader::Date)
-                .unwrap(),
-            &DATE_STRING_1.to_vec()
+            record.into_raw_parts().0.get(&WarcHeader::Date).unwrap(),
+            DATE_STRING_1
         );
         assert_eq!(
             builder
@@ -2129,10 +2154,9 @@ mod builder_tests {
                 .build_raw()
                 .unwrap()
                 .0
-                .as_ref()
                 .get(&WarcHeader::Date)
                 .unwrap(),
-            &DATE_STRING_1.to_vec()
+            DATE_STRING_1
         );
 
         let builder = builder.header(WarcHeader::Date, b"not-a-dayTor:a:time".to_vec());
@@ -2152,7 +2176,6 @@ mod builder_tests {
             record
                 .into_raw_parts()
                 .0
-                .as_ref()
                 .get(&WarcHeader::RecordID)
                 .unwrap(),
             &RECORD_ID_0.to_vec()
@@ -2163,7 +2186,6 @@ mod builder_tests {
                 .build_raw()
                 .unwrap()
                 .0
-                .as_ref()
                 .get(&WarcHeader::RecordID)
                 .unwrap(),
             &RECORD_ID_0.to_vec()
@@ -2175,7 +2197,6 @@ mod builder_tests {
             record
                 .into_raw_parts()
                 .0
-                .as_ref()
                 .get(&WarcHeader::RecordID)
                 .unwrap(),
             &RECORD_ID_1.to_vec()
@@ -2185,7 +2206,6 @@ mod builder_tests {
                 .build_raw()
                 .unwrap()
                 .0
-                .as_ref()
                 .get(&WarcHeader::RecordID)
                 .unwrap(),
             &RECORD_ID_1.to_vec()
@@ -2205,7 +2225,6 @@ mod builder_tests {
             record
                 .into_raw_parts()
                 .0
-                .as_ref()
                 .get(&WarcHeader::Truncated)
                 .unwrap(),
             &TRUNCATED_TYPE_0.to_vec()
@@ -2216,7 +2235,6 @@ mod builder_tests {
                 .build_raw()
                 .unwrap()
                 .0
-                .as_ref()
                 .get(&WarcHeader::Truncated)
                 .unwrap(),
             &TRUNCATED_TYPE_0.to_vec()
@@ -2228,7 +2246,6 @@ mod builder_tests {
             record
                 .into_raw_parts()
                 .0
-                .as_ref()
                 .get(&WarcHeader::Truncated)
                 .unwrap(),
             &TRUNCATED_TYPE_1.to_vec()
@@ -2239,7 +2256,6 @@ mod builder_tests {
                 .build_raw()
                 .unwrap()
                 .0
-                .as_ref()
                 .get(&WarcHeader::Truncated)
                 .unwrap(),
             &TRUNCATED_TYPE_1.to_vec()
@@ -2253,10 +2269,8 @@ mod builder_tests {
                 .unwrap()
                 .into_raw_parts()
                 .0
-                .as_ref()
                 .get(&WarcHeader::Truncated)
-                .unwrap()
-                .as_slice(),
+                .unwrap(),
             &b"foreign-intervention"[..]
         );
 
@@ -2265,10 +2279,8 @@ mod builder_tests {
                 .build_raw()
                 .unwrap()
                 .0
-                .as_ref()
                 .get(&WarcHeader::Truncated)
-                .unwrap()
-                .as_slice(),
+                .unwrap(),
             &b"foreign-intervention"[..]
         );
     }
