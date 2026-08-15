@@ -109,3 +109,5 @@ pub use version::WarcVersion;
 
 mod warc_date;
 pub use warc_date::{WarcDate, WarcDatePrecision};
+
+pub mod fields;
