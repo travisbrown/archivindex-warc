@@ -268,6 +268,24 @@ impl RawRecordHeader {
         Some(first)
     }
 
+    /// Sort the field lines into the conventional order of a WARC header block: what the
+    /// record is and what it describes first, the segmentation and integrity fields next, and
+    /// the fields describing the block itself last.
+    ///
+    /// The sort is stable and every field the standard does not name shares one rank past the
+    /// last of those it does, so extension fields end up after the standard ones in the order
+    /// they were in, as do the several lines of the repeatable `WARC-Concurrent-To`.
+    ///
+    /// Reading a record does not reorder it — a block keeps the order it was read in so that
+    /// it can be written back out unchanged — so this is how a block from an archive is put
+    /// into that order deliberately.
+    pub fn canonical_order(&mut self) {
+        // The rank is a scan of the field table, so it is computed once per line rather than
+        // once per comparison.
+        self.fields
+            .sort_by_cached_key(|(name, _)| name.header().canonical_rank());
+    }
+
     /// Reject a block that names any field twice, `WARC-Concurrent-To` excepted.
     ///
     /// This is what upholds the guarantee that only the repeatable field can appear more than
@@ -1626,7 +1644,7 @@ mod raw_tests {
     use std::convert::TryFrom;
 
     use crate::header::WarcHeader;
-    use crate::{EmptyBody, Error, RawRecordHeader, Record, RecordType, TruncatedType};
+    use crate::{EmptyBody, Error, FieldName, RawRecordHeader, Record, RecordType, TruncatedType};
 
     #[test]
     fn create() {
@@ -1854,6 +1872,119 @@ mod raw_tests {
             headers.get(&WarcHeader::Date).unwrap(),
             b"2021-01-01T00:00:00Z"
         );
+    }
+
+    /// Collect a block's field names as read, for comparing an ordering.
+    fn field_names(headers: &RawRecordHeader) -> Vec<&str> {
+        headers.names().map(FieldName::name).collect()
+    }
+
+    /// Reordering puts the standard fields in the conventional order however they were given.
+    #[test]
+    fn canonical_order_sorts_the_standard_fields() {
+        let mut headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
+                (WarcHeader::ContentLength, b"5".to_vec()),
+                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
+                (
+                    WarcHeader::RecordID,
+                    b"<urn:test:canonical-order:record-0>".to_vec(),
+                ),
+                (WarcHeader::ContentType, b"text/plain".to_vec()),
+                (WarcHeader::WarcType, b"resource".to_vec()),
+            ],
+        );
+
+        headers.canonical_order();
+
+        assert_eq!(
+            field_names(&headers),
+            [
+                "warc-type",
+                "warc-date",
+                "warc-record-id",
+                "content-type",
+                "content-length",
+            ]
+        );
+    }
+
+    /// Fields the standard does not name share the last rank, so they follow the standard
+    /// ones without being reordered among themselves.
+    #[test]
+    fn canonical_order_leaves_extension_fields_last_and_in_order() {
+        let mut headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
+                (WarcHeader::Unknown("x-zebra".to_string()), b"1".to_vec()),
+                (WarcHeader::ContentLength, b"5".to_vec()),
+                (WarcHeader::Unknown("x-aardvark".to_string()), b"2".to_vec()),
+                (WarcHeader::WarcType, b"resource".to_vec()),
+            ],
+        );
+
+        headers.canonical_order();
+
+        assert_eq!(
+            field_names(&headers),
+            ["warc-type", "content-length", "x-zebra", "x-aardvark"]
+        );
+    }
+
+    /// The sort is stable, so the several lines of the one repeatable field stay in the order
+    /// they were read in.
+    #[test]
+    fn canonical_order_keeps_repeated_concurrent_to_lines_in_order() {
+        let mut headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
+                (WarcHeader::ConcurrentTo, b"<urn:test:first>".to_vec()),
+                (WarcHeader::ContentLength, b"5".to_vec()),
+                (WarcHeader::ConcurrentTo, b"<urn:test:second>".to_vec()),
+                (WarcHeader::WarcType, b"resource".to_vec()),
+                (WarcHeader::ConcurrentTo, b"<urn:test:third>".to_vec()),
+            ],
+        );
+
+        headers.canonical_order();
+
+        assert_eq!(
+            field_names(&headers),
+            [
+                "warc-type",
+                "warc-concurrent-to",
+                "warc-concurrent-to",
+                "warc-concurrent-to",
+                "content-length",
+            ]
+        );
+        assert_eq!(
+            headers
+                .get_all(&WarcHeader::ConcurrentTo)
+                .collect::<Vec<_>>(),
+            [
+                &b"<urn:test:first>"[..],
+                &b"<urn:test:second>"[..],
+                &b"<urn:test:third>"[..],
+            ]
+        );
+    }
+
+    /// Reordering keeps the spelling each name was read with, since it only moves lines.
+    #[test]
+    fn canonical_order_preserves_the_spelling_of_each_name() {
+        let mut headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
+                (FieldName::as_read("Content-Length"), b"5".to_vec()),
+                (FieldName::as_read("WARC-Type"), b"resource".to_vec()),
+            ],
+        );
+
+        headers.canonical_order();
+
+        assert_eq!(field_names(&headers), ["WARC-Type", "Content-Length"]);
     }
 
     /// The formatted header block is terminated by CRLF throughout, as the grammar requires.
