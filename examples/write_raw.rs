@@ -8,9 +8,9 @@ fn main() -> Result<(), std::io::Error> {
     let body = format!("wrote to the file on {}", date);
     let body = body.into_bytes();
 
-    let headers = RawRecordHeader {
-        version: archivindex_warc::WarcVersion::V1_0,
-        headers: vec![
+    let headers = RawRecordHeader::from_fields(
+        archivindex_warc::WarcVersion::V1_0,
+        [
             (
                 WarcHeader::RecordID,
                 Record::generate_record_id().into_bytes(),
@@ -25,11 +25,8 @@ fn main() -> Result<(), std::io::Error> {
                 WarcHeader::ContentLength,
                 body.len().to_string().into_bytes(),
             ),
-        ]
-        .into_iter()
-        .collect(),
-        concurrent_to: Vec::new(),
-    };
+        ],
+    );
 
     let mut file = WarcWriter::from_path(common::tmp_path("warc_example.warc")?)?;
 

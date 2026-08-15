@@ -4,9 +4,10 @@ use std::{fs, io};
 
 #[cfg(feature = "gzip")]
 use flate2::bufread::MultiGzDecoder as GzipReader;
-use indexmap::IndexMap;
 
-use crate::{BufferedBody, Error, MB, RawRecordHeader, Record, StreamingBody, WarcHeader, parser};
+use crate::{
+    BufferedBody, Error, FieldName, MB, RawRecordHeader, Record, StreamingBody, WarcHeader, parser,
+};
 
 /// A reader which iteratively parses WARC records from a stream.
 pub struct WarcReader<R> {
@@ -66,40 +67,6 @@ impl WarcReader<BufReader<GzipReader<BufReader<fs::File>>>> {
         let gzip_stream = GzipReader::new(BufReader::with_capacity(MB, file));
         Ok(Self::new(BufReader::new(gzip_stream)))
     }
-}
-
-/// Collect parsed header lines into a header block and the values of the repeatable field.
-///
-/// The specification forbids repeating any named field except `WARC-Concurrent-To`, whose
-/// values are all preserved in order of appearance.
-///
-/// # Errors
-///
-/// Returns `Error::DuplicateHeader` if any other named field appears more than once.
-#[allow(clippy::type_complexity)]
-fn collect_headers<'a>(
-    parsed: Vec<(&'a str, std::borrow::Cow<'a, [u8]>)>,
-) -> Result<(IndexMap<WarcHeader, Vec<u8>>, Vec<Vec<u8>>), Error> {
-    let mut headers = IndexMap::with_capacity(parsed.len());
-    let mut concurrent_to = Vec::new();
-
-    for (token, value) in parsed {
-        let header = WarcHeader::from(token);
-        if header == WarcHeader::ConcurrentTo {
-            concurrent_to.push(value.into_owned());
-        } else {
-            match headers.entry(header) {
-                indexmap::map::Entry::Occupied(entry) => {
-                    return Err(Error::DuplicateHeader(entry.key().clone()));
-                }
-                indexmap::map::Entry::Vacant(entry) => {
-                    entry.insert(value.into_owned());
-                }
-            }
-        }
-    }
-
-    Ok((headers, concurrent_to))
 }
 
 /// Check that a parsed header block was consumed in full.
@@ -233,12 +200,16 @@ fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, u64), Error> {
     let expected_body_len =
         expected_body_len.ok_or(Error::MissingHeader(WarcHeader::ContentLength))?;
 
-    let (headers, concurrent_to) = collect_headers(headers)?;
-    let headers = RawRecordHeader {
+    // Field names are kept exactly as they were spelled, and in the order they were read, so
+    // that the block serializes back to the bytes it was parsed from.
+    let headers = RawRecordHeader::from_fields(
         version,
-        headers,
-        concurrent_to,
-    };
+        headers
+            .into_iter()
+            .map(|(token, value)| (FieldName::as_read(token), value.into_owned())),
+    );
+    // The specification forbids repeating any named field except `WARC-Concurrent-To`.
+    headers.check_for_duplicates()?;
 
     Ok((headers, expected_body_len))
 }
@@ -531,11 +502,8 @@ mod from_path_tests {
 #[cfg(test)]
 mod iter_raw_tests {
     use std::io::{BufReader, Cursor};
-    use std::iter::FromIterator;
 
-    use indexmap::IndexMap;
-
-    use crate::{Error, WarcHeader, WarcReader};
+    use crate::{Error, FieldName, RawRecordHeader, WarcHeader, WarcReader};
     macro_rules! create_reader {
         ($raw:expr) => {{ BufReader::new(Cursor::new($raw.get(..).unwrap())) }};
     }
@@ -629,23 +597,31 @@ mod iter_raw_tests {
             \r\n\
         ";
 
-        let expected_version = crate::WarcVersion::V1_0;
-        let expected_headers: IndexMap<WarcHeader, Vec<u8>> = IndexMap::from_iter(vec![
-            (WarcHeader::WarcType, b"dunno".to_vec()),
-            (WarcHeader::ContentLength, b"5".to_vec()),
-            (
-                WarcHeader::RecordID,
-                b"<urn:test:basic-record:record-0>".to_vec(),
-            ),
-            (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-        ]);
+        let expected_headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
+                (WarcHeader::WarcType, b"dunno".to_vec()),
+                (WarcHeader::ContentLength, b"5".to_vec()),
+                (
+                    WarcHeader::RecordID,
+                    b"<urn:test:basic-record:record-0>".to_vec(),
+                ),
+                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
+            ],
+        );
         let expected_body: &[u8] = b"12345";
 
         let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
         let (headers, body) = reader.next().unwrap().unwrap();
-        assert_eq!(headers.version, expected_version);
-        assert_eq!(headers.as_ref(), &expected_headers);
+        assert_eq!(headers, expected_headers);
         assert_eq!(body, expected_body);
+
+        // Names are equal whatever their spelling, so the comparison above says nothing about
+        // how they were spelled; each is in fact kept exactly as it was read.
+        assert_eq!(
+            headers.names().map(FieldName::name).collect::<Vec<_>>(),
+            ["Warc-Type", "Content-Length", "WARC-Record-Id", "WARC-Date"]
+        );
     }
 
     /// The WARC 1.0 defined-field registry does not include either of the fields added in
@@ -813,40 +789,43 @@ mod iter_raw_tests {
 
         let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
         {
-            let expected_version = crate::WarcVersion::V1_0;
-            let expected_headers: IndexMap<WarcHeader, Vec<u8>> = IndexMap::from_iter(vec![
-                (WarcHeader::WarcType, b"dunno".to_vec()),
-                (WarcHeader::ContentLength, b"5".to_vec()),
-                (
-                    WarcHeader::RecordID,
-                    b"<urn:test:two-records:record-0>".to_vec(),
-                ),
-                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-            ]);
+            // The field lines are compared in the order they appear in the record.
+            let expected_headers = RawRecordHeader::from_fields(
+                crate::WarcVersion::V1_0,
+                [
+                    (WarcHeader::WarcType, b"dunno".to_vec()),
+                    (WarcHeader::ContentLength, b"5".to_vec()),
+                    (
+                        WarcHeader::RecordID,
+                        b"<urn:test:two-records:record-0>".to_vec(),
+                    ),
+                    (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
+                ],
+            );
             let expected_body: &[u8] = b"12345";
 
             let (headers, body) = reader.next().unwrap().unwrap();
-            assert_eq!(headers.version, expected_version);
-            assert_eq!(headers.as_ref(), &expected_headers);
+            assert_eq!(headers, expected_headers);
             assert_eq!(body, expected_body);
         }
 
         {
-            let expected_version = crate::WarcVersion::V1_0;
-            let expected_headers: IndexMap<WarcHeader, Vec<u8>> = IndexMap::from_iter(vec![
-                (WarcHeader::WarcType, b"another".to_vec()),
-                (WarcHeader::ContentLength, b"6".to_vec()),
-                (
-                    WarcHeader::RecordID,
-                    b"<urn:test:two-records:record-1>".to_vec(),
-                ),
-                (WarcHeader::Date, b"2020-07-08T02:52:56Z".to_vec()),
-            ]);
+            let expected_headers = RawRecordHeader::from_fields(
+                crate::WarcVersion::V1_0,
+                [
+                    (WarcHeader::WarcType, b"another".to_vec()),
+                    (
+                        WarcHeader::RecordID,
+                        b"<urn:test:two-records:record-1>".to_vec(),
+                    ),
+                    (WarcHeader::Date, b"2020-07-08T02:52:56Z".to_vec()),
+                    (WarcHeader::ContentLength, b"6".to_vec()),
+                ],
+            );
             let expected_body: &[u8] = b"123456";
 
             let (headers, body) = reader.next().unwrap().unwrap();
-            assert_eq!(headers.version, expected_version);
-            assert_eq!(headers.as_ref(), &expected_headers);
+            assert_eq!(headers, expected_headers);
             assert_eq!(body, expected_body);
         }
     }
@@ -951,10 +930,9 @@ mod iter_raw_tests {
         assert!(body.is_empty());
         assert_eq!(
             headers
-                .as_ref()
                 .get(&WarcHeader::Unknown("unfolded-test".to_owned()))
                 .unwrap(),
-            &b"this value spans lines".to_vec()
+            b"this value spans lines"
         );
     }
 
@@ -1005,12 +983,13 @@ mod iter_raw_tests {
         let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
         let (headers, body) = reader.next().unwrap().unwrap();
         assert!(body.is_empty());
-        assert!(headers.as_ref().get(&WarcHeader::ConcurrentTo).is_none());
         assert_eq!(
-            headers.concurrent_to,
+            headers
+                .get_all(&WarcHeader::ConcurrentTo)
+                .collect::<Vec<_>>(),
             vec![
-                b"<urn:test:concurrent:record-1>".to_vec(),
-                b"<urn:test:concurrent:record-2>".to_vec(),
+                &b"<urn:test:concurrent:record-1>"[..],
+                &b"<urn:test:concurrent:record-2>"[..],
             ]
         );
     }

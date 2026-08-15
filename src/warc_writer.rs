@@ -69,8 +69,8 @@ impl<W: Write> WarcWriter<W> {
         emit(b"WARC/")?;
         emit(record.warc_version().as_str().as_bytes())?;
         emit(b"\r\n")?;
-        record.visit_header_lines(|header, value| {
-            emit(header.name().as_bytes())?;
+        record.visit_header_lines(|name, value| {
+            emit(name.name().as_bytes())?;
             emit(b": ")?;
             emit(value)?;
             emit(b"\r\n")
@@ -111,15 +111,8 @@ impl<W: Write> WarcWriter<W> {
         emit(headers.version.as_str().as_bytes())?;
         emit(b"\r\n")?;
 
-        for (token, value) in headers.as_ref() {
-            emit(token.name().as_bytes())?;
-            emit(b": ")?;
-            emit(value)?;
-            emit(b"\r\n")?;
-        }
-        // `WARC-Concurrent-To` may repeat: each value becomes its own header line.
-        for value in &headers.concurrent_to {
-            emit(WarcHeader::ConcurrentTo.name().as_bytes())?;
+        for (name, value) in headers.iter() {
+            emit(name.name().as_bytes())?;
             emit(b": ")?;
             emit(value)?;
             emit(b"\r\n")?;
@@ -273,29 +266,27 @@ fn invalid_input(error: crate::Error) -> io::Error {
 /// (see `validate_raw_header`), or that carry fields undefined at the record's WARC version.
 fn validate_record(record: &Record<BufferedBody>) -> Result<(), crate::Error> {
     let version = record.warc_version();
-    record.visit_header_lines(|header, value| {
-        crate::record::validate_header(header, value)?;
-        crate::record::validate_header_version(version, header)
+    record.visit_header_lines(|name, value| {
+        crate::record::validate_header(name, value)?;
+        crate::record::validate_header_version(version, name.header())
     })
 }
 
 /// Reject a raw header block that would serialize to a record no reader could parse back: a
-/// value containing a line break, an unknown header name outside the token grammar, or a
+/// value containing a line break, a header name outside the token grammar, a field named twice
+/// (which the reader rejects for every field but the repeatable `WARC-Concurrent-To`), or a
 /// `Content-Length` that is not the length of the body the block frames.
 ///
 /// The declared length is what a reader counts out to find the end of the record, so a block
 /// that declares any other number, or none at all, does not frame the body it is written with.
 fn validate_raw_header(headers: &RawRecordHeader, body_len: u64) -> Result<(), crate::Error> {
-    for (header, value) in headers.as_ref() {
-        crate::record::validate_header(header, value)?;
-    }
-    // `WARC-Concurrent-To` values live outside the header map, so they need their own pass.
-    for value in &headers.concurrent_to {
-        crate::record::validate_header(&WarcHeader::ConcurrentTo, value)?;
+    for (name, value) in headers.iter() {
+        crate::record::validate_header(name, value)?;
     }
 
+    headers.check_for_duplicates()?;
+
     let declared = headers
-        .as_ref()
         .get(&WarcHeader::ContentLength)
         .ok_or(crate::Error::MissingHeader(WarcHeader::ContentLength))?;
     let declared = std::str::from_utf8(declared)
@@ -327,16 +318,13 @@ mod write_raw_tests {
 
     /// A block that any writer should accept, to derive rejected blocks from.
     fn valid_headers() -> RawRecordHeader {
-        RawRecordHeader {
-            version: crate::WarcVersion::V1_1,
-            headers: vec![
+        RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_1,
+            [
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
-            ]
-            .into_iter()
-            .collect(),
-            concurrent_to: Vec::new(),
-        }
+            ],
+        )
     }
 
     /// Assert that writing the given raw header block fails with `InvalidInput` and emits no
@@ -357,27 +345,68 @@ mod write_raw_tests {
     #[test]
     fn write_raw_rejects_header_injection() {
         let mut injected_value = valid_headers();
-        injected_value.as_mut().insert(
+        injected_value.insert(
             WarcHeader::TargetURI,
             b"https://a/\r\nwarc-type: evil".to_vec(),
         );
         assert_rejected(&injected_value);
 
         let mut invalid_name = valid_headers();
-        invalid_name
-            .as_mut()
-            .insert(WarcHeader::Unknown("evil name".to_string()), b"v".to_vec());
+        invalid_name.insert(WarcHeader::Unknown("evil name".to_string()), b"v".to_vec());
         assert_rejected(&invalid_name);
 
         let mut injected_concurrent_to = valid_headers();
-        injected_concurrent_to
-            .concurrent_to
-            .push(b"<urn:a>\r\nevil: x".to_vec());
+        injected_concurrent_to.push(WarcHeader::ConcurrentTo, b"<urn:a>\r\nevil: x".to_vec());
         assert_rejected(&injected_concurrent_to);
 
         // The block the three are derived from is written without complaint.
         let mut writer = WarcWriter::new(Vec::new());
         writer.write_raw(&valid_headers(), b"body!").unwrap();
+    }
+
+    /// A hand-built block that names a field twice would not read back, so it is rejected
+    /// before anything is written. `WARC-Concurrent-To` is the field that may repeat.
+    #[test]
+    fn write_raw_rejects_repeated_fields() {
+        let mut repeated = valid_headers();
+        repeated.push(WarcHeader::TargetURI, b"https://a/".to_vec());
+        repeated.push(
+            WarcHeader::Unknown("WARC-Target-URI".to_string()),
+            b"https://b/".to_vec(),
+        );
+        assert_rejected(&repeated);
+
+        let mut concurrent_to = valid_headers();
+        concurrent_to.push(WarcHeader::ConcurrentTo, b"<urn:a>".to_vec());
+        concurrent_to.push(WarcHeader::ConcurrentTo, b"<urn:b>".to_vec());
+
+        let mut writer = WarcWriter::new(Vec::new());
+        writer.write_raw(&concurrent_to, b"body!").unwrap();
+    }
+
+    /// A raw block is written with each field name in the spelling it carries and each line
+    /// in the position it holds, which is what lets an archive be rewritten byte for byte.
+    #[test]
+    fn write_raw_preserves_header_spelling_and_order() {
+        let raw: &[u8] = b"\
+            WARC/1.1\r\n\
+            WARC-Type: resource\r\n\
+            Warc-Record-Id: <urn:test:spelling:record-0>\r\n\
+            WARC-CONCURRENT-TO: <urn:test:spelling:record-1>\r\n\
+            content-length: 5\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut writer = WarcWriter::new(Vec::new());
+        for record in crate::WarcReader::new(raw).iter_raw_records() {
+            let (headers, body) = record.unwrap();
+            writer.write_raw(&headers, &body).unwrap();
+        }
+
+        assert_eq!(writer.get_ref().as_slice(), raw);
     }
 
     /// Typed setters that bypass `set_header` are caught when the record is written.
@@ -562,16 +591,13 @@ mod write_raw_tests {
 
     #[test]
     fn short_writes_do_not_truncate() {
-        let headers = RawRecordHeader {
-            version: crate::WarcVersion::V1_0,
-            headers: vec![
+        let headers = RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
-            ]
-            .into_iter()
-            .collect(),
-            concurrent_to: Vec::new(),
-        };
+            ],
+        );
 
         let mut writer = WarcWriter::new(TrickleWriter(Vec::new()));
         let bytes_written = writer.write_raw(&headers, b"12345").unwrap();
@@ -590,13 +616,11 @@ mod write_raw_tests {
     fn write_raw_rejects_a_length_the_body_does_not_have() {
         // The body `assert_rejected` writes is five bytes long.
         let mut wrong_length = valid_headers();
-        wrong_length
-            .as_mut()
-            .insert(WarcHeader::ContentLength, b"99".to_vec());
+        wrong_length.insert(WarcHeader::ContentLength, b"99".to_vec());
         assert_rejected(&wrong_length);
 
         let mut no_length = valid_headers();
-        no_length.as_mut().shift_remove(&WarcHeader::ContentLength);
+        no_length.remove(&WarcHeader::ContentLength);
         assert_rejected(&no_length);
 
         let mut writer = WarcWriter::new(Vec::new());
@@ -610,19 +634,16 @@ mod from_path_tests {
     use crate::{RawRecordHeader, WarcHeader};
 
     fn record_with_body(body: &[u8]) -> RawRecordHeader {
-        RawRecordHeader {
-            version: crate::WarcVersion::V1_0,
-            headers: vec![
+        RawRecordHeader::from_fields(
+            crate::WarcVersion::V1_0,
+            [
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (
                     WarcHeader::ContentLength,
                     body.len().to_string().into_bytes(),
                 ),
-            ]
-            .into_iter()
-            .collect(),
-            concurrent_to: Vec::new(),
-        }
+            ],
+        )
     }
 
     #[test]

@@ -4,9 +4,9 @@ use chrono::prelude::*;
 fn main() {
     let body = "hello warc! 👋".to_owned();
 
-    let headers = RawRecordHeader {
-        version: archivindex_warc::WarcVersion::V1_0,
-        headers: vec![
+    let headers = RawRecordHeader::from_fields(
+        archivindex_warc::WarcVersion::V1_0,
+        [
             (
                 WarcHeader::RecordID,
                 Record::generate_record_id().into_bytes(),
@@ -26,11 +26,8 @@ fn main() {
                 WarcHeader::ContentLength,
                 body.len().to_string().into_bytes(),
             ),
-        ]
-        .into_iter()
-        .collect(),
-        concurrent_to: Vec::new(),
-    };
+        ],
+    );
 
     println!("{}{}", headers, body);
 }

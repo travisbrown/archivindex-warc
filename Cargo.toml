@@ -26,7 +26,6 @@ serde = ["dep:serde"]
 [dependencies]
 chrono = "0.4"
 flate2 = { version = "1", optional = true }
-indexmap = "2"
 nom = "8"
 serde = { version = "1", optional = true, features = ["derive"] }
 thiserror = "2"
