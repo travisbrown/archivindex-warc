@@ -102,6 +102,17 @@ impl WarcHeader {
         }
     }
 
+    /// This field's position in the conventional ordering of a header block, which
+    /// [`RawRecordHeader::canonical_order`](crate::RawRecordHeader::canonical_order) sorts
+    /// into. Every field the standard does not name shares the one rank past the last of
+    /// those it does, so extension fields sort after them and among themselves not at all.
+    pub(crate) fn canonical_rank(&self) -> usize {
+        KNOWN_HEADERS
+            .iter()
+            .position(|header| header == self)
+            .unwrap_or(KNOWN_HEADERS.len())
+    }
+
     /// Return whether this field name is permitted by the given WARC version.
     ///
     /// WARC 1.0 permits extension fields, so unknown names are accepted. The two fields
@@ -124,30 +135,35 @@ impl Display for WarcHeader {
     }
 }
 
-/// Every field the standard names, looked up by `From<S>` below. The names themselves live on
-/// `WarcHeader::names`, so this list carries only the variants.
+/// Every field the standard names, in the order a header block conventionally prints them:
+/// what the record is and what it describes first, the segmentation and integrity fields
+/// next, and the fields describing the block itself last.
+///
+/// This is both the table `From<S>` looks a name up in and the ordering
+/// [`WarcHeader::canonical_rank`] reports, so the two cannot drift apart. The names
+/// themselves live on `WarcHeader::names`, so this list carries only the variants.
 const KNOWN_HEADERS: [WarcHeader; 21] = [
-    WarcHeader::ContentLength,
-    WarcHeader::ContentType,
-    WarcHeader::BlockDigest,
-    WarcHeader::ConcurrentTo,
+    WarcHeader::WarcType,
+    WarcHeader::TargetURI,
     WarcHeader::Date,
-    WarcHeader::Filename,
-    WarcHeader::IdentifiedPayloadType,
-    WarcHeader::IPAddress,
-    WarcHeader::PayloadDigest,
     WarcHeader::Profile,
     WarcHeader::RecordID,
+    WarcHeader::WarcInfoID,
+    WarcHeader::Filename,
     WarcHeader::RefersTo,
-    WarcHeader::RefersToDate,
     WarcHeader::RefersToTargetURI,
+    WarcHeader::RefersToDate,
+    WarcHeader::BlockDigest,
+    WarcHeader::PayloadDigest,
     WarcHeader::SegmentNumber,
     WarcHeader::SegmentOriginID,
     WarcHeader::SegmentTotalLength,
-    WarcHeader::TargetURI,
+    WarcHeader::IPAddress,
+    WarcHeader::ConcurrentTo,
+    WarcHeader::ContentType,
+    WarcHeader::IdentifiedPayloadType,
+    WarcHeader::ContentLength,
     WarcHeader::Truncated,
-    WarcHeader::WarcType,
-    WarcHeader::WarcInfoID,
 ];
 
 impl<S: AsRef<str>> From<S> for WarcHeader {
