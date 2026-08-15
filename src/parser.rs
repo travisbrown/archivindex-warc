@@ -210,6 +210,17 @@ mod tests {
         );
     }
 
+    /// Linear white space may precede a value, so a value written entirely on continuation
+    /// lines does not pick up a leading space from the fold that begins it.
+    #[test]
+    #[ignore = "known bug (fold onto an empty value adds a leading space): fix incoming"]
+    fn header_pair_folded_value_starting_on_a_continuation_line() {
+        assert_eq!(
+            header(&b"folded-header:\r\n one\r\n two\r\n"[..]),
+            Ok((&b""[..], ("folded-header", Cow::Owned(b"one two".to_vec()))))
+        );
+    }
+
     #[test]
     fn headers_parsing() {
         let raw_invalid = b"\
