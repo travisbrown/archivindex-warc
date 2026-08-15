@@ -68,6 +68,19 @@ fn header(input: &[u8]) -> IResult<&[u8], (&str, Cow<'_, [u8]>)> {
     Ok((input, (token, value)))
 }
 
+/// Parse a `warc-fields` block: a run of named fields with no version line ahead of them, as
+/// a `warcinfo` or `metadata` record carries in its body.
+///
+/// Returns the fields in order of appearance. Parsing stops at the first line that is not a
+/// named field, which the grammar's trailing `CRLF` makes the usual ending, so the caller
+/// decides what an unconsumed remainder means. Unlike [`headers`], this never reports
+/// `Incomplete`: a body is read in full before it is parsed, so input running out is the end
+/// of the block rather than a request for more.
+#[allow(clippy::type_complexity)]
+pub fn fields(input: &[u8]) -> IResult<&[u8], Vec<(&str, Cow<'_, [u8]>)>> {
+    many0(complete(header)).parse(input)
+}
+
 /// Parse a WARC header block.
 ///
 /// Returns the version, the named fields in order of appearance, and the value of the
@@ -110,7 +123,7 @@ mod tests {
     use nom::error::ErrorKind;
     use nom::{Err, Needed};
 
-    use super::{header, headers, version};
+    use super::{fields, header, headers, version};
 
     #[test]
     fn version_parsing() {
@@ -223,6 +236,32 @@ mod tests {
             header(&b"folded-header:\r\n one\r\n two\r\n"[..]),
             Ok((&b""[..], ("folded-header", Cow::Owned(b"one two".to_vec()))))
         );
+    }
+
+    /// A `warc-fields` block is read without a version line ahead of it, and parsing stops at
+    /// the first line that is not a named field, which the grammar's closing `CRLF` makes the
+    /// usual ending.
+    #[test]
+    fn fields_parsing() {
+        assert_eq!(
+            fields(&b"software: one\r\nisPartOf: two\r\n\r\n"[..]),
+            Ok((
+                &b"\r\n"[..],
+                vec![
+                    ("software", Cow::Borrowed(&b"one"[..])),
+                    ("isPartOf", Cow::Borrowed(&b"two"[..])),
+                ]
+            ))
+        );
+
+        // Input running out is the end of the block rather than a request for more, so an
+        // unterminated last line is left over rather than reported as `Incomplete`.
+        assert_eq!(
+            fields(&b"software: one"[..]),
+            Ok((&b"software: one"[..], vec![]))
+        );
+
+        assert_eq!(fields(&b""[..]), Ok((&b""[..], vec![])));
     }
 
     #[test]
