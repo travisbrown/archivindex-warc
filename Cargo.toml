@@ -39,6 +39,9 @@ sha1 = "0.11"
 tempfile = "3"
 # Only the `read_filtered` example parses URLs.
 url = "2"
+# The upstream crate this one is derived from, compared against by `warc_crate_roundtrip`.
+# Pinned exactly, since that test asserts the behavior of one specific implementation.
+warc = "=0.4.0"
 
 # These examples demonstrate gzip-compressed WARC files, so they are only built when the
 # feature they require is enabled; the remaining examples are still auto-discovered.
