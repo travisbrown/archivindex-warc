@@ -6,19 +6,10 @@
 //! `warc_crate_roundtrip`, which forgives header order and case: here nothing is forgiven,
 //! so the suite pins down exactly how faithful a round trip through this crate is.
 //!
-//! Every fixture currently fails, for two reasons, both of which preserve the length of the
-//! archive to the byte, so the whole suite is ignored pending a fix:
-//!
-//! 1. The writer emits header names lower-cased (`warc-type:` for the fixtures'
-//!    `WARC-Type:`), because a parsed name is matched against a table of lower-case literals
-//!    and the original spelling is not kept. This accounts for all sixteen failures, and for
-//!    three of them — `pywb/httpbin-resource.warc.gz`, `warcio/example-resource.warc.gz` and
-//!    `warcio/example-space-in-target-uri.warc.gz` — it is the only difference.
-//! 2. `WARC-Concurrent-To` is repeatable, so it is held in its own field rather than in the
-//!    header block, and the writer emits it after every other header. A fixture that carries
-//!    the field mid-block therefore comes back with it at the end of that record's block.
-//!    This accounts for the remaining thirteen failures; setting those lines aside makes
-//!    every other header line land at its original position.
+//! The two properties this rests on are that a field name keeps the spelling it was read
+//! with, and that every field line keeps its position in the block, `WARC-Concurrent-To`
+//! included. Both are what the raw round trip goes through, so a regression in either shows
+//! up here as a differing byte.
 
 #![cfg(feature = "gzip")]
 
@@ -82,8 +73,6 @@ macro_rules! roundtrip_tests {
     ($set:literal, $($test_name:ident: $fixture:literal,)+) => {
         $(
             #[test]
-            #[ignore = "known bug (writer lower-cases header names, moves warc-concurrent-to): \
-                        fix incoming"]
             fn $test_name() {
                 assert_roundtrip_is_faithful($set, $fixture);
             }
