@@ -19,11 +19,12 @@
 
 #![cfg(feature = "gzip")]
 
-use std::fs::File;
-use std::io::{BufReader, BufWriter, Read};
-use std::path::{Path, PathBuf};
+mod support;
+
+use std::io::BufWriter;
 
 use archivindex_warc::{WarcHeader, WarcVersion};
+use support::{fixture_bytes, roundtrip};
 
 /// The number of bytes of a header value shown when a comparison fails.
 const VALUE_CONTEXT: usize = 64;
@@ -35,44 +36,6 @@ struct NormalizedRecord {
     /// Every header as a lower-cased name and its value, sorted into a canonical order.
     headers: Vec<(String, Vec<u8>)>,
     body: Vec<u8>,
-}
-
-/// Resolve the path of a fixture within one of the `tests/data` fixture sets.
-fn fixture_path(set: &str, name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/data")
-        .join(set)
-        .join(name)
-}
-
-/// Read a fixture into memory, decompressing it if it is gzip-compressed.
-fn fixture_bytes(path: &Path, compressed: bool) -> Result<Vec<u8>, String> {
-    let mut file = BufReader::new(File::open(path).map_err(|error| error.to_string())?);
-    let mut bytes = Vec::new();
-
-    if compressed {
-        flate2::bufread::MultiGzDecoder::new(file)
-            .read_to_end(&mut bytes)
-            .map_err(|error| error.to_string())?;
-    } else {
-        file.read_to_end(&mut bytes)
-            .map_err(|error| error.to_string())?;
-    }
-
-    Ok(bytes)
-}
-
-/// Round-trip every raw record of an uncompressed archive through this crate.
-fn roundtrip_archivindex(source: &[u8]) -> Result<Vec<u8>, String> {
-    let mut writer = archivindex_warc::WarcWriter::new(Vec::new());
-    for record in archivindex_warc::WarcReader::new(source).iter_raw_records() {
-        let (headers, body) = record.map_err(|error| error.to_string())?;
-        writer
-            .write_raw(&headers, &body)
-            .map_err(|error| error.to_string())?;
-    }
-
-    Ok(writer.into_inner())
 }
 
 /// Round-trip every raw record of an uncompressed archive through the `warc` crate.
@@ -207,11 +170,9 @@ fn describe_difference(
 
 /// Assert that both implementations round-trip a fixture to the same records.
 fn assert_roundtrips_match(set: &str, name: &str) {
-    let path = fixture_path(set, name);
-    let source = fixture_bytes(&path, name.ends_with(".gz"))
-        .unwrap_or_else(|error| panic!("{set}/{name}: {error}"));
+    let source = fixture_bytes(set, name).unwrap_or_else(|error| panic!("{set}/{name}: {error}"));
 
-    let archivindex = roundtrip_archivindex(&source)
+    let archivindex = roundtrip(&source)
         .and_then(|output| normalize(&output))
         .unwrap_or_else(|error| panic!("{set}/{name}: archivindex-warc: {error}"));
     let upstream = roundtrip_upstream(&source)

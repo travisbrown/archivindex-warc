@@ -1,13 +1,61 @@
+// Each integration test binary compiles this module separately and uses only the helpers it
+// needs, so items unused by one binary are still live in another.
+#![allow(dead_code)]
+
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 
-use archivindex_warc::{RawRecordHeader, WarcHeader, WarcReader};
+use archivindex_warc::{RawRecordHeader, WarcHeader, WarcReader, WarcWriter};
 use data_encoding::{BASE32_NOPAD, BASE64, BASE64URL, HEXLOWER};
-use flate2::bufread::GzDecoder;
+use flate2::bufread::{GzDecoder, MultiGzDecoder};
 use sha1::{Digest, Sha1};
 
 pub type RawRecord = (RawRecordHeader, Vec<u8>);
+
+/// Resolve the path of a fixture within one of the `tests/data` fixture sets.
+fn fixture_path(set: &str, name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data")
+        .join(set)
+        .join(name)
+}
+
+/// Read a fixture into memory, decompressing it if it is gzip-compressed.
+///
+/// This is what the round-trip suites compare over: reading the bytes directly keeps a
+/// crate's path constructors and gzip backend out of a comparison that is about WARC
+/// handling.
+pub fn fixture_bytes(set: &str, name: &str) -> Result<Vec<u8>, String> {
+    let path = fixture_path(set, name);
+    let mut source = BufReader::new(File::open(path).map_err(|error| error.to_string())?);
+    let mut bytes = Vec::new();
+
+    if name.ends_with(".gz") {
+        MultiGzDecoder::new(source)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+    } else {
+        source
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+    }
+
+    Ok(bytes)
+}
+
+/// Read every raw record of an uncompressed archive and write them straight back out.
+pub fn roundtrip(source: &[u8]) -> Result<Vec<u8>, String> {
+    let mut writer = WarcWriter::new(Vec::new());
+    for record in WarcReader::new(source).iter_raw_records() {
+        let (headers, body) = record.map_err(|error| error.to_string())?;
+        writer
+            .write_raw(&headers, &body)
+            .map_err(|error| error.to_string())?;
+    }
+
+    Ok(writer.into_inner())
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DigestStatus {
@@ -25,10 +73,7 @@ impl FixtureSet {
     }
 
     fn path(self, name: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/data")
-            .join(self.0)
-            .join(name)
+        fixture_path(self.0, name)
     }
 
     pub fn read(self, name: &str) -> Result<Vec<RawRecord>, String> {
