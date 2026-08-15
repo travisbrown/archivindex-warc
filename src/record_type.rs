@@ -3,7 +3,7 @@
 use std::fmt::Display;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordType {
-    WarcInfo,
+    Warcinfo,
     Response,
     Resource,
     Request,
@@ -19,7 +19,7 @@ impl RecordType {
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
-            Self::WarcInfo => "warcinfo",
+            Self::Warcinfo => "warcinfo",
             Self::Response => "response",
             Self::Resource => "resource",
             Self::Request => "request",
@@ -39,7 +39,7 @@ impl Display for RecordType {
 }
 
 const KNOWN_TYPES: [(&str, RecordType); 8] = [
-    ("warcinfo", RecordType::WarcInfo),
+    ("warcinfo", RecordType::Warcinfo),
     ("response", RecordType::Response),
     ("resource", RecordType::Resource),
     ("request", RecordType::Request),

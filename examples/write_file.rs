@@ -9,7 +9,7 @@ fn main() -> Result<(), std::io::Error> {
     let body = body.into_bytes();
 
     let mut headers = Record::new();
-    headers.set_warc_type(RecordType::WarcInfo);
+    headers.set_warc_type(RecordType::Warcinfo);
     headers.set_date(date);
     headers
         .set_header(WarcHeader::IPAddress, "127.0.0.1")

@@ -13,7 +13,7 @@ fn main() {
             ),
             (
                 WarcHeader::WarcType,
-                RecordType::WarcInfo.to_string().into_bytes(),
+                RecordType::Warcinfo.to_string().into_bytes(),
             ),
             (
                 WarcHeader::Date,

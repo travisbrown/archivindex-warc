@@ -1659,7 +1659,7 @@ mod raw_tests {
             crate::WarcVersion::V1_0,
             [(
                 WarcHeader::WarcType,
-                RecordType::WarcInfo.to_string().into_bytes(),
+                RecordType::Warcinfo.to_string().into_bytes(),
             )],
         );
 
@@ -2103,7 +2103,7 @@ mod builder_tests {
             crate::WarcVersion::V1_0,
             [(
                 WarcHeader::WarcType,
-                RecordType::WarcInfo.to_string().into_bytes(),
+                RecordType::Warcinfo.to_string().into_bytes(),
             )],
         );
 

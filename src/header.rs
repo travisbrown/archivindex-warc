@@ -31,7 +31,7 @@ pub enum WarcHeader {
     TargetURI,
     Truncated,
     WarcType,
-    WarcInfoID,
+    WarcinfoID,
     Unknown(String),
 }
 
@@ -85,7 +85,7 @@ impl WarcHeader {
             Self::TargetURI => ("warc-target-uri", "WARC-Target-URI"),
             Self::Truncated => ("warc-truncated", "WARC-Truncated"),
             Self::WarcType => ("warc-type", "WARC-Type"),
-            Self::WarcInfoID => ("warc-warcinfo-id", "WARC-Warcinfo-ID"),
+            Self::WarcinfoID => ("warc-warcinfo-id", "WARC-Warcinfo-ID"),
             Self::Unknown(string) => (string, string),
         }
     }
@@ -148,7 +148,7 @@ const KNOWN_HEADERS: [WarcHeader; 21] = [
     WarcHeader::Date,
     WarcHeader::Profile,
     WarcHeader::RecordID,
-    WarcHeader::WarcInfoID,
+    WarcHeader::WarcinfoID,
     WarcHeader::Filename,
     WarcHeader::RefersTo,
     WarcHeader::RefersToTargetURI,
