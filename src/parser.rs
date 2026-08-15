@@ -50,7 +50,12 @@ fn header(input: &[u8]) -> IResult<&[u8], (&str, Cow<'_, [u8]>)> {
     } else {
         let mut folded = value.to_vec();
         for (_, continuation, _) in continuations {
-            folded.push(b' ');
+            // A fold stands for a single space, except when nothing has been read yet: the
+            // grammar lets any amount of linear white space precede a value, so a value
+            // written entirely on continuation lines does not begin with one.
+            if !folded.is_empty() {
+                folded.push(b' ');
+            }
             folded.extend_from_slice(continuation);
         }
         Cow::Owned(folded)
@@ -213,7 +218,6 @@ mod tests {
     /// Linear white space may precede a value, so a value written entirely on continuation
     /// lines does not pick up a leading space from the fold that begins it.
     #[test]
-    #[ignore = "known bug (fold onto an empty value adds a leading space): fix incoming"]
     fn header_pair_folded_value_starting_on_a_continuation_line() {
         assert_eq!(
             header(&b"folded-header:\r\n one\r\n two\r\n"[..]),
