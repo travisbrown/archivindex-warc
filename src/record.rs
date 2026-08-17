@@ -10,6 +10,7 @@ use crate::Error as WarcError;
 use crate::header::WarcHeader;
 use crate::record_type::RecordType;
 use crate::truncated_type::TruncatedType;
+use crate::version::WarcVersion;
 
 use streaming_trait::BodyKind;
 pub use streaming_trait::{BufferedBody, EmptyBody, StreamingBody};
@@ -137,7 +138,7 @@ mod streaming_trait {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawRecordHeader {
     /// The WARC standard version this record reports conformance to.
-    pub version: String,
+    pub version: WarcVersion,
     /// All headers other than `WARC-Concurrent-To` that are part of this record, in insertion
     /// order.
     pub headers: IndexMap<WarcHeader, Vec<u8>>,
@@ -263,7 +264,7 @@ impl Record<EmptyBody> {
         let record_id = take_required_utf8_header(&mut headers, &WarcHeader::RecordID)?;
 
         let record_date = take_required_utf8_header(&mut headers, &WarcHeader::Date)
-            .and_then(|date| Self::parse_record_date(&headers.version, &date))?;
+            .and_then(|date| Self::parse_record_date(headers.version, &date))?;
 
         let truncated_type = take_utf8_header(&mut headers, &WarcHeader::Truncated)?
             .map(|value| TruncatedType::from(&value));
@@ -435,8 +436,8 @@ impl Record<EmptyBody> {
     /// WARC 1.0 fixes the format at a complete UTC timestamp with whole-second precision, so
     /// a fractional part, a reduced precision, or a numeric zone offset is not a 1.0 date.
     /// WARC 1.1 relaxes it to the W3C-DTF profile, which admits all three.
-    fn parse_record_date(version: &str, date: &str) -> Result<DateTime<Utc>, WarcError> {
-        let parsed = if version == "1.0" {
+    fn parse_record_date(version: WarcVersion, date: &str) -> Result<DateTime<Utc>, WarcError> {
+        let parsed = if version == WarcVersion::V1_0 {
             NaiveDateTime::parse_from_str(date, "%Y-%m-%dT%H:%M:%SZ")
                 .ok()
                 .map(|date| Utc.from_utc_datetime(&date))
@@ -451,14 +452,14 @@ impl Record<EmptyBody> {
 }
 
 impl<T: BodyKind> Record<T> {
-    /// Return the WARC version string of this record.
-    pub fn warc_version(&self) -> &str {
-        &self.headers.version
+    /// Return the WARC version of this record.
+    pub const fn warc_version(&self) -> WarcVersion {
+        self.headers.version
     }
 
-    /// Set the WARC version string of this record.
-    pub fn set_warc_version<S: Into<String>>(&mut self, id: S) {
-        self.headers.version = id.into();
+    /// Set the WARC version of this record.
+    pub const fn set_warc_version(&mut self, version: WarcVersion) {
+        self.headers.version = version;
     }
 
     /// Return the WARC-Record-ID header for this record.
@@ -576,7 +577,7 @@ impl<T: BodyKind> Record<T> {
         validate_header(&header, value.as_bytes())?;
         match &header {
             WarcHeader::Date => {
-                let date = Record::parse_record_date(&self.headers.version, &value)?;
+                let date = Record::parse_record_date(self.headers.version, &value)?;
                 let old_date = std::mem::replace(&mut self.record_date, date);
                 Ok(Some(Cow::Owned(
                     old_date.to_rfc3339_opts(SecondsFormat::AutoSi, true),
@@ -740,7 +741,7 @@ impl<T: BodyKind> Record<T> {
         );
 
         RawRecordHeader {
-            version: self.headers.version.clone(),
+            version: self.headers.version,
             headers,
             concurrent_to: self.headers.concurrent_to.clone(),
         }
@@ -862,7 +863,7 @@ impl<T: BodyKind + Default> Default for Record<T> {
     fn default() -> Self {
         Self {
             headers: RawRecordHeader {
-                version: "1.1".to_string(),
+                version: WarcVersion::V1_1,
                 headers: IndexMap::new(),
                 concurrent_to: Vec::new(),
             },
@@ -913,7 +914,7 @@ impl RecordBuilder {
 
     /// Set the WARC version of the record under construction.
     #[must_use]
-    pub fn version(mut self, version: String) -> Self {
+    pub const fn version(mut self, version: WarcVersion) -> Self {
         self.value.set_warc_version(version);
 
         self
@@ -1123,7 +1124,7 @@ mod record_tests {
         std::thread::sleep(std::time::Duration::from_millis(10));
         let after = Utc::now();
         assert_eq!(record.content_length(), 0);
-        assert_eq!(record.warc_version(), "1.1");
+        assert_eq!(record.warc_version(), crate::WarcVersion::V1_1);
         assert_eq!(record.warc_type(), &RecordType::Resource);
         assert!(record.date() > &before);
         assert!(record.date() < &after);
@@ -1223,7 +1224,7 @@ mod record_tests {
         ];
 
         for (value, expected) in expectations {
-            let parsed = Record::parse_record_date("1.1", value).expect(value);
+            let parsed = Record::parse_record_date(crate::WarcVersion::V1_1, value).expect(value);
             assert_eq!(
                 parsed.to_rfc3339_opts(SecondsFormat::AutoSi, true),
                 expected,
@@ -1233,7 +1234,7 @@ mod record_tests {
 
         for invalid in ["yesterday", "202", "2020-7", "2020-07-08T02Z", "20200708"] {
             assert!(
-                Record::parse_record_date("1.1", invalid).is_err(),
+                Record::parse_record_date(crate::WarcVersion::V1_1, invalid).is_err(),
                 "{invalid}"
             );
         }
@@ -1619,7 +1620,7 @@ mod raw_tests {
     #[test]
     fn create() {
         let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: IndexMap::new(),
             concurrent_to: Vec::new(),
         };
@@ -1630,7 +1631,7 @@ mod raw_tests {
     #[test]
     fn create_with_headers() {
         let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: vec![(
                 WarcHeader::WarcType,
                 RecordType::WarcInfo.to_string().into_bytes(),
@@ -1646,7 +1647,7 @@ mod raw_tests {
     #[test]
     fn verify_ok() {
         let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: vec![
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
@@ -1667,7 +1668,7 @@ mod raw_tests {
     #[test]
     fn verify_missing_type() {
         let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: vec![
                 (WarcHeader::ContentLength, b"5".to_vec()),
                 (
@@ -1687,7 +1688,7 @@ mod raw_tests {
     #[test]
     fn verify_missing_content_length() {
         let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: vec![
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (
@@ -1707,7 +1708,7 @@ mod raw_tests {
     #[test]
     fn verify_missing_record_id() {
         let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: vec![
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
@@ -1724,7 +1725,7 @@ mod raw_tests {
     #[test]
     fn verify_missing_date() {
         let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: vec![
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
@@ -1744,7 +1745,7 @@ mod raw_tests {
     /// A block that converts cleanly, with one field replaced by the given value.
     fn headers_with(header: WarcHeader, value: Vec<u8>) -> RawRecordHeader {
         let mut headers = RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: vec![
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
@@ -1804,7 +1805,7 @@ mod raw_tests {
     #[test]
     fn verify_unknown_spelling_is_normalized() {
         let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: vec![
                 (
                     WarcHeader::Unknown("Warc-Type".to_string()),
@@ -1845,7 +1846,7 @@ mod raw_tests {
     #[test]
     fn display_uses_crlf_line_endings() {
         let headers = RawRecordHeader {
-            version: "1.1".to_owned(),
+            version: crate::WarcVersion::V1_1,
             headers: vec![(WarcHeader::WarcType, b"resource".to_vec())]
                 .into_iter()
                 .collect(),
@@ -1866,7 +1867,7 @@ mod raw_tests {
         ];
 
         let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: header_entries.into_iter().collect(),
             concurrent_to: Vec::new(),
         };
@@ -1906,7 +1907,7 @@ mod builder_tests {
     #[test]
     fn default() {
         let (headers, body) = RecordBuilder::default().build_raw();
-        assert_eq!(headers.version, "1.1".to_string());
+        assert_eq!(headers.version, crate::WarcVersion::V1_1);
         assert_eq!(
             headers.as_ref().get(&WarcHeader::ContentLength).unwrap(),
             &b"0".to_vec()
@@ -1923,7 +1924,7 @@ mod builder_tests {
         let (headers, body) = RecordBuilder::default()
             .body(b"abcdef".to_vec())
             .build_raw();
-        assert_eq!(headers.version, "1.1".to_string());
+        assert_eq!(headers.version, crate::WarcVersion::V1_1);
         assert_eq!(
             headers.as_ref().get(&WarcHeader::ContentLength).unwrap(),
             &b"6".to_vec()
@@ -1960,7 +1961,7 @@ mod builder_tests {
     #[test]
     fn create_with_headers() {
         let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: vec![(
                 WarcHeader::WarcType,
                 RecordType::WarcInfo.to_string().into_bytes(),
@@ -1976,7 +1977,7 @@ mod builder_tests {
     #[test]
     fn verify_ok() {
         let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: vec![
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
@@ -2106,7 +2107,8 @@ mod builder_tests {
         const DATE_STRING_1: &[u8] = b"2020-07-18T02:12:45Z";
 
         let mut builder = RecordBuilder::default();
-        builder = builder.date(Record::parse_record_date("1.0", DATE_STRING_0).unwrap());
+        builder = builder
+            .date(Record::parse_record_date(crate::WarcVersion::V1_0, DATE_STRING_0).unwrap());
 
         let record = builder.clone().build().unwrap();
         assert_eq!(

@@ -11,7 +11,7 @@ fn main() -> Result<(), std::io::Error> {
     let body = body.into_bytes();
 
     let headers = RawRecordHeader {
-        version: "1.0".to_owned(),
+        version: warc::WarcVersion::V1_0,
         headers: vec![
             (
                 WarcHeader::RecordID,

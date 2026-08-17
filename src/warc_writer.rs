@@ -24,9 +24,8 @@ impl<W: Write> WarcWriter<W> {
     ///
     /// The number of bytes written is returned upon success.
     pub fn write(&mut self, record: &Record<BufferedBody>) -> io::Result<usize> {
-        // Validate every line before emitting anything, mirroring `write_raw`, so that a
+        // Validate every header line before emitting anything, mirroring `write_raw`, so that a
         // rejected record leaves no partial bytes in the output.
-        validate_version(record.warc_version()).map_err(invalid_input)?;
         record
             .visit_header_lines(crate::record::validate_header)
             .map_err(invalid_input)?;
@@ -40,7 +39,7 @@ impl<W: Write> WarcWriter<W> {
         };
 
         emit(b"WARC/")?;
-        emit(record.warc_version().as_bytes())?;
+        emit(record.warc_version().as_str().as_bytes())?;
         emit(b"\r\n")?;
         record.visit_header_lines(|header, value| {
             emit(header.name().as_bytes())?;
@@ -81,7 +80,7 @@ impl<W: Write> WarcWriter<W> {
         };
 
         emit(b"WARC/")?;
-        emit(headers.version.as_bytes())?;
+        emit(headers.version.as_str().as_bytes())?;
         emit(b"\r\n")?;
 
         for (token, value) in headers.as_ref() {
@@ -187,29 +186,16 @@ fn invalid_input(error: crate::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, error)
 }
 
-/// Reject a version this crate cannot read back, which covers both unknown versions and the
-/// line breaks that would corrupt the `WARC/` line.
-fn validate_version(version: &str) -> Result<(), crate::Error> {
-    if crate::is_supported_version(version) {
-        Ok(())
-    } else {
-        Err(crate::Error::MalformedVersion(version.to_string()))
-    }
-}
-
-/// Reject a raw header block that would serialize to a record no reader could parse back: an
-/// unsupported version, a value containing a line break, an unknown header name outside the
-/// token grammar, or a `Content-Length` that is not the length of the body the block frames.
+/// Reject a raw header block that would serialize to a record no reader could parse back: a
+/// value containing a line break, an unknown header name outside the token grammar, or a
+/// `Content-Length` that is not the length of the body the block frames.
 ///
 /// The declared length is what a reader counts out to find the end of the record, so a block
 /// that declares any other number, or none at all, does not frame the body it is written with.
 fn validate_raw_header(headers: &RawRecordHeader, body_len: u64) -> Result<(), crate::Error> {
-    validate_version(&headers.version)?;
-
     for (header, value) in headers.as_ref() {
         crate::record::validate_header(header, value)?;
     }
-
     let declared = headers
         .as_ref()
         .get(&WarcHeader::ContentLength)
@@ -243,7 +229,7 @@ mod write_raw_tests {
     /// A block that any writer should accept, to derive rejected blocks from.
     fn valid_headers() -> RawRecordHeader {
         RawRecordHeader {
-            version: "1.1".to_owned(),
+            version: crate::WarcVersion::V1_1,
             headers: vec![
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
@@ -267,7 +253,7 @@ mod write_raw_tests {
     }
 
     /// Raw header blocks that could not be parsed back are rejected before anything is
-    /// written: injected values, invalid unknown names, and an injected version string.
+    /// written: injected values and invalid unknown names.
     #[test]
     fn write_raw_rejects_header_injection() {
         let mut injected_value = valid_headers();
@@ -283,11 +269,7 @@ mod write_raw_tests {
             .insert(WarcHeader::Unknown("evil name".to_string()), b"v".to_vec());
         assert_rejected(&invalid_name);
 
-        let mut injected_version = valid_headers();
-        injected_version.version = "1.1\r\nevil: x".to_owned();
-        assert_rejected(&injected_version);
-
-        // The block the three are derived from is written without complaint.
+        // The block the two are derived from is written without complaint.
         let mut writer = WarcWriter::new(Vec::new());
         writer.write_raw(&valid_headers(), b"body!").unwrap();
     }
@@ -415,7 +397,7 @@ mod write_raw_tests {
     #[test]
     fn short_writes_do_not_truncate() {
         let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: vec![
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
@@ -467,7 +449,7 @@ mod from_path_tests {
 
     fn record_with_body(body: &[u8]) -> RawRecordHeader {
         RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: vec![
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (

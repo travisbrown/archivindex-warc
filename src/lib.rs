@@ -62,16 +62,6 @@ const fn is_header_token_char(chr: u8) -> bool {
         | b'\\')
 }
 
-/// Whether a version string names a WARC version this crate supports.
-///
-/// The crate implements WARC 1.0 and 1.1; a record claiming conformance to anything else
-/// cannot be read as either, so it is rejected rather than read as though it were. Shared by
-/// the parser and the write-path validation so that acceptance on write matches acceptance
-/// on read.
-fn is_supported_version(version: &str) -> bool {
-    matches!(version, "1.0" | "1.1")
-}
-
 mod error;
 pub use error::Error;
 
@@ -113,3 +103,6 @@ pub use record_type::RecordType;
 
 mod truncated_type;
 pub use truncated_type::TruncatedType;
+
+mod version;
+pub use version::WarcVersion;
