@@ -147,13 +147,27 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
             })
             .and_then(|date| Record::<BufferedBody>::parse_record_date(&date))?;
 
+        let truncated_type = headers
+            .as_mut()
+            .remove(&WarcHeader::Truncated)
+            .map(|vec| {
+                String::from_utf8(vec).map_err(|_| {
+                    WarcError::MalformedHeader(
+                        WarcHeader::Truncated,
+                        "not a UTF-8 string".to_string(),
+                    )
+                })
+            })
+            .transpose()?
+            .map(|value| TruncatedType::from(&value));
+
         Ok(Record {
             headers,
             record_date,
             record_id,
             record_type,
+            truncated_type,
             body: EmptyBody(),
-            ..Default::default()
         })
     }
 }
@@ -360,6 +374,10 @@ impl<T: BodyKind> Record<T> {
             WarcHeader::Date => Some(Cow::Owned(
                 self.date().to_rfc3339_opts(SecondsFormat::Secs, true),
             )),
+            WarcHeader::Truncated => self
+                .truncated_type
+                .as_ref()
+                .map(|truncated_type| Cow::Owned(truncated_type.to_string())),
             _ => self
                 .headers
                 .as_ref()
@@ -855,7 +873,6 @@ mod record_tests {
     /// The truncation reason is a header like any other, so it is readable through the
     /// untyped accessor as well as the typed one.
     #[test]
-    #[ignore = "known bug (RECORD-002: WARC-Truncated dropped in conversion)"]
     fn get_header_truncated() {
         let mut record = Record::<BufferedBody>::default();
         assert!(record.header(WarcHeader::Truncated).is_none());
@@ -1317,7 +1334,6 @@ mod raw_tests {
     }
 
     #[test]
-    #[ignore = "known bug (RECORD-002: WARC-Truncated dropped in conversion)"]
     fn verify_truncated_type_is_extracted() {
         let headers = headers_with(WarcHeader::Truncated, b"length".to_vec());
         let record = Record::<EmptyBody>::try_from(headers).unwrap();
