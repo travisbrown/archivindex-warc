@@ -701,7 +701,11 @@ impl fmt::Display for Record<BufferedBody> {
 }
 impl fmt::Display for Record<EmptyBody> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Record({:?}, Empty)", self.headers)
+        // Giving the record an empty body reuses the header rendering the buffered
+        // implementation gets from `into_raw_parts`, which puts back the headers this type
+        // stores outside the map.
+        let (headers, _) = self.clone().add_body(Vec::new()).into_raw_parts();
+        write!(f, "Record({}, Empty)", headers)
     }
 }
 
@@ -1066,7 +1070,6 @@ mod record_tests {
     /// `Display` for an empty-bodied record renders the same header block a buffered record
     /// does, not a debug view of the stored extra headers.
     #[test]
-    #[ignore = "known bug (RECORD-005: empty-bodied Display renders a debug view)"]
     fn display_empty_record_renders_full_header_block() {
         let mut record = Record::<EmptyBody>::new();
         record
