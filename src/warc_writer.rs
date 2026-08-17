@@ -36,6 +36,10 @@ impl<W: Write> WarcWriter<W> {
     where
         B: AsRef<[u8]>,
     {
+        // Validate the whole header block before emitting anything, so that a rejected record
+        // leaves no partial bytes in the output.
+        validate_raw_header(&headers).map_err(invalid_input)?;
+
         let writer = &mut self.writer;
         let mut bytes_written = 0;
         // A closure keeps the write-then-count pair in one place. `write_all` loops until the
@@ -116,6 +120,28 @@ impl WarcWriter<BufWriter<GzipWriter<std::fs::File>>> {
     }
 }
 
+/// Map a header-validation failure to the `InvalidInput` I/O error reported by the write
+/// path, preserving the typed error as its source.
+fn invalid_input(error: crate::Error) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, error)
+}
+
+/// Reject a raw header block that would serialize to a record no reader could parse back: a
+/// version or value containing a line break, or an unknown header name outside the token
+/// grammar.
+fn validate_raw_header(headers: &RawRecordHeader) -> Result<(), crate::Error> {
+    let version = headers.version.as_bytes();
+    if version.contains(&b'\r') || version.contains(&b'\n') {
+        return Err(crate::Error::MalformedVersion(headers.version.clone()));
+    }
+
+    for (header, value) in headers.as_ref() {
+        crate::record::validate_header(header, value)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod write_raw_tests {
     use super::WarcWriter;
@@ -150,7 +176,6 @@ mod write_raw_tests {
     /// Raw header blocks that could not be parsed back are rejected before anything is
     /// written: injected values, invalid unknown names, and an injected version string.
     #[test]
-    #[ignore = "known bug (RECORD-009: header injection)"]
     fn write_raw_rejects_header_injection() {
         let mut injected_value = valid_headers();
         injected_value.as_mut().insert(
@@ -176,7 +201,6 @@ mod write_raw_tests {
 
     /// Typed setters that bypass `set_header` are caught when the record is written.
     #[test]
-    #[ignore = "known bug (RECORD-009: header injection)"]
     fn write_rejects_injection_through_typed_setters() {
         let mut record = Record::<BufferedBody>::default();
         record.set_warc_id("<urn:a>\r\nevil: x");

@@ -28,29 +28,6 @@ fn version(input: &[u8]) -> IResult<&[u8], &str> {
     Ok((input, version_str))
 }
 
-fn is_header_token_char(chr: u8) -> bool {
-    !matches!(chr, 0..=31
-        | 128..=255
-        | b'('
-        | b')'
-        | b'<'
-        | b'>'
-        | b'@'
-        | b','
-        | b';'
-        | b':'
-        | b'"'
-        | b'/'
-        | b'['
-        | b']'
-        | b'?'
-        | b'='
-        | b'{'
-        | b'}'
-        | b' '
-        | b'\\')
-}
-
 /// Parse one named field, including any folded continuation lines.
 ///
 /// The WARC grammar borrows the `LWS` rule from RFC 2616: a header line beginning with a space
@@ -59,7 +36,7 @@ fn is_header_token_char(chr: u8) -> bool {
 #[allow(clippy::type_complexity)]
 fn header(input: &[u8]) -> IResult<&[u8], (&[u8], Cow<'_, [u8]>)> {
     let (input, (token, _, _, _, value, _)) = tuple((
-        take_while1(is_header_token_char),
+        take_while1(crate::is_header_token_char),
         space0,
         tag(":"),
         space0,

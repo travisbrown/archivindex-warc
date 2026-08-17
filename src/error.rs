@@ -20,6 +20,9 @@ pub enum Error {
     ReadOverflow,
     /// The end of the record's body was found unexpectedly.
     UnexpectedEOB,
+    /// The record's version string contains a line break, so writing it would produce a
+    /// record no reader could parse back.
+    MalformedVersion(String),
 }
 
 impl fmt::Display for Error {
@@ -33,6 +36,7 @@ impl fmt::Display for Error {
             Error::ReadData(_) => write!(f, "Error reading data source."),
             Error::ReadOverflow => write!(f, "Read further than expected."),
             Error::UnexpectedEOB => write!(f, "Unexpected end of body."),
+            Error::MalformedVersion(ref v) => write!(f, "Malformed version: {}", v),
         }
     }
 }
