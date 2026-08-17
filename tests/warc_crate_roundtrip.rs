@@ -1,13 +1,10 @@
 //! Cross-implementation comparison against the `warc` crate, version 0.4.0, from which this crate
 //! is derived.
 //!
-//! Every valid pywb and warcio fixture is round-tripped (read every record, write every
-//! record back out) through both implementations, and the two outputs are required to encode
-//! the same records up to the order and case of the header names. Upstream keeps a record's
-//! header block in a `HashMap`, so it emits header lines in hash order while this crate
-//! preserves their order of appearance; that difference is what the tolerance covers.
-//! Everything else — the record count, the WARC version, every header name and value, and
-//! every body byte — has to match exactly.
+//! Each selected pywb and warcio fixture is read and rewritten by both implementations. The outputs
+//! must match in record count, WARC version, header values, and body bytes after normalizing header
+//! order, name case, and surrounding value whitespace. The upstream crate stores headers in a
+//! `HashMap`; this crate preserves their order.
 //!
 //! Both implementations receive the same uncompressed bytes to isolate WARC handling from
 //! file-opening and gzip behavior.
@@ -18,7 +15,7 @@ mod support;
 
 use std::io::BufWriter;
 
-use archivindex_warc::WarcVersion;
+use archivindex_warc::version::WarcVersion;
 use support::{fixture_bytes, roundtrip};
 
 /// The number of bytes of a header value shown when a comparison fails.
@@ -53,24 +50,29 @@ fn roundtrip_upstream(source: &[u8]) -> Result<Vec<u8>, String> {
 
 /// Reduce a written archive to the records it encodes, discarding header order and case.
 ///
-/// Both outputs are parsed by this crate's reader, so any surviving difference is a
-/// difference in the records the bytes encode rather than in their layout. Lower-casing the
-/// names and sorting the block is the whole of the tolerance.
+/// Parse both outputs with this crate, lowercase header names, trim surrounding value whitespace,
+/// and sort the headers before comparing.
 fn normalize(output: &[u8]) -> Result<Vec<NormalizedRecord>, String> {
-    archivindex_warc::WarcReader::new(output)
+    archivindex_warc::io::read::WarcReader::new(output)
         .iter_raw_records()
         .map(|record| {
-            let (header, body) = record.map_err(|error| error.to_string())?;
-            let mut headers = header
+            let record = record.map_err(|error| error.to_string())?;
+            let mut headers = record
+                .header
+                .headers
                 .iter()
-                .map(|(name, value)| (name.name().to_ascii_lowercase(), value.to_vec()))
+                .map(|(name, value)| {
+                    // A raw record keeps the white space a value was written with, which says
+                    // nothing about the record it encodes and which upstream does not keep.
+                    (name.to_ascii_lowercase(), value.trim_ascii().to_vec())
+                })
                 .collect::<Vec<_>>();
             headers.sort_unstable();
 
             Ok(NormalizedRecord {
-                version: header.version,
+                version: record.header.version,
                 headers,
-                body,
+                body: record.body,
             })
         })
         .collect()

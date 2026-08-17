@@ -1,21 +1,20 @@
-//! Byte-fidelity of this crate's own round trip over the pywb and warcio fixtures.
+//! Byte fidelity of this crate's round trips over the pywb and warcio fixtures.
 //!
-//! Every valid fixture is decompressed if necessary, read record by record, and written
-//! straight back out, and the result is required to be byte-identical to the uncompressed
-//! input. This is a stronger property than the cross-implementation comparison in
-//! `warc_crate_roundtrip`, which forgives header order and case: here nothing is forgiven,
-//! so the suite pins down exactly how faithful a round trip through this crate is.
+//! Each valid fixture is read and written through the two representations that preserve bytes:
 //!
-//! The two properties this rests on are that a field name keeps the spelling it was read
-//! with, and that every field line keeps its position in the block, `WARC-Concurrent-To`
-//! included. Both are what the raw round trip goes through, so a regression in either shows
-//! up here as a differing byte.
+//! 1. [`raw::Record`](archivindex_warc::parse::raw::Record), which preserves raw field names and
+//!    values.
+//! 2. [`untyped::Record`](archivindex_warc::parse::untyped::Record), which also parses each value.
+//!
+//! Both must reproduce the uncompressed fixture exactly.
+//!
+//! `UNREADABLE` lists the fixtures each representation is expected to reject.
 
 #![cfg(feature = "gzip")]
 
 mod support;
 
-use support::{fixture_bytes, roundtrip};
+use support::{fixture_bytes, roundtrip, roundtrip_records};
 
 /// The number of bytes of context shown from each side when a comparison fails.
 const DIFFERENCE_CONTEXT: usize = 96;
@@ -58,13 +57,40 @@ fn describe_difference(source: &[u8], written: &[u8]) -> Option<String> {
     ))
 }
 
-/// Assert that reading and rewriting a fixture reproduces its uncompressed bytes exactly.
+/// The fixtures a layer cannot read, as `(layer, set, name)`, with the reason each is here.
+///
+/// A grammar record refuses a value the rule its name selects does not admit, which one of the
+/// warcio fixtures was collected for: it writes a space into a `WARC-Target-URI`, and a space is
+/// not a character any URI may spell.
+const UNREADABLE: &[(&str, &str, &str)] = &[(
+    "grammar records",
+    "warcio",
+    "example-space-in-target-uri.warc.gz",
+)];
+
+/// Assert that reading and rewriting a fixture reproduces its uncompressed bytes exactly, at
+/// every layer that promises as much and can read it, and that the fixtures a layer cannot read
+/// are exactly those listed.
 fn assert_roundtrip_is_faithful(set: &str, name: &str) {
     let source = fixture_bytes(set, name).unwrap_or_else(|error| panic!("{set}/{name}: {error}"));
-    let written = roundtrip(&source).unwrap_or_else(|error| panic!("{set}/{name}: {error}"));
 
-    if let Some(difference) = describe_difference(&source, &written) {
-        panic!("{set}/{name}: {difference}");
+    for (layer, written) in [
+        ("raw records", roundtrip(&source)),
+        ("grammar records", roundtrip_records(&source)),
+    ] {
+        let listed = UNREADABLE.contains(&(layer, set, name));
+        match written {
+            Ok(written) => {
+                assert!(
+                    !listed,
+                    "{set}/{name}: now reads as {layer}, so drop it from UNREADABLE"
+                );
+                if let Some(difference) = describe_difference(&source, &written) {
+                    panic!("{set}/{name} as {layer}: {difference}");
+                }
+            }
+            Err(error) => assert!(listed, "{set}/{name} as {layer}: {error}"),
+        }
     }
 }
 

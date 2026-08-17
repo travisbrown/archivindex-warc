@@ -2,7 +2,6 @@
 
 mod support;
 
-use archivindex_warc::WarcHeader;
 use support::{DigestStatus, FixtureSet, header, record_types};
 
 const FIXTURES: FixtureSet = FixtureSet::new("pywb");
@@ -49,41 +48,35 @@ fn indexed_headers_and_payload_match_pywb_expectations() {
     let records = FIXTURES.read("example.warc.gz").unwrap();
     let response = &records[1];
     assert_eq!(
-        header(response, &WarcHeader::TargetURI),
+        header(response, "WARC-Target-URI"),
         Some("http://example.com?example=1")
     );
+    assert_eq!(header(response, "WARC-Date"), Some("2014-01-03T03:03:21Z"));
     assert_eq!(
-        header(response, &WarcHeader::Date),
-        Some("2014-01-03T03:03:21Z")
-    );
-    assert_eq!(
-        header(response, &WarcHeader::PayloadDigest),
+        header(response, "WARC-Payload-Digest"),
         Some("sha1:B2LTWWPUOYAH7UIPQ7ZUPQ4VMBSVC36A")
     );
     assert!(
         response
-            .1
+            .body
             .windows(b"Example Domain".len())
             .any(|window| window == b"Example Domain")
     );
 
     let revisit = &records[3];
     assert_eq!(
-        header(revisit, &WarcHeader::TargetURI),
+        header(revisit, "WARC-Target-URI"),
         Some("http://example.com?example=1")
     );
-    assert_eq!(
-        header(revisit, &WarcHeader::Date),
-        Some("2014-01-03T03:03:41Z")
-    );
+    assert_eq!(header(revisit, "WARC-Date"), Some("2014-01-03T03:03:41Z"));
 
     let iana_response = &records[5];
     assert_eq!(
-        header(iana_response, &WarcHeader::TargetURI),
+        header(iana_response, "WARC-Target-URI"),
         Some("http://www.iana.org/domains/example")
     );
     assert_eq!(
-        header(iana_response, &WarcHeader::PayloadDigest),
+        header(iana_response, "WARC-Payload-Digest"),
         Some("sha1:JZ622UA23G5ZU6Y3XAKH4LINONUEICEG")
     );
 }
@@ -125,10 +118,7 @@ fn large_archives_have_the_expected_shape() {
 
     let iana_records = FIXTURES.read("iana.warc.gz").unwrap();
     assert_eq!(iana_records.len(), 343);
-    assert_eq!(
-        header(&iana_records[0], &WarcHeader::WarcType),
-        Some("warcinfo")
-    );
+    assert_eq!(header(&iana_records[0], "WARC-Type"), Some("warcinfo"));
 }
 
 // Pywb indexes these as valid samples; all declared SHA-1 digests must verify here as well.
