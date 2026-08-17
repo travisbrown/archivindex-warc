@@ -40,11 +40,13 @@ fn version(input: &[u8]) -> IResult<&[u8], &str> {
 /// The WARC grammar borrows the `LWS` rule from RFC 2616: a header line beginning with a space
 /// or tab continues the previous field value, and each fold is read as a single space. Values
 /// are borrowed unless folding forces a copy.
+///
+/// A field name ends where its colon begins: the grammar allows linear white space before a
+/// value but none before the colon, so a line that puts some there is not a field line.
 #[allow(clippy::type_complexity)]
 fn header(input: &[u8]) -> IResult<&[u8], (&[u8], Cow<'_, [u8]>)> {
-    let (input, (token, _, _, _, value, _)) = tuple((
+    let (input, (token, _, _, value, _)) = tuple((
         take_while1(crate::is_header_token_char),
-        space0,
         tag(":"),
         space0,
         not_line_ending,
@@ -173,7 +175,6 @@ mod tests {
     /// not a field line. Reading it as one drops bytes the block was written with, and writes
     /// the block back as something other than what was read.
     #[test]
-    #[ignore = "known bug (PARSE-006: white space before a field's colon is dropped)"]
     fn header_pair_rejects_space_before_the_colon() {
         assert!(header(&b"another-header : with extra spaces\r\n"[..]).is_err());
     }
@@ -227,7 +228,7 @@ mod tests {
         );
 
         assert_eq!(
-            header(&b"another-header : with extra spaces\r\n"[..]),
+            header(&b"another-header:   with extra spaces\r\n"[..]),
             Ok((
                 &b""[..],
                 (
@@ -238,7 +239,7 @@ mod tests {
         );
 
         assert_eq!(
-            header(&b"incomplete-header : missing-line-ending"[..]),
+            header(&b"incomplete-header: missing-line-ending"[..]),
             Err(Err::Incomplete(Needed::Unknown))
         );
     }
