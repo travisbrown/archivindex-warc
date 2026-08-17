@@ -1,6 +1,9 @@
 use crate::parser;
 use crate::{BufferedBody, EmptyBody, Error, RawRecordHeader, Record, StreamingBody};
 
+use crate::header::WarcHeader;
+
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fs;
 use std::io;
@@ -74,6 +77,24 @@ impl WarcReader<BufReader<GzipReader<BufReader<std::fs::File>>>> {
         let gzip_stream = GzipReader::new(BufReader::with_capacity(MB, file))?;
         Ok(WarcReader::new(BufReader::new(gzip_stream)))
     }
+}
+
+/// Collect parsed header lines into a header block.
+///
+/// The specification forbids repeating a named field. If a record repeats one anyway, keep the
+/// first occurrence: it is the `Content-Length` the parser framed the body with, so the
+/// headers reported always match the body actually read.
+fn collect_headers<'a>(
+    parsed: Vec<(&'a str, std::borrow::Cow<'a, [u8]>)>,
+) -> HashMap<WarcHeader, Vec<u8>> {
+    let mut headers = HashMap::with_capacity(parsed.len());
+    for (token, value) in parsed {
+        headers
+            .entry(WarcHeader::from(token))
+            .or_insert_with(|| value.into_owned());
+    }
+
+    headers
 }
 
 /// Check that a parsed header block was consumed in full.
@@ -191,10 +212,7 @@ impl<R: BufRead> RawRecordIter<R> {
 
         let headers = RawRecordHeader {
             version: version_ref.to_owned(),
-            headers: headers_ref
-                .into_iter()
-                .map(|(token, value)| (token.into(), value.to_owned()))
-                .collect(),
+            headers: collect_headers(headers_ref),
         };
         let body = body_ref.to_owned();
         Some(Ok((headers, body)))
@@ -371,10 +389,7 @@ impl<R: BufRead> StreamingIter<'_, R> {
 
         let headers = RawRecordHeader {
             version: version_ref.to_owned(),
-            headers: headers_ref
-                .into_iter()
-                .map(|(token, value)| (token.into(), value.to_owned()))
-                .collect(),
+            headers: collect_headers(headers_ref),
         };
         match headers.try_into() {
             Ok(b) => {
@@ -576,7 +591,6 @@ mod iter_raw_tests {
     /// A field value folded across lines with leading whitespace is unfolded, each fold
     /// reading as a single space.
     #[test]
-    #[ignore = "known bug (PARSE-002: WARC field grammar divergence)"]
     fn folded_header_value_is_unfolded() {
         let raw = b"\
             WARC/1.1\r\n\
@@ -607,7 +621,6 @@ mod iter_raw_tests {
     /// the first occurrence wins consistently: the body is framed by the first
     /// `Content-Length`, so the surviving header values must be the first ones too.
     #[test]
-    #[ignore = "known bug (PARSE-002: WARC field grammar divergence)"]
     fn repeated_field_keeps_first_occurrence() {
         let raw = b"\
             WARC/1.1\r\n\

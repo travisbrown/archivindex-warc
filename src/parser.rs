@@ -1,11 +1,13 @@
 use nom::{
     bytes::streaming::{tag, take, take_while1},
-    character::streaming::{line_ending, not_line_ending, space0},
+    character::streaming::{line_ending, not_line_ending, space0, space1},
+    combinator::complete,
     error::ErrorKind,
-    multi::many1,
+    multi::{many0, many1},
     sequence::tuple,
     IResult,
 };
+use std::borrow::Cow;
 use std::convert::TryFrom;
 use std::str;
 
@@ -49,7 +51,13 @@ fn is_header_token_char(chr: u8) -> bool {
         | b'\\')
 }
 
-fn header(input: &[u8]) -> IResult<&[u8], (&[u8], &[u8])> {
+/// Parse one named field, including any folded continuation lines.
+///
+/// The WARC grammar borrows the `LWS` rule from RFC 2616: a header line beginning with a space
+/// or tab continues the previous field value, and each fold is read as a single space. Values
+/// are borrowed unless folding forces a copy.
+#[allow(clippy::type_complexity)]
+fn header(input: &[u8]) -> IResult<&[u8], (&[u8], Cow<'_, [u8]>)> {
     let (input, (token, _, _, _, value, _)) = tuple((
         take_while1(is_header_token_char),
         space0,
@@ -59,18 +67,34 @@ fn header(input: &[u8]) -> IResult<&[u8], (&[u8], &[u8])> {
         line_ending,
     ))(input)?;
 
+    // `complete` keeps a value ending exactly at the end of input from reporting `Incomplete`
+    // while probing for a continuation line that is not there.
+    let (input, continuations) =
+        many0(complete(tuple((space1, not_line_ending, line_ending))))(input)?;
+
+    let value = if continuations.is_empty() {
+        Cow::Borrowed(value)
+    } else {
+        let mut folded = value.to_vec();
+        for (_, continuation, _) in continuations {
+            folded.push(b' ');
+            folded.extend_from_slice(continuation);
+        }
+        Cow::Owned(folded)
+    };
+
     Ok((input, (token, value)))
 }
 
 /// Parse a WARC header block.
 // TODO: evaluate the use of `ErrorKind::Verify` here.
 #[allow(clippy::type_complexity)]
-pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, &[u8])>, usize)> {
+pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, usize)> {
     let (input, version) = version(input)?;
     let (input, headers) = many1(header)(input)?;
 
     let mut content_length: Option<usize> = None;
-    let mut warc_headers: Vec<(&str, &[u8])> = Vec::with_capacity(headers.len());
+    let mut warc_headers: Vec<(&str, Cow<'_, [u8]>)> = Vec::with_capacity(headers.len());
 
     for header in headers {
         let token_str = match str::from_utf8(header.0) {
@@ -84,7 +108,7 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, &[u8])>, usize)
         };
 
         if content_length.is_none() && token_str.to_lowercase() == "content-length" {
-            let value_str = match str::from_utf8(header.1) {
+            let value_str = match str::from_utf8(&header.1) {
                 Err(_) => {
                     return Err(nom::Err::Error(nom::error::Error::new(
                         input,
@@ -123,7 +147,7 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, &[u8])>, usize)
 
 /// Parse an entire WARC record.
 #[allow(clippy::type_complexity)]
-pub fn record(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, &[u8])>, &[u8])> {
+pub fn record(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, &[u8])> {
     let (input, (headers, _)) = tuple((headers, line_ending))(input)?;
     let (input, (body, _, _)) = tuple((take(headers.2), line_ending, line_ending))(input)?;
 
@@ -136,6 +160,7 @@ mod tests {
     use nom::error::ErrorKind;
     use nom::Err;
     use nom::Needed;
+    use std::borrow::Cow;
 
     #[test]
     fn version_parsing() {
@@ -179,11 +204,13 @@ mod tests {
     /// A field value folded across lines with leading whitespace is unfolded, each fold
     /// reading as a single space.
     #[test]
-    #[ignore = "known bug (PARSE-002: WARC field grammar divergence)"]
     fn header_pair_folded_value_parsing() {
         assert_eq!(
             header(&b"folded-header: one\r\n two\r\n\tthree\r\n"[..]),
-            Ok((&b""[..], (&b"folded-header"[..], &b"one two three"[..])))
+            Ok((
+                &b""[..],
+                (&b"folded-header"[..], Cow::Owned(b"one two three".to_vec()))
+            ))
         );
     }
 
@@ -210,14 +237,20 @@ mod tests {
     fn header_pair_parsing() {
         assert_eq!(
             header(&b"some-header: all/the/things\r\n"[..]),
-            Ok((&b""[..], (&b"some-header"[..], &b"all/the/things"[..],)))
+            Ok((
+                &b""[..],
+                (&b"some-header"[..], Cow::Borrowed(&b"all/the/things"[..]))
+            ))
         );
 
         assert_eq!(
             header(&b"another-header : with extra spaces\r\n"[..]),
             Ok((
                 &b""[..],
-                (&b"another-header"[..], &b"with extra spaces"[..],)
+                (
+                    &b"another-header"[..],
+                    Cow::Borrowed(&b"with extra spaces"[..])
+                )
             ))
         );
 
@@ -254,11 +287,11 @@ mod tests {
             \r\n\
         ";
         let expected_version = "1.0";
-        let expected_headers: Vec<(&str, &[u8])> = vec![
-            ("content-length", b"42"),
-            ("foo", b"is fantastic"),
-            ("bar", b"is beautiful"),
-            ("baz", b"is bananas"),
+        let expected_headers: Vec<(&str, Cow<'_, [u8]>)> = vec![
+            ("content-length", Cow::Borrowed(b"42")),
+            ("foo", Cow::Borrowed(b"is fantastic")),
+            ("bar", Cow::Borrowed(b"is beautiful")),
+            ("baz", Cow::Borrowed(b"is bananas")),
         ];
         let expected_len = 42;
 
@@ -289,8 +322,10 @@ mod tests {
         ";
 
         let expected_version = "1.0";
-        let expected_headers: Vec<(&str, &[u8])> =
-            vec![("Warc-Type", b"dunno"), ("Content-Length", b"5")];
+        let expected_headers: Vec<(&str, Cow<'_, [u8]>)> = vec![
+            ("Warc-Type", Cow::Borrowed(b"dunno")),
+            ("Content-Length", Cow::Borrowed(b"5")),
+        ];
         let expected_body: &[u8] = b"12345";
 
         assert_eq!(
