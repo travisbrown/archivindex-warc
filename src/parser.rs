@@ -25,6 +25,13 @@ fn version(input: &[u8]) -> IResult<&[u8], &str> {
         Ok(version) => version,
     };
 
+    if !crate::is_supported_version(version_str) {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            ErrorKind::Verify,
+        )));
+    }
+
     Ok((input, version_str))
 }
 
@@ -147,20 +154,14 @@ mod tests {
 
     #[test]
     fn version_parsing() {
-        assert_eq!(version(&b"WARC/0.0\r\n"[..]), Ok((&b""[..], "0.0")));
-
         assert_eq!(version(&b"WARC/1.0\r\n"[..]), Ok((&b""[..], "1.0")));
 
-        assert_eq!(
-            version(&b"WARC/2.0-alpha\r\n"[..]),
-            Ok((&b""[..], "2.0-alpha"))
-        );
+        assert_eq!(version(&b"WARC/1.1\r\n"[..]), Ok((&b""[..], "1.1")));
     }
 
     /// Only the two WARC versions supported by the crate are accepted; empty, older,
     /// hypothetical newer, and otherwise arbitrary version strings are rejected.
     #[test]
-    #[ignore = "known bug (PARSE-005: unsupported WARC versions accepted)"]
     fn version_rejects_unsupported_values() {
         for value in ["", "0.0", "1.2", "2.0-alpha", "not-a-version"] {
             let raw = format!("WARC/{}\r\n", value);
