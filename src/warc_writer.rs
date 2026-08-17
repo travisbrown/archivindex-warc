@@ -196,6 +196,11 @@ fn validate_raw_header(headers: &RawRecordHeader, body_len: u64) -> Result<(), c
     for (header, value) in headers.as_ref() {
         crate::record::validate_header(header, value)?;
     }
+    // `WARC-Concurrent-To` values live outside the header map, so they need their own pass.
+    for value in &headers.concurrent_to {
+        crate::record::validate_header(&WarcHeader::ConcurrentTo, value)?;
+    }
+
     let declared = headers
         .as_ref()
         .get(&WarcHeader::ContentLength)
@@ -253,7 +258,8 @@ mod write_raw_tests {
     }
 
     /// Raw header blocks that could not be parsed back are rejected before anything is
-    /// written: injected values and invalid unknown names.
+    /// written: injected values, invalid unknown names, and injected `WARC-Concurrent-To`
+    /// values.
     #[test]
     fn write_raw_rejects_header_injection() {
         let mut injected_value = valid_headers();
@@ -269,7 +275,13 @@ mod write_raw_tests {
             .insert(WarcHeader::Unknown("evil name".to_string()), b"v".to_vec());
         assert_rejected(&invalid_name);
 
-        // The block the two are derived from is written without complaint.
+        let mut injected_concurrent_to = valid_headers();
+        injected_concurrent_to
+            .concurrent_to
+            .push(b"<urn:a>\r\nevil: x".to_vec());
+        assert_rejected(&injected_concurrent_to);
+
+        // The block the three are derived from is written without complaint.
         let mut writer = WarcWriter::new(Vec::new());
         writer.write_raw(&valid_headers(), b"body!").unwrap();
     }
