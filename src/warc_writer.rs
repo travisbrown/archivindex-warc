@@ -1,3 +1,4 @@
+use crate::header::WarcHeader;
 use crate::{BufferedBody, RawRecordHeader, Record};
 
 use std::fs;
@@ -36,9 +37,11 @@ impl<W: Write> WarcWriter<W> {
     where
         B: AsRef<[u8]>,
     {
-        // Validate the whole header block before emitting anything, so that a rejected record
-        // leaves no partial bytes in the output.
-        validate_raw_header(&headers).map_err(invalid_input)?;
+        let body = body.as_ref();
+
+        // Validate the whole header block against the body it frames before emitting anything,
+        // so that a rejected record leaves no partial bytes in the output.
+        validate_raw_header(&headers, body.len() as u64).map_err(invalid_input)?;
 
         let writer = &mut self.writer;
         let mut bytes_written = 0;
@@ -62,7 +65,7 @@ impl<W: Write> WarcWriter<W> {
         }
         emit(&[13, 10])?;
 
-        emit(body.as_ref())?;
+        emit(body)?;
         emit(&[13, 10])?;
         emit(&[13, 10])?;
 
@@ -126,10 +129,13 @@ fn invalid_input(error: crate::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, error)
 }
 
-/// Reject a raw header block that would serialize to a record no reader could parse back: a
-/// version or value containing a line break, or an unknown header name outside the token
-/// grammar.
-fn validate_raw_header(headers: &RawRecordHeader) -> Result<(), crate::Error> {
+/// Reject a raw header block that would serialize to a record no reader could parse back: an
+/// unsupported version, a value containing a line break, an unknown header name outside the
+/// token grammar, or a `Content-Length` that is not the length of the body the block frames.
+///
+/// The declared length is what a reader counts out to find the end of the record, so a block
+/// that declares any other number, or none at all, does not frame the body it is written with.
+fn validate_raw_header(headers: &RawRecordHeader, body_len: u64) -> Result<(), crate::Error> {
     if !crate::is_supported_version(&headers.version) {
         return Err(crate::Error::MalformedVersion(headers.version.clone()));
     }
@@ -138,7 +144,28 @@ fn validate_raw_header(headers: &RawRecordHeader) -> Result<(), crate::Error> {
         crate::record::validate_header(header, value)?;
     }
 
-    Ok(())
+    let declared = headers
+        .as_ref()
+        .get(&WarcHeader::ContentLength)
+        .ok_or(crate::Error::MissingHeader(WarcHeader::ContentLength))?;
+    let declared = std::str::from_utf8(declared)
+        .ok()
+        .and_then(crate::parse_content_length)
+        .ok_or_else(|| {
+            crate::Error::MalformedHeader(
+                WarcHeader::ContentLength,
+                "not a digit sequence between 0 and 2^64-1".to_string(),
+            )
+        })?;
+
+    if declared == body_len {
+        Ok(())
+    } else {
+        Err(crate::Error::ContentLengthMismatch {
+            declared,
+            actual: body_len,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -232,17 +259,25 @@ mod write_raw_tests {
     fn short_writes_do_not_truncate() {
         let headers = RawRecordHeader {
             version: "1.0".to_owned(),
-            headers: vec![(WarcHeader::WarcType, b"dunno".to_vec())]
-                .into_iter()
-                .collect(),
+            headers: vec![
+                (WarcHeader::WarcType, b"dunno".to_vec()),
+                (WarcHeader::ContentLength, b"5".to_vec()),
+            ]
+            .into_iter()
+            .collect(),
         };
 
         let mut writer = WarcWriter::new(TrickleWriter(Vec::new()));
         let bytes_written = writer.write_raw(headers, b"12345").unwrap();
 
-        let expected: &[u8] = b"WARC/1.0\r\nwarc-type: dunno\r\n\r\n12345\r\n\r\n";
-        assert_eq!(writer.writer.0.as_slice(), expected);
-        assert_eq!(bytes_written, expected.len());
+        // The field order follows the header map's iteration order, so check the lines
+        // rather than one fixed serialization of the block.
+        let written = String::from_utf8(writer.writer.0).unwrap();
+        assert!(written.starts_with("WARC/1.0\r\n"), "{}", written);
+        assert!(written.contains("warc-type: dunno\r\n"), "{}", written);
+        assert!(written.contains("content-length: 5\r\n"), "{}", written);
+        assert!(written.ends_with("\r\n\r\n12345\r\n\r\n"), "{}", written);
+        assert_eq!(bytes_written, written.len());
     }
 
     /// A block frames its body by declaring its length, and a reader trusts that declaration
@@ -250,7 +285,6 @@ mod write_raw_tests {
     /// the body it is written with, or that declares none at all, writes a record no reader
     /// can read back.
     #[test]
-    #[ignore = "known bug (IO-006: write_raw ignores the declared Content-Length)"]
     fn write_raw_rejects_a_length_the_body_does_not_have() {
         // The body `assert_rejected` writes is five bytes long.
         let mut wrong_length = valid_headers();

@@ -22,6 +22,14 @@ pub enum Error {
     UnexpectedEOB,
     /// A version string does not name a WARC version supported by this crate.
     MalformedVersion(String),
+    /// A record's declared `Content-Length` does not match the body it carries, so writing it
+    /// would produce an archive that cannot be read back.
+    ContentLengthMismatch {
+        /// The length the record's `Content-Length` field declares.
+        declared: u64,
+        /// The length of the body the record actually carries.
+        actual: u64,
+    },
 }
 
 impl fmt::Display for Error {
@@ -36,6 +44,11 @@ impl fmt::Display for Error {
             Error::ReadOverflow => write!(f, "Read further than expected."),
             Error::UnexpectedEOB => write!(f, "Unexpected end of body."),
             Error::MalformedVersion(ref v) => write!(f, "Malformed version: {}", v),
+            Error::ContentLengthMismatch { declared, actual } => write!(
+                f,
+                "Content-Length declares {} bytes, but the body is {}.",
+                declared, actual
+            ),
         }
     }
 }
