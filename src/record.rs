@@ -82,6 +82,10 @@ mod streaming_trait {
 ///
 /// It is guaranteed to be well-formed, but may not be valid according to the specification.
 ///
+/// Each named field is held at most once: when a parsed record repeats a field, the first
+/// occurrence is kept. This means repeated `WARC-Concurrent-To` fields, which the
+/// specification permits, are reduced to the first one.
+///
 /// Use the `Display` trait to generate the formatted representation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RawRecordHeader {
@@ -224,12 +228,14 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
 }
 
 impl std::fmt::Display for RawRecordHeader {
+    // The WARC grammar terminates the version line, every header line, and the block itself
+    // with CRLF, so this cannot use `writeln!` (which emits a bare LF).
     fn fmt(&self, w: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        writeln!(w, "WARC/{}", self.version)?;
+        write!(w, "WARC/{}\r\n", self.version)?;
         for (key, value) in self.as_ref().iter() {
-            writeln!(w, "{}: {}", key, String::from_utf8_lossy(value))?;
+            write!(w, "{}: {}\r\n", key, String::from_utf8_lossy(value))?;
         }
-        writeln!(w)?;
+        write!(w, "\r\n")?;
 
         Ok(())
     }
@@ -1449,7 +1455,6 @@ mod raw_tests {
 
     /// The formatted header block is terminated by CRLF throughout, as the grammar requires.
     #[test]
-    #[ignore = "known bug (PARSE-002: WARC field grammar divergence)"]
     fn display_uses_crlf_line_endings() {
         let headers = RawRecordHeader {
             version: "1.1".to_owned(),
