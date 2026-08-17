@@ -690,7 +690,6 @@ mod iter_raw_tests {
 
     /// WARC 1.0 requires complete UTC timestamps with second precision.
     #[test]
-    #[ignore = "known bug (RECORD-010: 1.0 reader accepts subsecond dates)"]
     fn warc_1_0_reading_rejects_subseconds() {
         let raw = b"\
             WARC/1.0\r\n\

@@ -218,7 +218,7 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
                     WarcError::MalformedHeader(WarcHeader::Date, "not a UTF-8 string".to_string())
                 })
             })
-            .and_then(|date| Record::<BufferedBody>::parse_record_date(&date))?;
+            .and_then(|date| Record::<BufferedBody>::parse_record_date(&headers.version, &date))?;
 
         let truncated_type = headers
             .as_mut()
@@ -363,15 +363,25 @@ impl<T: BodyKind> Record<T> {
         })
     }
 
-    fn parse_record_date(date: &str) -> Result<DateTime<Utc>, WarcError> {
-        DateTime::parse_from_rfc3339(date)
-            .map_err(|_| {
-                WarcError::MalformedHeader(
-                    WarcHeader::Date,
-                    "not an ISO 8601 datestamp".to_string(),
-                )
-            })
-            .map(|date| date.into())
+    /// Parse a `WARC-Date` value under the date grammar of the given WARC version.
+    ///
+    /// WARC 1.0 fixes the format at a complete UTC timestamp with whole-second precision, so
+    /// a fractional part, a reduced precision, or a numeric zone offset is not a 1.0 date.
+    /// WARC 1.1 relaxes it to the W3C-DTF profile, which admits all three.
+    fn parse_record_date(version: &str, date: &str) -> Result<DateTime<Utc>, WarcError> {
+        let malformed = || {
+            WarcError::MalformedHeader(WarcHeader::Date, "not an ISO 8601 datestamp".to_string())
+        };
+
+        if version == "1.0" {
+            NaiveDateTime::parse_from_str(date, "%Y-%m-%dT%H:%M:%SZ")
+                .map_err(|_| malformed())
+                .map(|date| Utc.from_utc_datetime(&date))
+        } else {
+            DateTime::parse_from_rfc3339(date)
+                .map_err(|_| malformed())
+                .map(|date| date.into())
+        }
     }
 
     /// Return the WARC version string of this record.
@@ -479,10 +489,8 @@ impl<T: BodyKind> Record<T> {
         validate_header(&header, value.as_bytes())?;
         match &header {
             WarcHeader::Date => {
-                let old_date = std::mem::replace(
-                    &mut self.record_date,
-                    Record::<T>::parse_record_date(&value)?,
-                );
+                let date = Record::<T>::parse_record_date(&self.headers.version, &value)?;
+                let old_date = std::mem::replace(&mut self.record_date, date);
                 Ok(Some(Cow::Owned(
                     old_date.to_rfc3339_opts(SecondsFormat::Secs, true),
                 )))
@@ -1741,7 +1749,8 @@ mod builder_tests {
         const DATE_STRING_1: &[u8] = b"2020-07-18T02:12:45Z";
 
         let mut builder = RecordBuilder::default();
-        builder = builder.date(Record::<BufferedBody>::parse_record_date(DATE_STRING_0).unwrap());
+        builder =
+            builder.date(Record::<BufferedBody>::parse_record_date("1.0", DATE_STRING_0).unwrap());
 
         let record = builder.clone().build().unwrap();
         assert_eq!(
