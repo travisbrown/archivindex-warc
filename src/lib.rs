@@ -6,7 +6,7 @@
 /// write-path validation so that acceptance on write matches acceptance on read.
 fn is_header_token_char(chr: u8) -> bool {
     !matches!(chr, 0..=31
-        | 128..=255
+        | 127..=255
         | b'('
         | b')'
         | b'<'

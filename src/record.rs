@@ -1032,7 +1032,6 @@ mod record_tests {
 
     /// DEL is a control character, so it cannot appear in an extension field-name token.
     #[test]
-    #[ignore = "known bug (PARSE-004: DEL accepted in field names)"]
     fn set_header_rejects_del_in_unknown_name() {
         let mut record = Record::<BufferedBody>::default();
         let header = WarcHeader::Unknown("evil\u{7f}name".to_string());
