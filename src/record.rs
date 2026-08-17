@@ -101,9 +101,13 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
             .ok_or(WarcError::MissingHeader(WarcHeader::ContentLength))
             .and_then(|vec| {
                 String::from_utf8(vec).map_err(|_| {
-                    WarcError::MalformedHeader(WarcHeader::Date, "not a UTF-8 string".to_string())
+                    WarcError::MalformedHeader(
+                        WarcHeader::ContentLength,
+                        "not a UTF-8 string".to_string(),
+                    )
                 })
-            })?;
+            })
+            .and_then(|len| Record::<EmptyBody>::parse_content_length(&len))?;
 
         let record_type = headers
             .as_mut()
@@ -125,7 +129,10 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
             .ok_or(WarcError::MissingHeader(WarcHeader::RecordID))
             .and_then(|vec| {
                 String::from_utf8(vec).map_err(|_| {
-                    WarcError::MalformedHeader(WarcHeader::Date, "not a UTF-8 string".to_string())
+                    WarcError::MalformedHeader(
+                        WarcHeader::RecordID,
+                        "not a UTF-8 string".to_string(),
+                    )
                 })
             })?;
 
@@ -1290,7 +1297,6 @@ mod raw_tests {
     }
 
     #[test]
-    #[ignore = "known bug (RECORD-001: conversion blames the wrong field)"]
     fn verify_malformed_content_length_blames_content_length() {
         for bad_value in [&b"not-a-number"[..], &[0xff, 0xfe][..]] {
             let headers = headers_with(WarcHeader::ContentLength, bad_value.to_vec());
@@ -1302,7 +1308,6 @@ mod raw_tests {
     }
 
     #[test]
-    #[ignore = "known bug (RECORD-001: conversion blames the wrong field)"]
     fn verify_malformed_record_id_blames_record_id() {
         let headers = headers_with(WarcHeader::RecordID, vec![0xff, 0xfe]);
         match Record::<EmptyBody>::try_from(headers) {
