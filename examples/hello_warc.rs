@@ -7,7 +7,7 @@ fn main() {
     let body = "hello warc! 👋".to_owned();
 
     let headers = RawRecordHeader {
-        version: "1.0".to_owned(),
+        version: warc::WarcVersion::V1_0,
         headers: vec![
             (
                 WarcHeader::RecordID,

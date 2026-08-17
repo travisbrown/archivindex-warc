@@ -13,16 +13,13 @@ fn verify_error(input: &[u8]) -> nom::Err<nom::error::Error<&[u8]>> {
     nom::Err::Error(nom::error::Error::new(input, ErrorKind::Verify))
 }
 
-fn version(input: &[u8]) -> IResult<&[u8], &str> {
+fn version(input: &[u8]) -> IResult<&[u8], crate::WarcVersion> {
     let (input, (_, version, _)) = (tag("WARC/"), not_line_ending, line_ending).parse(input)?;
 
     let version_str = str::from_utf8(version).map_err(|_| verify_error(version))?;
+    let version = version_str.parse().map_err(|_| verify_error(version))?;
 
-    if !crate::is_supported_version(version_str) {
-        return Err(verify_error(version));
-    }
-
-    Ok((input, version_str))
+    Ok((input, version))
 }
 
 /// Parse one named field, including any folded continuation lines.
@@ -75,7 +72,9 @@ fn header(input: &[u8]) -> IResult<&[u8], (&str, Cow<'_, [u8]>)> {
 /// the missing field.
 // TODO: evaluate the use of `ErrorKind::Verify` here.
 #[allow(clippy::type_complexity)]
-pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, Option<u64>)> {
+pub fn headers(
+    input: &[u8],
+) -> IResult<&[u8], (crate::WarcVersion, Vec<(&str, Cow<'_, [u8]>)>, Option<u64>)> {
     let (input, version) = version(input)?;
     let (input, headers) = many1(header).parse(input)?;
 
@@ -105,7 +104,9 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>
 /// A record without a `Content-Length` field cannot be framed (there is no way to know where
 /// its body ends), so parsing one fails with an error pointing at its header block.
 #[allow(clippy::type_complexity)]
-pub fn record(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, &[u8])> {
+pub fn record(
+    input: &[u8],
+) -> IResult<&[u8], (crate::WarcVersion, Vec<(&str, Cow<'_, [u8]>)>, &[u8])> {
     let (remainder, (headers, _)) = (headers, line_ending).parse(input)?;
     let content_length = headers.2.ok_or_else(|| verify_error(input))?;
     // The body of an in-memory record must fit in a slice, so a length beyond the address
@@ -127,9 +128,14 @@ mod tests {
 
     #[test]
     fn version_parsing() {
-        assert_eq!(version(&b"WARC/1.0\r\n"[..]), Ok((&b""[..], "1.0")));
-
-        assert_eq!(version(&b"WARC/1.1\r\n"[..]), Ok((&b""[..], "1.1")));
+        assert_eq!(
+            version(&b"WARC/1.0\r\n"[..]),
+            Ok((&b""[..], crate::WarcVersion::V1_0))
+        );
+        assert_eq!(
+            version(&b"WARC/1.1\r\n"[..]),
+            Ok((&b""[..], crate::WarcVersion::V1_1))
+        );
     }
 
     /// Only the two WARC versions supported by the crate are accepted; empty, older,
@@ -250,7 +256,7 @@ mod tests {
             baz: is bananas\r\n\
             \r\n\
         ";
-        let expected_version = "1.0";
+        let expected_version = crate::WarcVersion::V1_0;
         let expected_headers: Vec<(&str, Cow<'_, [u8]>)> = vec![
             ("content-length", Cow::Borrowed(b"42")),
             ("foo", Cow::Borrowed(b"is fantastic")),
@@ -283,7 +289,7 @@ mod tests {
             Ok((
                 &b"\r\n"[..],
                 (
-                    "1.0",
+                    crate::WarcVersion::V1_0,
                     vec![("foo", Cow::Borrowed(&b"is fantastic"[..]))],
                     None
                 )
@@ -308,7 +314,7 @@ mod tests {
             \r\n\
         ";
 
-        let expected_version = "1.0";
+        let expected_version = crate::WarcVersion::V1_0;
         let expected_headers: Vec<(&str, Cow<'_, [u8]>)> = vec![
             ("Warc-Type", Cow::Borrowed(b"dunno")),
             ("Content-Length", Cow::Borrowed(b"5")),
