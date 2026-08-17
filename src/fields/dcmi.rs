@@ -1,15 +1,10 @@
 //! The metadata properties of the DCMI Metadata Terms vocabulary.
 //!
-//! A `warcinfo` record describes the file it opens, and the standard says its allowable fields
-//! "include, but are not limited to, all \[DCMI\]" terms, by which it means the vocabulary
-//! published as [DCMI Metadata Terms]. This module names those terms so that
-//! [`WarcinfoField`](crate::fields::warcinfo::WarcinfoField) can recognize one when it reads it,
-//! rather than leaving `isPartOf` and `conformsTo` as anonymous strings.
+//! WARC fields may use properties from [DCMI Metadata Terms]. This module provides their names and
+//! URIs.
 //!
-//! DCMI publishes 55 properties in the `http://purl.org/dc/terms/` namespace, of which 15 are
-//! also published in the older `http://purl.org/dc/elements/1.1/` namespace as the Dublin Core
-//! Metadata Element Set. Those 15 are a subset of the 55, so one enumeration covers both, and
-//! [`DcmiTerm::is_element`] reports which namespace a term additionally belongs to.
+//! Fifteen of the 55 terms also belong to the older Dublin Core Metadata Element Set.
+//! [`DcmiTerm::is_element`] identifies them.
 //!
 //! [DCMI Metadata Terms]: https://www.dublincore.org/specifications/dublin-core/dcmi-terms/
 
@@ -20,16 +15,13 @@ pub const TERMS_NAMESPACE: &str = "http://purl.org/dc/terms/";
 
 /// The namespace the 15 legacy Dublin Core Metadata Element Set properties are published in.
 ///
-/// Every term for which [`DcmiTerm::is_element`] holds has a URI in this namespace as well as
-/// one in [`TERMS_NAMESPACE`], formed the same way from [`DcmiTerm::name`].
+/// Terms for which [`DcmiTerm::is_element`] is true also have a URI in this namespace.
 pub const ELEMENTS_NAMESPACE: &str = "http://purl.org/dc/elements/1.1/";
 
 /// A property of the DCMI Metadata Terms vocabulary.
 ///
-/// Each variant is the camel-case name DCMI publishes the property under, which is also the
-/// field name it is written under in a `warcinfo` record. The variants carry no data because
-/// the vocabulary is closed: a name outside it is not a DCMI term at all, and is kept as
-/// [`WarcinfoField::Other`](crate::fields::warcinfo::WarcinfoField::Other) instead.
+/// Each variant uses the name published by DCMI. Names outside this closed vocabulary are extension
+/// fields.
 #[allow(missing_docs)]
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub enum DcmiTerm {
@@ -93,8 +85,6 @@ pub enum DcmiTerm {
 impl DcmiTerm {
     /// The property's name, which is both the last segment of its URI and the field name it is
     /// written under in a `warcinfo` record.
-    ///
-    /// Borrowing rather than allocating, so that naming a field on a write path costs nothing.
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
@@ -158,9 +148,8 @@ impl DcmiTerm {
 
     /// The property's URI in the DCMI Metadata Terms namespace.
     ///
-    /// This allocates, since the URI is not stored anywhere. A term for which
-    /// [`is_element`](Self::is_element) holds has a second URI, built the same way from
-    /// [`ELEMENTS_NAMESPACE`].
+    /// A term for which [`is_element`](Self::is_element) holds has a second URI, built the same
+    /// way from [`ELEMENTS_NAMESPACE`].
     #[must_use]
     pub fn uri(&self) -> String {
         format!("{TERMS_NAMESPACE}{}", self.name())
@@ -192,8 +181,8 @@ impl DcmiTerm {
 
     /// The term written under this field name, if the name is one DCMI defines.
     ///
-    /// Field names in a `warcinfo` record are not case-sensitive, so the comparison is not
-    /// either, and a name matched in any spelling is returned in its canonical one.
+    /// Field names in a `warcinfo` record are not case-sensitive, so the comparison is not either,
+    /// and a name matched in any spelling is returned in its canonical one.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         KNOWN_TERMS
@@ -211,8 +200,7 @@ impl Display for DcmiTerm {
 
 /// Every property DCMI defines, in the alphabetical order the specification lists them in.
 ///
-/// This is the table [`DcmiTerm::from_name`] looks a name up in. The names themselves live on
-/// [`DcmiTerm::name`], so this list carries only the variants and the two cannot drift apart.
+/// This is the table [`DcmiTerm::from_name`] looks a name up in.
 const KNOWN_TERMS: [DcmiTerm; 55] = [
     DcmiTerm::Abstract,
     DcmiTerm::AccessRights,
@@ -275,7 +263,7 @@ const KNOWN_TERMS: [DcmiTerm; 55] = [
 mod tests {
     use super::{DcmiTerm, ELEMENTS_NAMESPACE, KNOWN_TERMS, TERMS_NAMESPACE};
 
-    /// Every term is reachable by its own name, so the table and the names cannot disagree.
+    /// Every term is reachable by its own name.
     #[test]
     fn every_term_round_trips_through_its_name() {
         for term in KNOWN_TERMS {
@@ -283,7 +271,7 @@ mod tests {
         }
     }
 
-    /// No two terms share a name, which is what makes the lookup unambiguous.
+    /// No two terms share a name.
     #[test]
     fn term_names_are_distinct() {
         let mut names: Vec<&str> = KNOWN_TERMS.iter().map(DcmiTerm::name).collect();
@@ -309,7 +297,7 @@ mod tests {
         assert_eq!(DcmiTerm::IsPartOf.name(), "isPartOf");
     }
 
-    /// A name outside the vocabulary is not a term, whatever it looks like.
+    /// A name outside the vocabulary is not a term.
     #[test]
     fn names_outside_the_vocabulary_are_not_terms() {
         for name in [

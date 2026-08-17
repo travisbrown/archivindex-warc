@@ -6,12 +6,12 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 
-use archivindex_warc::{RawRecordHeader, WarcHeader, WarcReader, WarcWriter};
+use archivindex_warc::io::read::WarcReader;
+use archivindex_warc::io::write::WarcWriter;
+use archivindex_warc::parse::raw::Record as RawRecord;
 use data_encoding::{BASE32_NOPAD, BASE64, BASE64URL, HEXLOWER};
 use flate2::bufread::{GzDecoder, MultiGzDecoder};
 use sha1::{Digest, Sha1};
-
-pub type RawRecord = (RawRecordHeader, Vec<u8>);
 
 /// Resolve the path of a fixture within one of the `tests/data` fixture sets.
 fn fixture_path(set: &str, name: &str) -> PathBuf {
@@ -45,12 +45,33 @@ pub fn fixture_bytes(set: &str, name: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Read every raw record of an uncompressed archive and write them straight back out.
+///
+/// No field is read for anything but its name and its bytes on this path, so it is the weaker
+/// of the two round trips: it can only fail if the writer itself corrupts a record the reader
+/// handed it.
 pub fn roundtrip(source: &[u8]) -> Result<Vec<u8>, String> {
     let mut writer = WarcWriter::new(Vec::new());
     for record in WarcReader::new(source).iter_raw_records() {
-        let (headers, body) = record.map_err(|error| error.to_string())?;
+        let record = record.map_err(|error| error.to_string())?;
+        writer.write(&record).map_err(|error| error.to_string())?;
+    }
+
+    Ok(writer.into_inner())
+}
+
+/// Read every record of an uncompressed archive against the grammars, then write the records
+/// back out.
+///
+/// Unlike [`roundtrip`], this reads each value against the rule its name selects, so a value
+/// that the grammar does not admit stops the archive here. What comes back out is still the
+/// bytes that were read, since a grammar record carries the value it was parsed from alongside
+/// what it parsed to.
+pub fn roundtrip_records(source: &[u8]) -> Result<Vec<u8>, String> {
+    let mut writer = WarcWriter::new(Vec::new());
+    for record in WarcReader::new(source).iter_untyped_records() {
+        let record = record.map_err(|error| error.to_string())?;
         writer
-            .write_raw(&headers, &body)
+            .write(&record.into_raw())
             .map_err(|error| error.to_string())?;
     }
 
@@ -132,17 +153,21 @@ fn collect_records<R: BufRead>(reader: WarcReader<R>) -> Result<Vec<RawRecord>, 
         .map_err(|error| error.to_string())
 }
 
-pub fn header<'a>(record: &'a RawRecord, name: &WarcHeader) -> Option<&'a str> {
+/// The value of a named field, with the white space the grammar allows around it removed.
+///
+/// A raw record keeps a value exactly as it was read, leading space and all, so the trim is what
+/// makes a comparison against an expected value about the value rather than about the spacing.
+pub fn header<'a>(record: &'a RawRecord, name: &str) -> Option<&'a str> {
     record
-        .0
+        .header
         .get(name)
-        .map(|value| std::str::from_utf8(value).unwrap())
+        .map(|value| std::str::from_utf8(value).unwrap().trim())
 }
 
 pub fn record_types(records: &[RawRecord]) -> Vec<&str> {
     records
         .iter()
-        .map(|record| header(record, &WarcHeader::WarcType).unwrap())
+        .map(|record| header(record, "WARC-Type").unwrap())
         .collect()
 }
 
@@ -166,20 +191,20 @@ fn digest_matches(data: &[u8], expected: &str) -> bool {
 
 fn digest_status(record: &RawRecord) -> DigestStatus {
     // Warcio treats revisit digests as references and does not validate them.
-    if header(record, &WarcHeader::WarcType) == Some("revisit") {
+    if header(record, "WARC-Type") == Some("revisit") {
         return DigestStatus::NoDigest;
     }
 
-    let block_digest = header(record, &WarcHeader::BlockDigest);
-    let payload_digest = header(record, &WarcHeader::PayloadDigest);
+    let block_digest = header(record, "WARC-Block-Digest");
+    let payload_digest = header(record, "WARC-Payload-Digest");
     if block_digest.is_none() && payload_digest.is_none() {
         return DigestStatus::NoDigest;
     }
 
-    let body = record.1.as_slice();
+    let body = record.body.as_slice();
     let block_passed = block_digest.is_none_or(|expected| digest_matches(body, expected));
     let payload_passed = payload_digest.is_none_or(|expected| {
-        let payload = if header(record, &WarcHeader::ContentType)
+        let payload = if header(record, "Content-Type")
             .is_some_and(|value| value.starts_with("application/http"))
         {
             body.windows(4)
