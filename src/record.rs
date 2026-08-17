@@ -206,32 +206,10 @@ impl std::fmt::Display for RawRecordHeader {
 }
 
 /// A builder for WARC records from data.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct RecordBuilder {
     value: Record<BufferedBody>,
     broken_headers: HashMap<WarcHeader, Vec<u8>>,
-    last_error: Option<WarcError>,
-}
-
-// HACK: std::io::Error doesn't implement Clone, this is the next best thing
-// see: https://github.com/rust-lang/rust/issues/24135
-impl Clone for RecordBuilder {
-    fn clone(&self) -> Self {
-        let err: Option<&WarcError> = self.last_error.as_ref();
-        let last_error: Option<WarcError> = err.map(|err| match err {
-            WarcError::ReadData(e) => WarcError::ReadData(std::io::Error::from(e.kind())),
-            WarcError::ParseHeaders(e) => WarcError::ParseHeaders(e.clone()),
-            WarcError::MissingHeader(e) => WarcError::MissingHeader(e.clone()),
-            WarcError::MalformedHeader(h, e) => WarcError::MalformedHeader(h.clone(), e.clone()),
-            WarcError::ReadOverflow => WarcError::ReadOverflow,
-            WarcError::UnexpectedEOB => WarcError::UnexpectedEOB,
-        });
-        RecordBuilder {
-            value: self.value.clone(),
-            broken_headers: self.broken_headers.clone(),
-            last_error,
-        }
-    }
 }
 
 /// A single WARC record.
@@ -778,31 +756,36 @@ impl RecordBuilder {
         self
     }
 
-    /// Create or replace an arbitrary header of the record under construction.
-    pub fn header<V: Into<Vec<u8>>>(mut self, key: WarcHeader, value: V) -> Self {
-        self.broken_headers.insert(key.clone(), value.into());
+    /// Apply a raw header value to a record, first checking that it is UTF-8.
+    fn set_raw_header(
+        record: &mut Record<BufferedBody>,
+        key: WarcHeader,
+        value: &[u8],
+    ) -> Result<(), WarcError> {
+        match std::str::from_utf8(value) {
+            Ok(string) => record.set_header(key, string).map(|_| ()),
+            Err(_) => Err(WarcError::MalformedHeader(
+                key,
+                "not a UTF-8 string".to_string(),
+            )),
+        }
+    }
 
-        let is_ok;
-        match std::str::from_utf8(self.broken_headers.get(&key).unwrap()) {
-            Ok(string) => {
-                if let Err(e) = self.value.set_header(key.clone(), string) {
-                    self.last_error = Some(e);
-                    is_ok = false;
-                } else {
-                    is_ok = true;
-                }
+    /// Create or replace an arbitrary header of the record under construction.
+    ///
+    /// A value that is not valid for the record as built so far is kept aside and retried
+    /// against the finished record when `build` runs, so an error that a later call cures
+    /// (for example a `Content-Length` set before the body it describes) does not fail the
+    /// build.
+    pub fn header<V: Into<Vec<u8>>>(mut self, key: WarcHeader, value: V) -> Self {
+        let value = value.into();
+        match Self::set_raw_header(&mut self.value, key.clone(), &value) {
+            Ok(()) => {
+                self.broken_headers.remove(&key);
             }
             Err(_) => {
-                is_ok = false;
-                self.last_error = Some(WarcError::MalformedHeader(
-                    key.clone(),
-                    "not a UTF-8 string".to_string(),
-                ));
+                self.broken_headers.insert(key, value);
             }
-        }
-
-        if is_ok {
-            self.broken_headers.remove(&key);
         }
 
         self
@@ -815,7 +798,6 @@ impl RecordBuilder {
         let RecordBuilder {
             value,
             broken_headers,
-            ..
         } = self;
         let (mut headers, body) = value.into_raw_parts();
         headers.as_mut().extend(broken_headers);
@@ -824,22 +806,25 @@ impl RecordBuilder {
     }
 
     /// Build a record from the data collected in this builder.
+    ///
+    /// Header values that were not valid when they were set are retried here against the
+    /// finished record.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error for a header value that is still not valid for the finished
+    /// record.
     pub fn build(self) -> Result<Record<BufferedBody>, WarcError> {
         let RecordBuilder {
-            value,
+            mut value,
             broken_headers,
-            last_error,
         } = self;
 
-        if let Some(e) = last_error {
-            Err(e)
-        } else {
-            debug_assert!(
-                broken_headers.is_empty(),
-                "invariant violation: broken headers without last error"
-            );
-            Ok(value)
+        for (key, raw_value) in broken_headers {
+            Self::set_raw_header(&mut value, key, &raw_value)?;
         }
+
+        Ok(value)
     }
 }
 
@@ -1628,7 +1613,6 @@ mod builder_tests {
     /// A rejected header value no longer fails the build once a later call replaces it with
     /// a valid one.
     #[test]
-    #[ignore = "known bug (RECORD-007: rejected values not retried at build time)"]
     fn broken_header_is_cured_by_a_later_set() {
         let record = RecordBuilder::default()
             .header(WarcHeader::Date, "not-a-dayTor:a:time")
@@ -1645,7 +1629,6 @@ mod builder_tests {
     /// A `Content-Length` set before the body it describes is retried against the finished
     /// record, so the order of the two calls does not matter.
     #[test]
-    #[ignore = "known bug (RECORD-007: rejected values not retried at build time)"]
     fn content_length_before_body_is_cured() {
         let record = RecordBuilder::default()
             .header(WarcHeader::ContentLength, "5")
@@ -1659,7 +1642,6 @@ mod builder_tests {
     /// The build error blames a header that is still broken, not one that was broken and
     /// later fixed.
     #[test]
-    #[ignore = "known bug (RECORD-007: rejected values not retried at build time)"]
     fn build_error_blames_a_still_broken_header() {
         let builder = RecordBuilder::default()
             .header(WarcHeader::ContentLength, "9")
