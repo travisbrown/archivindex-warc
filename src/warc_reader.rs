@@ -137,6 +137,14 @@ impl<R: BufRead> Iterator for RawRecordIter<R> {
 
             // we expect 4 characters (\r\n\r\n) after the body
             if bytes_read == 2 && body_bytes_read == maximum_read_range {
+                if &body_buffer[expected_body_len..] != b"\r\n\r\n" {
+                    let synthetic_err: nom::Err<(Vec<u8>, nom::error::ErrorKind)> =
+                        nom::Err::Failure((
+                            vec![0x0d, 0x0a, 0x0d, 0x0a],
+                            nom::error::ErrorKind::Tag,
+                        ));
+                    return Some(Err(Error::ParseHeaders(synthetic_err)));
+                }
                 found_body = true;
             }
 
@@ -225,6 +233,14 @@ impl<R: BufRead> Iterator for RecordIter<R> {
 
             // we expect 4 characters (\r\n\r\n) after the body
             if bytes_read == 2 && body_bytes_read == maximum_read_range {
+                if &body_buffer[expected_body_len..] != b"\r\n\r\n" {
+                    let synthetic_err: nom::Err<(Vec<u8>, nom::error::ErrorKind)> =
+                        nom::Err::Failure((
+                            vec![0x0d, 0x0a, 0x0d, 0x0a],
+                            nom::error::ErrorKind::Tag,
+                        ));
+                    return Some(Err(Error::ParseHeaders(synthetic_err)));
+                }
                 found_body = true;
             }
 
@@ -488,7 +504,6 @@ mod iter_raw_tests {
     /// The bytes after a body are the record terminator, so a record whose body is followed by
     /// four other bytes is rejected rather than read as if it had ended properly.
     #[test]
-    #[ignore = "known bug (IO-002: record terminator not validated)"]
     fn invalid_record_terminator() {
         // After the 4-byte body, the record ends with `c\nd\n` instead of `\r\n\r\n`; the byte
         // counts line up, but the terminator bytes are wrong.
