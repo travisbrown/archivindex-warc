@@ -312,7 +312,8 @@ impl<R: BufRead> StreamingIter<'_, R> {
     /// Returns one of the following:
     /// * Some(Ok(r))` is the next record read from the stream.
     /// * `Some(Err)` indicates there was a read error.
-    /// * `None` indicates no more records are returned.
+    /// * `None` indicates no more records are returned. The iterator is fused: once the input
+    ///   has cleanly ended, every further call returns `None`.
     pub fn next_item(&mut self) -> Option<Result<Record<StreamingBody<'_, R>>, Error>> {
         if self.finished {
             return None;
@@ -337,6 +338,7 @@ impl<R: BufRead> StreamingIter<'_, R> {
             };
 
             if bytes_read == 0 {
+                self.finished = true;
                 return None;
             }
 
@@ -998,7 +1000,6 @@ mod next_item_tests {
     /// After the final `None`, further calls keep returning `None` instead of yielding a
     /// spurious error for a body the iterator already consumed.
     #[test]
-    #[ignore = "known bug (IO-005: next_item not fused)"]
     fn next_item_is_fused_after_end() {
         let raw = b"\
             WARC/1.1\r\n\
