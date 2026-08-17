@@ -20,8 +20,7 @@ pub enum Error {
     ReadOverflow,
     /// The end of the record's body was found unexpectedly.
     UnexpectedEOB,
-    /// The record's version string contains a line break, so writing it would produce a
-    /// record no reader could parse back.
+    /// A version string does not name a WARC version supported by this crate.
     MalformedVersion(String),
 }
 

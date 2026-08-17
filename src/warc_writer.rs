@@ -130,8 +130,7 @@ fn invalid_input(error: crate::Error) -> io::Error {
 /// version or value containing a line break, or an unknown header name outside the token
 /// grammar.
 fn validate_raw_header(headers: &RawRecordHeader) -> Result<(), crate::Error> {
-    let version = headers.version.as_bytes();
-    if version.contains(&b'\r') || version.contains(&b'\n') {
+    if !crate::is_supported_version(&headers.version) {
         return Err(crate::Error::MalformedVersion(headers.version.clone()));
     }
 
