@@ -291,10 +291,10 @@ impl<T: BodyKind> Record<T> {
     }
 
     fn parse_content_length(len: &str) -> Result<u64, WarcError> {
-        (len).parse::<u64>().map_err(|_| {
+        crate::parse_content_length(len).ok_or_else(|| {
             WarcError::MalformedHeader(
                 WarcHeader::ContentLength,
-                "not an integer between 0 and 2^64-1".to_string(),
+                "not a digit sequence between 0 and 2^64-1".to_string(),
             )
         })
     }
@@ -1084,7 +1084,6 @@ mod record_tests {
     /// `Content-Length` values follow the `1*DIGIT` grammar at the record entry points too:
     /// linear whitespace around the digits is tolerated, a sign is not.
     #[test]
-    #[ignore = "known bug (PARSE-001: lax content-length parsing)"]
     fn set_header_content_length_grammar() {
         let mut record = Record::<BufferedBody>::default();
 

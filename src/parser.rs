@@ -6,6 +6,7 @@ use nom::{
     sequence::tuple,
     IResult,
 };
+use std::convert::TryFrom;
 use std::str;
 
 // TODO: evaluate the use of `ErrorKind::Verify` here.
@@ -93,14 +94,16 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, &[u8])>, usize)
                 Ok(value) => value,
             };
 
-            match value_str.parse::<usize>() {
-                Err(_) => {
+            // The parser works in `usize` because it slices the body out of the input, so a
+            // length beyond the address space cannot be honored here either.
+            match crate::parse_content_length(value_str).and_then(|len| usize::try_from(len).ok()) {
+                None => {
                     return Err(nom::Err::Error(nom::error::Error::new(
                         input,
                         ErrorKind::Verify,
                     )));
                 }
-                Ok(len) => {
+                Some(len) => {
                     content_length = Some(len);
                 }
             }
@@ -187,7 +190,6 @@ mod tests {
     /// `Content-Length` follows the `1*DIGIT` grammar strictly: linear whitespace around the
     /// digits is tolerated, but signs, internal whitespace, and non-digits are not.
     #[test]
-    #[ignore = "known bug (PARSE-001: lax content-length parsing)"]
     fn content_length_grammar() {
         let block = |value: &str| format!("WARC/1.1\r\ncontent-length: {}\r\n\r\n", value);
 
