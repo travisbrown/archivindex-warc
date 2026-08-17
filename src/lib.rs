@@ -1,6 +1,32 @@
 #![deny(missing_docs)]
 //! A WARC (Web ARChive) library
 
+/// Whether a byte may appear in a header name, per the specification's token grammar: ASCII,
+/// excluding control characters, separators, and space. Shared by the parser and the
+/// write-path validation so that acceptance on write matches acceptance on read.
+fn is_header_token_char(chr: u8) -> bool {
+    !matches!(chr, 0..=31
+        | 128..=255
+        | b'('
+        | b')'
+        | b'<'
+        | b'>'
+        | b'@'
+        | b','
+        | b';'
+        | b':'
+        | b'"'
+        | b'/'
+        | b'['
+        | b']'
+        | b'?'
+        | b'='
+        | b'{'
+        | b'}'
+        | b' '
+        | b'\\')
+}
+
 mod error;
 pub use error::Error;
 
