@@ -1,5 +1,5 @@
 use crate::parser;
-use crate::{BufferedBody, Error, RawRecordHeader, Record, StreamingBody};
+use crate::{BufferedBody, EmptyBody, Error, RawRecordHeader, Record, StreamingBody};
 
 use std::convert::TryInto;
 use std::fs;
@@ -98,20 +98,24 @@ fn check_header_block_end(remainder: &[u8]) -> Result<(), Error> {
 }
 
 /// An iterator of raw records streamed from a reader. See `RawRecord` for more information.
+///
+/// Every error this iterator returns is stream-level: it leaves the reader at an unspecified
+/// position. The iterator is therefore fused after one, and after the input has ended.
 pub struct RawRecordIter<R> {
     reader: R,
+    finished: bool,
 }
 
 impl<R: BufRead> RawRecordIter<R> {
     pub(crate) fn new(reader: R) -> RawRecordIter<R> {
-        RawRecordIter { reader }
+        RawRecordIter {
+            reader,
+            finished: false,
+        }
     }
-}
 
-impl<R: BufRead> Iterator for RawRecordIter<R> {
-    type Item = Result<(RawRecordHeader, Vec<u8>), Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// Read the next record; the `Iterator` impl wraps this with the fusing logic.
+    fn next_record(&mut self) -> Option<<Self as Iterator>::Item> {
         let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
         let mut found_headers = false;
         while !found_headers {
@@ -197,14 +201,33 @@ impl<R: BufRead> Iterator for RawRecordIter<R> {
     }
 }
 
+impl<R: BufRead> Iterator for RawRecordIter<R> {
+    type Item = Result<(RawRecordHeader, Vec<u8>), Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        let item = self.next_record();
+        self.finished = !matches!(item, Some(Ok(_)));
+        item
+    }
+}
+
 /// An iterator which returns the records read by a reader.
+///
+/// A record which cannot be validated is returned as an error, and iteration continues with
+/// the next record. A stream-level error fuses the iterator, as it does the raw one.
 pub struct RecordIter<R> {
-    reader: R,
+    raw_iter: RawRecordIter<R>,
 }
 
 impl<R: BufRead> RecordIter<R> {
     pub(crate) fn new(reader: R) -> RecordIter<R> {
-        RecordIter { reader }
+        RecordIter {
+            raw_iter: RawRecordIter::new(reader),
+        }
     }
 }
 
@@ -212,93 +235,12 @@ impl<R: BufRead> Iterator for RecordIter<R> {
     type Item = Result<Record<BufferedBody>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
-        let mut found_headers = false;
-        while !found_headers {
-            let bytes_read = match self.reader.read_until(b'\n', &mut header_buffer) {
-                Err(io) => return Some(Err(Error::ReadData(io))),
-                Ok(len) => len,
-            };
-
-            if bytes_read == 0 {
-                return None;
-            }
-
-            if bytes_read == 2 {
-                let last_two_chars = header_buffer.len() - 2;
-                if &header_buffer[last_two_chars..] == b"\r\n" {
-                    found_headers = true;
-                }
-            }
-        }
-
-        let headers_parsed = match parser::headers(&header_buffer) {
-            Err(e) => {
-                return Some(Err(Error::ParseHeaders(
-                    e.map(|inner| (inner.input.to_owned(), inner.code)),
-                )));
-            }
-
-            Ok((remainder, parsed)) => {
-                if let Err(e) = check_header_block_end(remainder) {
-                    return Some(Err(e));
-                }
-                parsed
-            }
-        };
-        let version_ref = headers_parsed.0;
-        let headers_ref = headers_parsed.1;
-        let expected_body_len = headers_parsed.2;
-
-        let mut body_buffer: Vec<u8> = Vec::with_capacity(MB);
-        let mut found_body = false;
-        let mut body_bytes_read = 0;
-        let maximum_read_range = expected_body_len + 4;
-        while !found_body {
-            let bytes_read = match self.reader.read_until(b'\n', &mut body_buffer) {
-                Err(io) => return Some(Err(Error::ReadData(io))),
-                Ok(len) => len,
-            };
-
-            body_bytes_read += bytes_read;
-
-            // we expect 4 characters (\r\n\r\n) after the body
-            if bytes_read == 2 && body_bytes_read == maximum_read_range {
-                if &body_buffer[expected_body_len..] != b"\r\n\r\n" {
-                    let synthetic_err: nom::Err<(Vec<u8>, nom::error::ErrorKind)> =
-                        nom::Err::Failure((
-                            vec![0x0d, 0x0a, 0x0d, 0x0a],
-                            nom::error::ErrorKind::Tag,
-                        ));
-                    return Some(Err(Error::ParseHeaders(synthetic_err)));
-                }
-                found_body = true;
-            }
-
-            if bytes_read == 0 {
-                return Some(Err(Error::UnexpectedEOB));
-            }
-
-            if body_bytes_read > maximum_read_range {
-                return Some(Err(Error::ReadOverflow));
-            }
-        }
-
-        let body_ref = &body_buffer[..expected_body_len];
-
-        let headers = RawRecordHeader {
-            version: version_ref.to_owned(),
-            headers: headers_ref
-                .into_iter()
-                .map(|(token, value)| (token.into(), value.to_owned()))
-                .collect(),
-        };
-        let body = body_ref.to_owned();
-        match headers.try_into() {
-            Ok(b) => {
-                let buffered: Record<_> = b;
-                Some(Ok(buffered.add_body(body)))
-            }
+        match self.raw_iter.next()? {
+            Ok((headers, body)) => Some(
+                headers
+                    .try_into()
+                    .map(|record: Record<EmptyBody>| record.add_body(body)),
+            ),
             Err(e) => Some(Err(e)),
         }
     }
@@ -315,6 +257,9 @@ pub struct StreamingIter<'r, R> {
     reader: &'r mut R,
     current_item_size: u64,
     first_record: bool,
+    /// Set once a stream-level error has been returned, so that further calls do not read
+    /// from a stream left at an unspecified position.
+    finished: bool,
 }
 
 impl<R: BufRead> StreamingIter<'_, R> {
@@ -323,6 +268,7 @@ impl<R: BufRead> StreamingIter<'_, R> {
             reader,
             current_item_size: 0,
             first_record: true,
+            finished: false,
         }
     }
 
@@ -368,9 +314,14 @@ impl<R: BufRead> StreamingIter<'_, R> {
     /// * `Some(Err)` indicates there was a read error.
     /// * `None` indicates no more records are returned.
     pub fn next_item(&mut self) -> Option<Result<Record<StreamingBody<'_, R>>, Error>> {
+        if self.finished {
+            return None;
+        }
+
         if self.first_record {
             self.first_record = false;
         } else if let Err(e) = self.skip_body() {
+            self.finished = true;
             return Some(Err(e));
         }
 
@@ -378,7 +329,10 @@ impl<R: BufRead> StreamingIter<'_, R> {
         let mut found_headers = false;
         while !found_headers {
             let bytes_read = match self.reader.read_until(b'\n', &mut header_buffer) {
-                Err(io) => return Some(Err(Error::ReadData(io))),
+                Err(io) => {
+                    self.finished = true;
+                    return Some(Err(Error::ReadData(io)));
+                }
                 Ok(len) => len,
             };
 
@@ -396,12 +350,14 @@ impl<R: BufRead> StreamingIter<'_, R> {
 
         let headers_parsed = match parser::headers(&header_buffer) {
             Err(e) => {
+                self.finished = true;
                 return Some(Err(Error::ParseHeaders(
                     e.map(|inner| (inner.input.to_owned(), inner.code)),
-                )))
+                )));
             }
             Ok((remainder, parsed)) => {
                 if let Err(e) = check_header_block_end(remainder) {
+                    self.finished = true;
                     return Some(Err(e));
                 }
                 parsed
@@ -590,7 +546,6 @@ mod iter_raw_tests {
     /// A stream-level error leaves the reader at an unspecified position, so the iterator
     /// fuses instead of yielding garbage parsed from the middle of the broken record.
     #[test]
-    #[ignore = "known bug (IO-004: iterators not fused)"]
     fn raw_iter_fuses_after_stream_error() {
         // A record with a malformed terminator, followed by a perfectly valid record that a
         // non-fused iterator would happily (and wrongly) yield.
@@ -1080,7 +1035,6 @@ mod next_item_tests {
     /// A stream-level error fuses the streaming iterator instead of yielding further errors
     /// from an unspecified position.
     #[test]
-    #[ignore = "known bug (IO-004: iterators not fused)"]
     fn next_item_fuses_after_stream_error() {
         let mut reader = WarcReader::new(create_reader!(TRUNCATED_BODY));
         let mut stream_iter = reader.stream_records();
