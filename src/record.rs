@@ -161,6 +161,16 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
             .transpose()?
             .map(|value| TruncatedType::from(&value));
 
+        // `Record` guarantees UTF-8 header values; reject the record otherwise.
+        for (header, value) in headers.as_ref().iter() {
+            if std::str::from_utf8(value).is_err() {
+                return Err(WarcError::MalformedHeader(
+                    header.clone(),
+                    "not a UTF-8 string".to_string(),
+                ));
+            }
+        }
+
         Ok(Record {
             headers,
             record_date,
@@ -222,6 +232,11 @@ impl Clone for RecordBuilder {
 /// A record is guaranteed to be valid according to the specification it conforms to, except:
 /// * The validity of the WARC-Record-ID header is not checked
 /// * Date information not in the UTC timezone will be silently converted to UTC
+///
+/// All header values in a record are guaranteed to be valid UTF-8: converting a
+/// `RawRecordHeader` containing a non-UTF-8 header value fails with
+/// `Error::MalformedHeader` naming the offending header. Use the raw record APIs to work
+/// with records whose header values are arbitrary bytes.
 ///
 /// Use the `Display` trait to generate the formatted representation.
 #[derive(Debug, PartialEq)]
@@ -378,11 +393,12 @@ impl<T: BodyKind> Record<T> {
                 .truncated_type
                 .as_ref()
                 .map(|truncated_type| Cow::Owned(truncated_type.to_string())),
-            _ => self
-                .headers
-                .as_ref()
-                .get(&header)
-                .map(|h| Cow::Owned(String::from_utf8(h.clone()).unwrap())),
+            _ => self.headers.as_ref().get(&header).map(|value| {
+                Cow::Borrowed(
+                    std::str::from_utf8(value)
+                        .expect("invariant violation: record header value is not UTF-8"),
+                )
+            }),
         }
     }
 
@@ -438,7 +454,12 @@ impl<T: BodyKind> Record<T> {
                 .headers
                 .as_mut()
                 .insert(header, Vec::from(value))
-                .map(|v| Cow::Owned(String::from_utf8(v).unwrap()))),
+                .map(|v| {
+                    Cow::Owned(
+                        String::from_utf8(v)
+                            .expect("invariant violation: record header value is not UTF-8"),
+                    )
+                })),
         }
     }
 
@@ -1342,7 +1363,6 @@ mod raw_tests {
     }
 
     #[test]
-    #[ignore = "known bug (RECORD-003: non-UTF-8 field values accepted)"]
     fn verify_non_utf8_header_value_is_rejected() {
         let headers = headers_with(WarcHeader::TargetURI, vec![0xff, 0xfe]);
         match Record::<EmptyBody>::try_from(headers) {
