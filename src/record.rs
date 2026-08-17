@@ -103,9 +103,39 @@ impl AsMut<HashMap<WarcHeader, Vec<u8>>> for RawRecordHeader {
     }
 }
 
+/// Fold `Unknown` spellings of well-known field names in a hand-built raw header block into
+/// their variants, so that the typed extraction in `try_from` sees them; a spelling that
+/// collides with a field already present is exactly the duplicate the reader would reject.
+///
+/// Header blocks built by the parser never contain such spellings, so the rebuild only runs
+/// when an `Unknown` key is present.
+fn normalize_raw_headers(headers: &mut RawRecordHeader) -> Result<(), WarcError> {
+    let needs_normalizing = headers
+        .as_ref()
+        .keys()
+        .any(|header| matches!(header, WarcHeader::Unknown(_)));
+
+    if needs_normalizing {
+        let mut normalized = HashMap::with_capacity(headers.as_ref().len());
+        for (header, value) in std::mem::take(headers.as_mut()) {
+            let header = header.normalized();
+            if normalized.insert(header.clone(), value).is_some() {
+                return Err(WarcError::MalformedHeader(
+                    header,
+                    "duplicate header".to_string(),
+                ));
+            }
+        }
+        *headers.as_mut() = normalized;
+    }
+
+    Ok(())
+}
+
 impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
     type Error = WarcError;
     fn try_from(mut headers: RawRecordHeader) -> Result<Self, WarcError> {
+        normalize_raw_headers(&mut headers)?;
         headers
             .as_mut()
             .remove(&WarcHeader::ContentLength)
@@ -369,6 +399,7 @@ impl<T: BodyKind> Record<T> {
 
     /// Return the WARC header requested if present in this record, or `None`.
     pub fn header(&self, header: WarcHeader) -> Option<Cow<'_, str>> {
+        let header = header.normalized();
         match &header {
             WarcHeader::ContentLength => {
                 Some(Cow::Owned(format!("{}", self.body.content_length())))
@@ -410,6 +441,7 @@ impl<T: BodyKind> Record<T> {
         V: Into<String>,
     {
         let value = value.into();
+        let header = header.normalized();
         match &header {
             WarcHeader::Date => {
                 let old_date = std::mem::replace(
@@ -981,7 +1013,6 @@ mod record_tests {
     /// An `Unknown` spelling of a well-known name is folded into its variant, so it cannot
     /// bypass the interception that keeps derived fields out of the stored header map.
     #[test]
-    #[ignore = "known bug (RECORD-008: unknown spellings bypass typed handling)"]
     fn set_header_normalizes_unknown_spellings() {
         let mut record = Record::<BufferedBody>::default();
 
@@ -1022,7 +1053,6 @@ mod record_tests {
     /// The record serializes a single `warc-date` line, so its own reader accepts it again;
     /// the unnormalized spelling used to produce a duplicate line the reader rejected.
     #[test]
-    #[ignore = "known bug (RECORD-008: unknown spellings bypass typed handling)"]
     fn unknown_spelling_of_known_header_round_trips() {
         let mut record = Record::<BufferedBody>::default();
         record
@@ -1379,7 +1409,6 @@ mod raw_tests {
     /// A hand-built raw block may spell a well-known field as `Unknown`; conversion folds it
     /// into the typed field.
     #[test]
-    #[ignore = "known bug (RECORD-008: unknown spellings bypass typed handling)"]
     fn verify_unknown_spelling_is_normalized() {
         let headers = RawRecordHeader {
             version: "1.0".to_owned(),
@@ -1409,7 +1438,6 @@ mod raw_tests {
     /// An `Unknown` spelling that collides with a field already present is a duplicate, and
     /// a duplicate of a field the record can hold only once is rejected.
     #[test]
-    #[ignore = "known bug (RECORD-008: unknown spellings bypass typed handling)"]
     fn verify_unknown_spelling_collision_is_rejected() {
         let headers = headers_with(
             WarcHeader::Unknown("WARC-Date".to_string()),
