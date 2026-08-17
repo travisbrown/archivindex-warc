@@ -1,6 +1,12 @@
+//! Read a gzip-compressed archive, skipping the records whose target URI names one of the
+//! files given on the command line.
+//!
+//! The filter reads the header block alone, so a skipped record's body is consumed without ever
+//! being buffered.
+
 mod common;
 
-use archivindex_warc::{WarcHeader, WarcReader};
+use archivindex_warc::io::read::WarcReader;
 
 macro_rules! usage_err {
     ($str:expr) => {
@@ -20,30 +26,42 @@ fn main() -> std::io::Result<()> {
         Err(usage_err!("one or more filtered file names not supplied"))?;
     }
 
-    let mut file = WarcReader::from_path_gzip(common::tmp_path(warc_name)?)?;
+    let file = WarcReader::from_path_gzip(common::tmp_path(warc_name)?)?;
 
     let mut count = 0;
     let mut skipped = 0;
-    let mut stream_iter = file.stream_records();
-    while let Some(record) = stream_iter.next_item() {
-        let record = record.expect("read of headers ok");
-        count += 1;
-        match record.header(WarcHeader::TargetURI).map(|s| s.to_string()) {
-            Some(v) if has_matching_filename(&v, &filtered_file_names) => {
+    // The closure borrows the counter for as long as the iterator lives, which is the loop, so
+    // the count can be read again once the loop has ended.
+    let kept = file.filter_raw_records(|header| {
+        // A raw record keeps the white space a value was written with, so the value is trimmed
+        // before it is read as a URI.
+        let target_uri = header
+            .get("WARC-Target-URI")
+            .map(|value| String::from_utf8_lossy(value).trim().to_owned());
+
+        match target_uri {
+            Some(uri) if has_matching_filename(&uri, &filtered_file_names) => {
                 println!("Matches filename, skipping record");
                 skipped += 1;
+                false
             }
-            _ => {
-                let buffered = record.into_buffered().expect("read of record ok");
-                println!(
-                    "Found record. Data:\n{}",
-                    String::from_utf8_lossy(buffered.body())
-                );
-            }
+            _ => true,
         }
+    });
+
+    for record in kept {
+        let record = record.expect("read of record ok");
+        count += 1;
+        println!(
+            "Found record. Data:\n{}",
+            String::from_utf8_lossy(&record.body)
+        );
     }
 
-    println!("Total records: {}\nSkipped records: {}", count, skipped);
+    println!(
+        "Total records: {}\nSkipped records: {skipped}",
+        count + skipped
+    );
 
     Ok(())
 }

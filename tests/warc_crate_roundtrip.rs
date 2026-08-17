@@ -6,8 +6,7 @@
 //! the same records up to the order and case of the header names. Upstream keeps a record's
 //! header block in a `HashMap`, so it emits header lines in hash order while this crate
 //! preserves their order of appearance; that difference is what the tolerance covers.
-//! Everything else — the record count, the WARC version, every header name and value, and
-//! every body byte — has to match exactly.
+//! Everything else, including record count, WARC version, headers, and body bytes, must match.
 //!
 //! Both implementations are handed the same uncompressed bytes rather than a path, so that
 //! the comparison measures WARC handling alone. Reading through each crate's own path
@@ -23,7 +22,7 @@ mod support;
 
 use std::io::BufWriter;
 
-use archivindex_warc::WarcVersion;
+use archivindex_warc::version::WarcVersion;
 use support::{fixture_bytes, roundtrip};
 
 /// The number of bytes of a header value shown when a comparison fails.
@@ -60,22 +59,29 @@ fn roundtrip_upstream(source: &[u8]) -> Result<Vec<u8>, String> {
 ///
 /// Both outputs are parsed by this crate's reader, so any surviving difference is a
 /// difference in the records the bytes encode rather than in their layout. Lower-casing the
-/// names and sorting the block is the whole of the tolerance.
+/// names, trimming the white space around a value, and sorting the block is the whole of the
+/// tolerance.
 fn normalize(output: &[u8]) -> Result<Vec<NormalizedRecord>, String> {
-    archivindex_warc::WarcReader::new(output)
+    archivindex_warc::io::read::WarcReader::new(output)
         .iter_raw_records()
         .map(|record| {
-            let (header, body) = record.map_err(|error| error.to_string())?;
-            let mut headers = header
+            let record = record.map_err(|error| error.to_string())?;
+            let mut headers = record
+                .header
+                .headers
                 .iter()
-                .map(|(name, value)| (name.name().to_ascii_lowercase(), value.to_vec()))
+                .map(|(name, value)| {
+                    // A raw record keeps the white space a value was written with, which says
+                    // nothing about the record it encodes and which upstream does not keep.
+                    (name.to_ascii_lowercase(), value.trim_ascii().to_vec())
+                })
                 .collect::<Vec<_>>();
             headers.sort_unstable();
 
             Ok(NormalizedRecord {
-                version: header.version,
+                version: record.header.version,
                 headers,
-                body,
+                body: record.body,
             })
         })
         .collect()

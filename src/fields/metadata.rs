@@ -1,13 +1,8 @@
-//! The body of a `metadata` record: what a capture says about another record.
+//! The body of a `metadata` record, read as `application/warc-fields`.
 //!
-//! A `metadata` record holds content created to further describe, explain, or accompany a
-//! harvested resource in ways no other record type covers, and it almost always refers to a
-//! record of another type through `WARC-Concurrent-To` or `WARC-Refers-To`. Its block may take
-//! any format, but `application/warc-fields` may be used, and the standard says allowable
-//! fields then include "all \[DCMI\]" terms plus three of its own. Every field is optional.
-//!
-//! This is the same shape as a `warcinfo` body, so it is the same [`Body`] over a different
-//! vocabulary: see [`crate::fields::warcinfo`] for what the two have in common.
+//! A `metadata` record describes or accompanies a harvested resource. An
+//! `application/warc-fields` body may use any DCMI term, three fields defined for metadata, and
+//! extension fields. Every field is optional.
 //!
 //! ```
 //! use archivindex_warc::fields::metadata::MetadataBody;
@@ -32,9 +27,8 @@ use crate::fields::{Body, Field};
 
 /// A field of a `metadata` record's body.
 ///
-/// The three variants the standard names itself come first, any DCMI metadata term is a
-/// [`Dcmi`](Self::Dcmi), and anything else is an [`Other`](Self::Other), since the standard
-/// leaves the format of a `metadata` block open.
+/// The three metadata fields come first. Any DCMI metadata term is a
+/// [`Dcmi`](Self::Dcmi), and anything else is an [`Other`](Self::Other).
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum MetadataField {
     /// `via`: the referring URI from which the archived URI was discovered.
@@ -97,9 +91,8 @@ impl MetadataBody {
         self.get(&MetadataField::Via)
     }
 
-    /// The type of each hop from a starting seed URI to the archived one, one character per
-    /// hop. A seed is an empty string rather than an absent field, so this reports `Some("")`
-    /// for one.
+    /// The type of each hop from a starting seed URI to the archived one, one character per hop.
+    /// A seed is an empty string rather than an absent field, so this reports `Some("")` for one.
     ///
     /// The value is reported as it was written, since the standard fixes no alphabet for it.
     /// Parse it as [`HopsFromSeed`] to read it as the hops it names.
@@ -118,11 +111,8 @@ impl MetadataBody {
 
 /// One hop of the path a `hopsFromSeed` value describes.
 ///
-/// The standard calls the value "a symbolic string" and fixes no alphabet for it. These are
-/// the characters the annotated standard records as a community recommendation, taken from the
-/// discovery path of the Heritrix crawler, and a value written by another harvester may well
-/// use others. That is why a `hopsFromSeed` value is reported as written and read as hops only
-/// on request: see [`HopsFromSeed`].
+/// The standard does not define an alphabet. These characters follow the community recommendation
+/// in the annotated standard and the Heritrix discovery path.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub enum Hop {
     /// `L`: a link, such as `<a href=...>`.
@@ -204,9 +194,7 @@ impl HopsFromSeed {
     }
 }
 
-/// A `hopsFromSeed` value is read strictly, since a character outside the recommended alphabet
-/// means the value came from a harvester describing its hops some other way, and guessing at
-/// what it meant would be worse than saying so.
+/// Parse one recommended hop per character and reject unknown characters.
 impl FromStr for HopsFromSeed {
     type Err = UnknownHop;
 
@@ -272,7 +260,7 @@ mod tests {
         assert_eq!(body.hops_from_seed(), Some("E"));
         assert_eq!(body.fetch_time_ms(), Some(565));
 
-        // Reading the hops the value names is the caller's to ask for, and this one names one.
+        // Reading the value as hops is the caller's to ask for; this one names a single hop.
         let hops = body.hops_from_seed().expect("hops").parse::<HopsFromSeed>();
         assert_eq!(hops.expect("hops").hops(), [Hop::Embed]);
 
@@ -338,8 +326,8 @@ mod tests {
         assert_eq!(seed, HopsFromSeed::default());
     }
 
-    /// A character outside the recommended alphabet is reported rather than guessed at, and
-    /// the offset it is reported at counts bytes, as offsets into a value do elsewhere.
+    /// A character outside the recommended alphabet is reported rather than guessed at, and the
+    /// offset it is reported at counts bytes.
     #[test]
     fn a_character_that_names_no_hop_is_rejected() {
         assert_eq!(
@@ -359,7 +347,7 @@ mod tests {
             })
         );
 
-        // Case matters: the alphabet is upper case.
+        // Case matters: the alphabet is uppercase.
         assert!("lle".parse::<HopsFromSeed>().is_err());
     }
 

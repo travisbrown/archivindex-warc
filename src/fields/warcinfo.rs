@@ -1,13 +1,11 @@
-//! The body of a `warcinfo` record: the description a WARC file carries of itself.
+//! The body of a `warcinfo` record, read as `application/warc-fields`.
 //!
 //! A `warcinfo` record opens a WARC file and describes the file or the crawl that produced it.
-//! Its body is recommended to be `application/warc-fields`, the same named-field syntax the
-//! header block uses, and the standard says its allowable fields "include, but are not limited
-//! to, all \[DCMI\]" terms plus seven of its own. Every field is optional, and none of them is
-//! forbidden to repeat, so this is a description rather than a record header: [`WarcinfoBody`]
-//! keeps the fields in the order they were written in and lets a name appear more than once.
-//! It also keeps the block it read them from, so that reading a record and writing it again
-//! leaves the archive, and any digest taken over that block, exactly as it was.
+//! Its body is recommended to be `application/warc-fields`, and the standard says its allowable
+//! fields "include, but are not limited to, all \[DCMI\]" terms plus seven of its own. Every field
+//! is optional and may repeat, so [`WarcinfoBody`] keeps the fields in the order they were written
+//! and lets a name appear more than once. It also retains the source block for byte-exact
+//! round-tripping, which keeps any digest over the block verifiable.
 //!
 //! ```
 //! use archivindex_warc::fields::dcmi::DcmiTerm;
@@ -36,8 +34,8 @@ use crate::fields::{Body, Field};
 
 /// A field of a `warcinfo` record's body.
 ///
-/// The seven variants the standard names itself come first, any DCMI metadata term is a
-/// [`Dcmi`](Self::Dcmi), and anything else is an [`Other`](Self::Other): the standard invites
+/// The seven variants defined for `warcinfo` come first. Any DCMI metadata term is a
+/// [`Dcmi`](Self::Dcmi), and anything else is an [`Other`](Self::Other). The standard invites
 /// further fields, naming "technical information such as base encoding of the digests used in
 /// named fields" as an example.
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
@@ -170,8 +168,7 @@ mod tests {
     use crate::fields::Field;
     use crate::fields::dcmi::DcmiTerm;
 
-    /// The `warcinfo` record of Annex B.1 of the standard, whose fields mix the WARC-specific
-    /// names with DCMI terms and whose last two values are folded over two lines.
+    /// The `warcinfo` example from Annex B.1 of the standard.
     const ANNEX_EXAMPLE: &[u8] = b"software: Heritrix 1.12.0 http://crawler.archive.org\r\n\
         hostname: crawling017.archive.org\r\n\
         ip: 207.241.227.234\r\n\
