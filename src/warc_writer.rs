@@ -107,3 +107,133 @@ impl WarcWriter<BufWriter<GzipWriter<std::fs::File>>> {
         Ok(WarcWriter::new(writer))
     }
 }
+
+#[cfg(test)]
+mod write_raw_tests {
+    use super::WarcWriter;
+    use crate::{BufferedBody, RawRecordHeader, Record, WarcHeader};
+    use std::io::{self, Write};
+
+    /// A block that any writer should accept, to derive rejected blocks from.
+    fn valid_headers() -> RawRecordHeader {
+        RawRecordHeader {
+            version: "1.1".to_owned(),
+            headers: vec![
+                (WarcHeader::WarcType, b"dunno".to_vec()),
+                (WarcHeader::ContentLength, b"5".to_vec()),
+            ]
+            .into_iter()
+            .collect(),
+        }
+    }
+
+    /// Assert that writing the given raw header block fails with `InvalidInput` and emits no
+    /// bytes.
+    fn assert_rejected(headers: RawRecordHeader) {
+        let mut writer = WarcWriter::new(Vec::new());
+        let error = writer
+            .write_raw(headers, b"body!")
+            .expect_err("the block should be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(writer.writer.is_empty(), "no partial record is written");
+    }
+
+    /// Raw header blocks that could not be parsed back are rejected before anything is
+    /// written: injected values, invalid unknown names, and an injected version string.
+    #[test]
+    #[ignore = "known bug (RECORD-009: header injection)"]
+    fn write_raw_rejects_header_injection() {
+        let mut injected_value = valid_headers();
+        injected_value.as_mut().insert(
+            WarcHeader::TargetURI,
+            b"https://a/\r\nwarc-type: evil".to_vec(),
+        );
+        assert_rejected(injected_value);
+
+        let mut invalid_name = valid_headers();
+        invalid_name
+            .as_mut()
+            .insert(WarcHeader::Unknown("evil name".to_string()), b"v".to_vec());
+        assert_rejected(invalid_name);
+
+        let mut injected_version = valid_headers();
+        injected_version.version = "1.1\r\nevil: x".to_owned();
+        assert_rejected(injected_version);
+
+        // The block the three are derived from is written without complaint.
+        let mut writer = WarcWriter::new(Vec::new());
+        writer.write_raw(valid_headers(), b"body!").unwrap();
+    }
+
+    /// Typed setters that bypass `set_header` are caught when the record is written.
+    #[test]
+    #[ignore = "known bug (RECORD-009: header injection)"]
+    fn write_rejects_injection_through_typed_setters() {
+        let mut record = Record::<BufferedBody>::default();
+        record.set_warc_id("<urn:a>\r\nevil: x");
+
+        let mut writer = WarcWriter::new(Vec::new());
+        let error = writer
+            .write(&record)
+            .expect_err("injection should be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(writer.writer.is_empty());
+    }
+
+    /// A writer that accepts at most one byte per `write` call.
+    struct TrickleWriter(Vec<u8>);
+
+    impl Write for TrickleWriter {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            let n = data.len().min(1);
+            self.0.extend_from_slice(&data[..n]);
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[ignore = "known bug (IO-001: short writes truncate)"]
+    fn short_writes_do_not_truncate() {
+        let headers = RawRecordHeader {
+            version: "1.0".to_owned(),
+            headers: vec![(WarcHeader::WarcType, b"dunno".to_vec())]
+                .into_iter()
+                .collect(),
+        };
+
+        let mut writer = WarcWriter::new(TrickleWriter(Vec::new()));
+        let bytes_written = writer.write_raw(headers, b"12345").unwrap();
+
+        let expected: &[u8] = b"WARC/1.0\r\nwarc-type: dunno\r\n\r\n12345\r\n\r\n";
+        assert_eq!(writer.writer.0.as_slice(), expected);
+        assert_eq!(bytes_written, expected.len());
+    }
+
+    /// A block frames its body by declaring its length, and a reader trusts that declaration
+    /// to find where the record ends, so a block whose `Content-Length` is not the length of
+    /// the body it is written with, or that declares none at all, writes a record no reader
+    /// can read back.
+    #[test]
+    #[ignore = "known bug (IO-006: write_raw ignores the declared Content-Length)"]
+    fn write_raw_rejects_a_length_the_body_does_not_have() {
+        // The body `assert_rejected` writes is five bytes long.
+        let mut wrong_length = valid_headers();
+        wrong_length
+            .as_mut()
+            .insert(WarcHeader::ContentLength, b"99".to_vec());
+        assert_rejected(wrong_length);
+
+        let mut no_length = valid_headers();
+        no_length.as_mut().remove(&WarcHeader::ContentLength);
+        assert_rejected(no_length);
+
+        let mut writer = WarcWriter::new(Vec::new());
+        writer.write_raw(valid_headers(), b"body!").unwrap();
+    }
+}

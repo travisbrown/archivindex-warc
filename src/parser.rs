@@ -146,6 +146,64 @@ mod tests {
         );
     }
 
+    /// Only the two WARC versions supported by the crate are accepted; empty, older,
+    /// hypothetical newer, and otherwise arbitrary version strings are rejected.
+    #[test]
+    #[ignore = "known bug (PARSE-005: unsupported WARC versions accepted)"]
+    fn version_rejects_unsupported_values() {
+        for value in ["", "0.0", "1.2", "2.0-alpha", "not-a-version"] {
+            let raw = format!("WARC/{}\r\n", value);
+            assert!(version(raw.as_bytes()).is_err(), "{:?}", value);
+        }
+    }
+
+    /// A field name ends where its colon begins, so a line that puts white space in between is
+    /// not a field line. Reading it as one drops bytes the block was written with, and writes
+    /// the block back as something other than what was read.
+    #[test]
+    #[ignore = "known bug (PARSE-006: white space before a field's colon is dropped)"]
+    fn header_pair_rejects_space_before_the_colon() {
+        assert!(header(&b"another-header : with extra spaces\r\n"[..]).is_err());
+    }
+
+    /// DEL is a control character, so it cannot appear in a field-name token.
+    #[test]
+    #[ignore = "known bug (PARSE-004: DEL accepted in field names)"]
+    fn header_pair_rejects_del_in_name() {
+        assert!(header(b"evil\x7fname: value\r\n").is_err());
+    }
+
+    /// A field value folded across lines with leading whitespace is unfolded, each fold
+    /// reading as a single space.
+    #[test]
+    #[ignore = "known bug (PARSE-002: WARC field grammar divergence)"]
+    fn header_pair_folded_value_parsing() {
+        assert_eq!(
+            header(&b"folded-header: one\r\n two\r\n\tthree\r\n"[..]),
+            Ok((&b""[..], (&b"folded-header"[..], &b"one two three"[..])))
+        );
+    }
+
+    /// `Content-Length` follows the `1*DIGIT` grammar strictly: linear whitespace around the
+    /// digits is tolerated, but signs, internal whitespace, and non-digits are not.
+    #[test]
+    #[ignore = "known bug (PARSE-001: lax content-length parsing)"]
+    fn content_length_grammar() {
+        let block = |value: &str| format!("WARC/1.1\r\ncontent-length: {}\r\n\r\n", value);
+
+        for (value, expected) in [("42", 42), ("42 ", 42), ("42\t", 42), ("0", 0)] {
+            let raw = block(value);
+            let parsed = headers(raw.as_bytes()).expect(value);
+            assert_eq!((parsed.1).2, expected, "{:?}", value);
+        }
+
+        // The last entry is a pair of non-ASCII (Arabic-Indic) digits.
+        for value in ["+42", "-42", "4 2", "4a", "\u{0664}\u{0662}"] {
+            let raw = block(value);
+            assert!(headers(raw.as_bytes()).is_err(), "{:?}", value);
+        }
+    }
+
     #[test]
     fn header_pair_parsing() {
         assert_eq!(
