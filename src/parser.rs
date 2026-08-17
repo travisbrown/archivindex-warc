@@ -87,9 +87,14 @@ fn header(input: &[u8]) -> IResult<&[u8], (&[u8], Cow<'_, [u8]>)> {
 }
 
 /// Parse a WARC header block.
+///
+/// Returns the version, the named fields in order of appearance, and the value of the
+/// `Content-Length` field if one is present. The specification makes `Content-Length`
+/// mandatory, but its absence is reported as `None` so the caller can raise an error naming
+/// the missing field.
 // TODO: evaluate the use of `ErrorKind::Verify` here.
 #[allow(clippy::type_complexity)]
-pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, usize)> {
+pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, Option<usize>)> {
     let (input, version) = version(input)?;
     let (input, headers) = many1(header)(input)?;
 
@@ -136,22 +141,23 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>
         warc_headers.push((token_str, header.1));
     }
 
-    // TODO: Technically if we didn't find a `content-length` header, the record is invalid. Should
-    // we be returning an error here instead?
-    if content_length.is_none() {
-        content_length = Some(0);
-    }
-
-    Ok((input, (version, warc_headers, content_length.unwrap())))
+    Ok((input, (version, warc_headers, content_length)))
 }
 
 /// Parse an entire WARC record.
+///
+/// A record without a `Content-Length` field cannot be framed (there is no way to know where
+/// its body ends), so parsing one fails with an error pointing at its header block.
 #[allow(clippy::type_complexity)]
 pub fn record(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, &[u8])> {
-    let (input, (headers, _)) = tuple((headers, line_ending))(input)?;
-    let (input, (body, _, _)) = tuple((take(headers.2), line_ending, line_ending))(input)?;
+    let (remainder, (headers, _)) = tuple((headers, line_ending))(input)?;
+    let content_length = headers
+        .2
+        .ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, ErrorKind::Verify)))?;
+    let (remainder, (body, _, _)) =
+        tuple((take(content_length), line_ending, line_ending))(remainder)?;
 
-    Ok((input, (headers.0, headers.1, body)))
+    Ok((remainder, (headers.0, headers.1, body)))
 }
 
 #[cfg(test)]
@@ -223,7 +229,7 @@ mod tests {
         for (value, expected) in [("42", 42), ("42 ", 42), ("42\t", 42), ("0", 0)] {
             let raw = block(value);
             let parsed = headers(raw.as_bytes()).expect(value);
-            assert_eq!((parsed.1).2, expected, "{:?}", value);
+            assert_eq!((parsed.1).2, Some(expected), "{:?}", value);
         }
 
         // The last entry is a pair of non-ASCII (Arabic-Indic) digits.
@@ -293,7 +299,7 @@ mod tests {
             ("bar", Cow::Borrowed(b"is beautiful")),
             ("baz", Cow::Borrowed(b"is bananas")),
         ];
-        let expected_len = 42;
+        let expected_len = Some(42);
 
         assert_eq!(
             headers(&raw[..]),
