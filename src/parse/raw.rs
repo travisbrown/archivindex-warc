@@ -7,7 +7,8 @@
 //! Only `Content-Length` is interpreted because it is needed to find the end of the body.
 //!
 //! Raw records support byte-exact round-tripping.
-//! [`untyped::Record`](crate::parse::untyped::Record) parses field values.
+//! [`untyped::Record`](crate::parse::untyped::Record) parses field values, and
+//! [`record::Record`](crate::record::Record) validates their meaning.
 
 use std::io::Write;
 

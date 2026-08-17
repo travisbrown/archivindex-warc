@@ -1,8 +1,8 @@
 //! Records with field values parsed according to their grammar.
 //!
-//! This representation sits above [`crate::parse::raw::Record`]. It uses the union of the WARC
-//! 1.0 and 1.1 grammars, but does not check values or repeated fields against the declared
-//! version and record type.
+//! This representation sits between [`crate::parse::raw::Record`] and
+//! [`crate::record::Record`]. It uses the union of the WARC 1.0 and 1.1 grammars, but does not
+//! check values or repeated fields against the declared version and record type.
 
 pub mod name;
 pub mod value;
