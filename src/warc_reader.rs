@@ -76,6 +76,27 @@ impl WarcReader<BufReader<GzipReader<BufReader<std::fs::File>>>> {
     }
 }
 
+/// Check that a parsed header block was consumed in full.
+///
+/// `parser::headers` stops at the first line that does not match the named-field grammar, so a
+/// remainder other than the blank line that terminates the block means such a line was present.
+/// That line, and every line after it, would otherwise be silently dropped.
+fn check_header_block_end(remainder: &[u8]) -> Result<(), Error> {
+    if remainder == b"\r\n" {
+        return Ok(());
+    }
+
+    let line_len = remainder
+        .iter()
+        .position(|&byte| byte == b'\r' || byte == b'\n')
+        .unwrap_or(remainder.len());
+
+    Err(Error::ParseHeaders(nom::Err::Error((
+        remainder[..line_len].to_vec(),
+        nom::error::ErrorKind::Verify,
+    ))))
+}
+
 /// An iterator of raw records streamed from a reader. See `RawRecord` for more information.
 pub struct RawRecordIter<R> {
     reader: R,
@@ -117,7 +138,12 @@ impl<R: BufRead> Iterator for RawRecordIter<R> {
                     e.map(|inner| (inner.input.to_owned(), inner.code)),
                 )))
             }
-            Ok(parsed) => parsed.1,
+            Ok((remainder, parsed)) => {
+                if let Err(e) = check_header_block_end(remainder) {
+                    return Some(Err(e));
+                }
+                parsed
+            }
         };
         let version_ref = headers_parsed.0;
         let headers_ref = headers_parsed.1;
@@ -213,7 +239,12 @@ impl<R: BufRead> Iterator for RecordIter<R> {
                 )));
             }
 
-            Ok(parsed) => parsed.1,
+            Ok((remainder, parsed)) => {
+                if let Err(e) = check_header_block_end(remainder) {
+                    return Some(Err(e));
+                }
+                parsed
+            }
         };
         let version_ref = headers_parsed.0;
         let headers_ref = headers_parsed.1;
@@ -369,7 +400,12 @@ impl<R: BufRead> StreamingIter<'_, R> {
                     e.map(|inner| (inner.input.to_owned(), inner.code)),
                 )))
             }
-            Ok(parsed) => parsed.1,
+            Ok((remainder, parsed)) => {
+                if let Err(e) = check_header_block_end(remainder) {
+                    return Some(Err(e));
+                }
+                parsed
+            }
         };
         let version_ref = headers_parsed.0;
         let headers_ref = headers_parsed.1;
@@ -528,7 +564,6 @@ mod iter_raw_tests {
     /// A header line that does not match the named-field grammar is rejected with an error
     /// carrying that line, rather than it (and every line after it) being silently dropped.
     #[test]
-    #[ignore = "known bug (IO-003: malformed header lines dropped)"]
     fn malformed_header_line_is_rejected() {
         let raw = b"\
             WARC/1.1\r\n\
