@@ -1,10 +1,11 @@
 //! Reading records from an optionally gzip-compressed WARC file.
 //!
-//! [`WarcReader`] returns records at either of the crate's two representation levels. Record bodies
-//! are read fully into memory. The two `filter` iterators can inspect a header block and skip its
+//! [`WarcReader`] returns records at any of the crate's three representation levels. Record bodies
+//! are read fully into memory. The three `filter` iterators can inspect a header block and skip its
 //! body without buffering it.
 
 use std::io::{BufRead, BufReader};
+use std::marker::PhantomData;
 use std::path::Path;
 use std::{fs, io};
 
@@ -13,11 +14,13 @@ use flate2::bufread::MultiGzDecoder as GzipReader;
 
 use crate::io::MB;
 use crate::parse::{raw, untyped};
+use crate::record;
+use crate::record::extension::{Extension, NoExtension};
 
 /// The ways reading a record can fail.
 ///
 /// Stream and raw framing failures leave the reader at an unknown position and stop iteration.
-/// Errors at the untyped level affect only one record, so iteration can continue.
+/// Errors at the untyped or semantic level affect only one record, so iteration can continue.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The underlying read from the data source failed.
@@ -43,6 +46,9 @@ pub enum Error {
     /// A field's value does not match the grammar its name selects.
     #[error(transparent)]
     Untyped(#[from] untyped::Error),
+    /// The record is not one the standard, or the extension in force, permits.
+    #[error(transparent)]
+    Record(#[from] record::Error),
 }
 
 #[cfg(test)]
@@ -130,6 +136,40 @@ impl<R: BufRead> WarcReader<R> {
         UntypedIter::new(self.reader)
     }
 
+    /// Iterate over records at the semantic level.
+    ///
+    /// Each record is a [`record::Record<E>`](record::Record), with its fields checked against the
+    /// rules for its record type and its declared version. `E` is the extension in force, which
+    /// decides the record types, truncation reasons, and fields beyond the ones the standard
+    /// defines; [`NoExtension`] is the standard alone. `E` must be named at the call site:
+    ///
+    /// ```
+    /// use archivindex_warc::io::read::WarcReader;
+    /// use archivindex_warc::record::extension::NoExtension;
+    ///
+    /// let archive = b"\
+    ///     WARC/1.1\r\n\
+    ///     WARC-Type: resource\r\n\
+    ///     WARC-Record-ID: <urn:uuid:d0e6a1a0-0000-4000-8000-000000000000>\r\n\
+    ///     WARC-Date: 2024-04-01T12:00:00Z\r\n\
+    ///     WARC-Target-URI: https://example.com/\r\n\
+    ///     Content-Length: 5\r\n\
+    ///     \r\n\
+    ///     hello\r\n\
+    ///     \r\n";
+    ///
+    /// let reader = WarcReader::new(&archive[..]);
+    /// let records = reader
+    ///     .iter_records::<NoExtension>()
+    ///     .collect::<Result<Vec<_>, _>>()?;
+    ///
+    /// assert_eq!(records[0].type_name(), "resource");
+    /// # Ok::<(), archivindex_warc::io::read::Error>(())
+    /// ```
+    pub fn iter_records<E: Extension>(self) -> RecordIter<R, E> {
+        RecordIter::new(self.reader)
+    }
+
     /// Iterate over records accepted by a predicate at the raw level.
     ///
     /// The predicate is shown each record's header block and decides whether the record is wanted.
@@ -157,6 +197,26 @@ impl<R: BufRead> WarcReader<R> {
         FilterUntypedIter {
             reading: Reading::new(self.reader),
             filter,
+        }
+    }
+
+    /// Iterate over records accepted by a predicate at the semantic level.
+    ///
+    /// The predicate is shown a [`record::RecordHeader<E>`](record::RecordHeader): the header
+    /// block checked against the rules for its record type and its declared version. The body of a
+    /// refused record is consumed without being buffered.
+    ///
+    /// `E` is the extension in force, as for [`iter_records`](Self::iter_records). It must be
+    /// named at the call site, along with a `_` for the predicate's type:
+    /// `filter_records::<NoExtension, _>(..)`.
+    pub fn filter_records<E: Extension, F: FnMut(&record::RecordHeader<E>) -> bool>(
+        self,
+        filter: F,
+    ) -> FilterRecordIter<R, F, E> {
+        FilterRecordIter {
+            reading: Reading::new(self.reader),
+            filter,
+            extension: PhantomData,
         }
     }
 }
@@ -482,6 +542,38 @@ impl<R: BufRead> Iterator for UntypedIter<R> {
     }
 }
 
+/// An iterator over the records of a reader, at the semantic level.
+///
+/// `E` is the extension in force. A record the standard does not permit is a record-level error,
+/// so iteration continues with the next one; the iterator fuses only where [`UntypedIter`] does.
+pub struct RecordIter<R, E = NoExtension> {
+    untyped: UntypedIter<R>,
+    /// The extension is carried as a marker rather than a value. The function type keeps `E`
+    /// from affecting the iterator's auto traits.
+    extension: PhantomData<fn() -> E>,
+}
+
+impl<R: BufRead, E: Extension> RecordIter<R, E> {
+    const fn new(reader: R) -> Self {
+        Self {
+            untyped: UntypedIter::new(reader),
+            extension: PhantomData,
+        }
+    }
+}
+
+impl<R: BufRead, E: Extension> Iterator for RecordIter<R, E> {
+    type Item = Result<record::Record<E>, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(
+            self.untyped
+                .next()?
+                .and_then(|record| Ok(record::Record::try_from(record)?)),
+        )
+    }
+}
+
 /// An iterator over the records a predicate keeps, at the raw level.
 ///
 /// The body of a record the predicate refuses is consumed without being buffered.
@@ -553,6 +645,63 @@ impl<R: BufRead, F: FnMut(&untyped::RecordHeader) -> bool> Iterator for FilterUn
                         .read_body(expected_body_len)
                         .map(|body| header.with_body(body)),
                 );
+            }
+
+            if let Err(error) = self.reading.skip_body(expected_body_len) {
+                return Some(Err(error));
+            }
+        }
+    }
+}
+
+/// An iterator over the records a predicate keeps, at the semantic level.
+///
+/// `E` is the extension in force. The predicate decides on a header block that has already been
+/// lifted, so a header block the standard refuses is a record-level error, just like one the
+/// grammar refuses: the body is consumed before the error is yielded, leaving the reader at the
+/// next record.
+pub struct FilterRecordIter<R, F, E = NoExtension> {
+    reading: Reading<R>,
+    filter: F,
+    /// The extension is carried as a marker rather than a value. The function type keeps `E`
+    /// from affecting the iterator's auto traits.
+    extension: PhantomData<fn() -> E>,
+}
+
+impl<R: BufRead, E: Extension, F: FnMut(&record::RecordHeader<E>) -> bool> Iterator
+    for FilterRecordIter<R, F, E>
+{
+    type Item = Result<record::Record<E>, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let (header, expected_body_len) = match self.reading.next_header()? {
+                Ok(header) => header,
+                Err(error) => return Some(Err(error)),
+            };
+
+            let lifted = untyped::RecordHeader::try_from(header)
+                .map_err(Error::Untyped)
+                .and_then(|header| record::RecordHeader::try_from(header).map_err(Error::Record));
+
+            let header = match lifted {
+                Ok(header) => header,
+                // When both fail, the stream-level failure is the one to report, since it says
+                // why nothing further can be read.
+                Err(refused) => {
+                    return Some(Err(match self.reading.skip_body(expected_body_len) {
+                        Ok(()) => refused,
+                        Err(interrupted) => interrupted,
+                    }));
+                }
+            };
+
+            if (self.filter)(&header) {
+                return Some(self.reading.read_body(expected_body_len).and_then(|body| {
+                    header
+                        .with_body(body)
+                        .map_err(|block| Error::Record(block.into()))
+                }));
             }
 
             if let Err(error) = self.reading.skip_body(expected_body_len) {
@@ -1112,6 +1261,7 @@ mod filter_tests {
     use crate::parse::untyped;
     use crate::parse::untyped::name::Field;
     use crate::parse::untyped::value::HeaderValue;
+    use crate::record::extension::NoExtension;
 
     /// Three records whose bodies name them, so a body read after a skip that went wrong cannot
     /// pass for the body of another record.
@@ -1240,5 +1390,264 @@ mod filter_tests {
 
         assert_eq!(records.next().unwrap().unwrap().body, b"second");
         assert!(records.next().is_none());
+    }
+
+    /// The predicate decides on the typed fields of a lifted header.
+    #[test]
+    fn filter_records_decides_on_a_lifted_header() {
+        let record_ids = WarcReader::new(THREE_RECORDS)
+            .filter_records::<NoExtension, _>(|header| {
+                header
+                    .target_uri()
+                    .is_some_and(|uri| uri.as_str().ends_with("second"))
+            })
+            .map(|record| record.unwrap().core().record_id.as_str().to_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(record_ids, ["urn:test:filter:record-1"]);
+    }
+
+    /// A header block the standard refuses is a record-level error, exactly as one the grammar
+    /// refuses is: its body is consumed before the error is yielded, so the record after it is
+    /// still read.
+    #[test]
+    fn filter_records_continues_after_a_header_the_standard_refuses() {
+        // A resource record must name what it is a resource of, and the first one does not.
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: resource\r\n\
+            WARC-Record-ID: <urn:test:refused:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            Content-Length: 5\r\n\
+            \r\n\
+            first\r\n\
+            \r\n\
+            WARC/1.1\r\n\
+            WARC-Type: resource\r\n\
+            WARC-Record-ID: <urn:test:refused:record-1>\r\n\
+            WARC-Date: 2020-07-08T02:52:56Z\r\n\
+            WARC-Target-URI: https://example.com/second\r\n\
+            Content-Length: 6\r\n\
+            \r\n\
+            second\r\n\
+            \r\n\
+        ";
+
+        let mut offered = 0;
+        let mut records = WarcReader::new(&raw[..]).filter_records::<NoExtension, _>(|_| {
+            offered += 1;
+            true
+        });
+
+        assert!(matches!(records.next(), Some(Err(Error::Record(_)))));
+        assert_eq!(
+            records.next().unwrap().unwrap().body_bytes().as_ref(),
+            b"second"
+        );
+        assert!(records.next().is_none());
+        // The refused record never reached the predicate.
+        assert_eq!(offered, 1);
+    }
+}
+
+#[cfg(test)]
+mod iter_records_tests {
+    use super::{Error, WarcReader};
+    use crate::record::Record;
+    use crate::record::extension::{Extension, ExtensionRecordType, Never, NoExtension};
+
+    /// A record of a type the standard does not name, which only an extension can lift.
+    const SITEMAP_RECORD: &[u8] = b"\
+        WARC/1.1\r\n\
+        WARC-Type: sitemap\r\n\
+        WARC-Record-ID: <urn:test:extension:record-0>\r\n\
+        WARC-Date: 2020-07-08T02:52:55Z\r\n\
+        Content-Length: 5\r\n\
+        \r\n\
+        hello\r\n\
+        \r\n\
+    ";
+
+    /// An extension that defines one record type and nothing else.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct Sitemaps;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct SitemapType;
+
+    impl ExtensionRecordType for SitemapType {
+        fn type_name(&self) -> &'static str {
+            "sitemap"
+        }
+
+        fn from_type_name(name: &str) -> Option<Self> {
+            name.eq_ignore_ascii_case("sitemap").then_some(Self)
+        }
+    }
+
+    impl Extension for Sitemaps {
+        type Types = SitemapType;
+        type TruncatedReasons = Never;
+        type WarcinfoFields = ();
+        type ResponseFields = ();
+        type ResourceFields = ();
+        type RequestFields = ();
+        type MetadataFields = ();
+        type RevisitFields = ();
+        type ConversionFields = ();
+        type ContinuationFields = ();
+    }
+
+    /// Reading walks all three levels in one call.
+    #[test]
+    fn lifts_the_records_it_reads() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: resource\r\n\
+            WARC-Record-ID: <urn:test:lifted:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            WARC-Target-URI: https://example.com/\r\n\
+            Content-Length: 5\r\n\
+            \r\n\
+            hello\r\n\
+            \r\n\
+        ";
+
+        let record = WarcReader::new(&raw[..])
+            .iter_records::<NoExtension>()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        let Record::Resource { header, body } = record else {
+            panic!("not a resource");
+        };
+        assert_eq!(header.target_uri, "https://example.com/");
+        assert_eq!(header.core.record_id, "urn:test:lifted:record-0");
+        assert_eq!(body, b"hello");
+    }
+
+    /// A record the standard does not permit is a record-level error, which leaves the record
+    /// consumed completely, so reading continues with the next one.
+    #[test]
+    fn continues_after_a_record_the_standard_refuses() {
+        // A resource record must name what it is a resource of, and this one does not.
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: resource\r\n\
+            WARC-Record-ID: <urn:test:refused:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            Content-Length: 5\r\n\
+            \r\n\
+            first\r\n\
+            \r\n\
+            WARC/1.1\r\n\
+            WARC-Type: resource\r\n\
+            WARC-Record-ID: <urn:test:refused:record-1>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            WARC-Target-URI: https://example.com/\r\n\
+            Content-Length: 6\r\n\
+            \r\n\
+            second\r\n\
+            \r\n\
+        ";
+
+        let mut records = WarcReader::new(&raw[..]).iter_records::<NoExtension>();
+
+        assert!(matches!(records.next(), Some(Err(Error::Record(_)))));
+        assert_eq!(records.next().unwrap().unwrap().type_name(), "resource");
+        assert!(records.next().is_none());
+    }
+
+    /// A record of a type only an extension names is refused without the extension and lifts with
+    /// it.
+    #[test]
+    fn an_extension_decides_what_lifts() {
+        let mut without = WarcReader::new(SITEMAP_RECORD).iter_records::<NoExtension>();
+        assert!(matches!(without.next(), Some(Err(Error::Record(_)))));
+
+        let record = WarcReader::new(SITEMAP_RECORD)
+            .iter_records::<Sitemaps>()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(record, Record::Other { .. }));
+        assert_eq!(record.type_name(), "sitemap");
+    }
+}
+
+#[cfg(all(test, feature = "gzip"))]
+mod gzip_tests {
+    use super::WarcReader;
+    use crate::io::test_record;
+    use crate::io::write::WarcWriter;
+    use crate::parse::raw;
+    use crate::version::WarcVersion;
+
+    /// A record whose body names it, so a body read from the wrong gzip member cannot pass.
+    fn record(url: &str, body: &[u8]) -> raw::Record {
+        test_record(
+            WarcVersion::V1_1,
+            &[("WARC-Type", "response"), ("WARC-Target-URI", url)],
+            body,
+        )
+    }
+
+    /// Records written one gzip member at a time read back as the records they were.
+    #[test]
+    fn reads_a_multi_member_gzip_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reads_a_multi_member_gzip_file.warc.gz");
+
+        let mut writer = WarcWriter::from_path_gzip(&path).unwrap();
+        writer
+            .write(&record("http://example.com/first", b"first"))
+            .unwrap();
+        writer
+            .write(&record("http://example.com/second", b"second"))
+            .unwrap();
+        writer.finish().unwrap();
+
+        let records = WarcReader::from_path_gzip(&path)
+            .unwrap()
+            .iter_raw_records()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].body, b"first");
+        assert_eq!(
+            records[1].header.get("WARC-Target-URI"),
+            Some(&b" http://example.com/second"[..])
+        );
+    }
+
+    /// A file whose records were each compressed as an independent member with `write_gzip` reads
+    /// as a whole archive.
+    #[test]
+    fn reads_records_written_as_independent_members() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("reads_records_written_as_independent_members.warc.gz");
+
+        let file = std::fs::File::create(&path).unwrap();
+        let mut writer = WarcWriter::new(file);
+        writer
+            .write_gzip(&record("http://example.com/first", b"first"))
+            .unwrap();
+        writer
+            .write_gzip(&record("http://example.com/second", b"second"))
+            .unwrap();
+        writer.flush().unwrap();
+
+        let bodies = WarcReader::from_path_gzip(&path)
+            .unwrap()
+            .iter_raw_records()
+            .map(|record| record.unwrap().body)
+            .collect::<Vec<_>>();
+
+        assert_eq!(bodies, [b"first".to_vec(), b"second".to_vec()]);
     }
 }

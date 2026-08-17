@@ -6,7 +6,8 @@
 //!    values.
 //! 2. [`untyped::Record`](archivindex_warc::parse::untyped::Record), which also parses each value.
 //!
-//! Both must reproduce the uncompressed fixture exactly.
+//! Both must reproduce the uncompressed fixture exactly. The semantic representation instead
+//! renders fields canonically, so its records are rendered, parsed again, and compared by value.
 //!
 //! `UNREADABLE` lists the fixtures each representation is expected to reject.
 
@@ -14,7 +15,7 @@
 
 mod support;
 
-use support::{fixture_bytes, roundtrip, roundtrip_records};
+use support::{fixture_bytes, roundtrip, roundtrip_records, roundtrip_semantic_meaning};
 
 /// The number of bytes of context shown from each side when a comparison fails.
 const DIFFERENCE_CONTEXT: usize = 96;
@@ -61,16 +62,33 @@ fn describe_difference(source: &[u8], written: &[u8]) -> Option<String> {
 ///
 /// A grammar record refuses a value the rule its name selects does not admit, which one of the
 /// warcio fixtures was collected for: it writes a space into a `WARC-Target-URI`, and a space is
-/// not a character any URI may spell.
-const UNREADABLE: &[(&str, &str, &str)] = &[(
-    "grammar records",
-    "warcio",
-    "example-space-in-target-uri.warc.gz",
-)];
+/// not a character any URI may spell. Nothing a grammar record refuses can reach the semantic
+/// layer, so that fixture is listed for both. Lifting refuses more: a field the record's type
+/// does not permit, and a field named for the first time in WARC 1.1 under a record declaring
+/// WARC 1.0, which is what stops the other fixtures listed there.
+const UNREADABLE: &[(&str, &str, &str)] = &[
+    (
+        "grammar records",
+        "warcio",
+        "example-space-in-target-uri.warc.gz",
+    ),
+    (
+        "semantic records",
+        "warcio",
+        "example-space-in-target-uri.warc.gz",
+    ),
+    ("semantic records", "pywb", "dupes.warc.gz"),
+    ("semantic records", "pywb", "example.warc.gz"),
+    ("semantic records", "pywb", "example-wpull.warc.gz"),
+    ("semantic records", "pywb", "iana.warc.gz"),
+    ("semantic records", "warcio", "example.warc"),
+    ("semantic records", "warcio", "example.warc.gz"),
+];
 
 /// Assert that reading and rewriting a fixture reproduces its uncompressed bytes exactly, at
-/// every layer that promises as much and can read it, and that the fixtures a layer cannot read
-/// are exactly those listed.
+/// every layer that promises as much and can read it, that a fixture the semantic layer can read
+/// says the same thing after being rendered and read again, and that the fixtures a layer cannot
+/// read are exactly those listed.
 fn assert_roundtrip_is_faithful(set: &str, name: &str) {
     let source = fixture_bytes(set, name).unwrap_or_else(|error| panic!("{set}/{name}: {error}"));
 
@@ -91,6 +109,18 @@ fn assert_roundtrip_is_faithful(set: &str, name: &str) {
             }
             Err(error) => assert!(listed, "{set}/{name} as {layer}: {error}"),
         }
+    }
+
+    // The semantic layer renders a block from what a record means rather than from how it was
+    // written, so what is asked of it is that the rendering say what was read rather than that it
+    // spell it the same way.
+    let listed = UNREADABLE.contains(&("semantic records", set, name));
+    match roundtrip_semantic_meaning(&source) {
+        Ok(()) => assert!(
+            !listed,
+            "{set}/{name}: now reads as semantic records, so drop it from UNREADABLE"
+        ),
+        Err(error) => assert!(listed, "{set}/{name} as semantic records: {error}"),
     }
 }
 
