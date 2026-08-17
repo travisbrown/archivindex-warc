@@ -172,7 +172,14 @@ impl<R: BufRead> RawRecordIter<R> {
         };
         let version_ref = headers_parsed.0;
         let headers_ref = headers_parsed.1;
-        let expected_body_len = headers_parsed.2;
+        // A record without `Content-Length` cannot be framed: there is no way to know where
+        // its body ends.
+        let expected_body_len = match headers_parsed.2 {
+            Some(len) => len,
+            None => {
+                return Some(Err(Error::MissingHeader(WarcHeader::ContentLength)));
+            }
+        };
 
         let mut body_buffer: Vec<u8> = Vec::with_capacity(MB);
         let mut found_body = false;
@@ -385,7 +392,15 @@ impl<R: BufRead> StreamingIter<'_, R> {
         };
         let version_ref = headers_parsed.0;
         let headers_ref = headers_parsed.1;
-        self.current_item_size = headers_parsed.2 as u64;
+        // A record without `Content-Length` cannot be framed: there is no way to know where
+        // its body ends.
+        self.current_item_size = match headers_parsed.2 {
+            Some(len) => len as u64,
+            None => {
+                self.finished = true;
+                return Some(Err(Error::MissingHeader(WarcHeader::ContentLength)));
+            }
+        };
 
         let headers = RawRecordHeader {
             version: version_ref.to_owned(),
@@ -652,7 +667,6 @@ mod iter_raw_tests {
     /// A record without `Content-Length` cannot be framed; it is rejected with an error naming
     /// the missing field rather than misread as having an empty body.
     #[test]
-    #[ignore = "known bug (PARSE-003: missing content-length accepted)"]
     fn missing_content_length_is_rejected() {
         let raw = b"\
             WARC/1.1\r\n\
