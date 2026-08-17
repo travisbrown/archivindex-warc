@@ -36,23 +36,31 @@ impl<W: Write> WarcWriter<W> {
     where
         B: AsRef<[u8]>,
     {
+        let writer = &mut self.writer;
         let mut bytes_written = 0;
+        // A closure keeps the write-then-count pair in one place. `write_all` loops until the
+        // whole slice is accepted, which `write` does not do.
+        let mut emit = |data: &[u8]| -> io::Result<()> {
+            writer.write_all(data)?;
+            bytes_written += data.len();
+            Ok(())
+        };
 
-        bytes_written += self.writer.write(&[87, 65, 82, 67, 47])?;
-        bytes_written += self.writer.write(headers.version.as_bytes())?;
-        bytes_written += self.writer.write(&[13, 10])?;
+        emit(&[87, 65, 82, 67, 47])?;
+        emit(headers.version.as_bytes())?;
+        emit(&[13, 10])?;
 
         for (token, value) in headers.as_ref().iter() {
-            bytes_written += self.writer.write(token.to_string().as_bytes())?;
-            bytes_written += self.writer.write(&[58, 32])?;
-            bytes_written += self.writer.write(value)?;
-            bytes_written += self.writer.write(&[13, 10])?;
+            emit(token.to_string().as_bytes())?;
+            emit(&[58, 32])?;
+            emit(value)?;
+            emit(&[13, 10])?;
         }
-        bytes_written += self.writer.write(&[13, 10])?;
+        emit(&[13, 10])?;
 
-        bytes_written += self.writer.write(body.as_ref())?;
-        bytes_written += self.writer.write(&[13, 10])?;
-        bytes_written += self.writer.write(&[13, 10])?;
+        emit(body.as_ref())?;
+        emit(&[13, 10])?;
+        emit(&[13, 10])?;
 
         Ok(bytes_written)
     }
@@ -198,7 +206,6 @@ mod write_raw_tests {
     }
 
     #[test]
-    #[ignore = "known bug (IO-001: short writes truncate)"]
     fn short_writes_do_not_truncate() {
         let headers = RawRecordHeader {
             version: "1.0".to_owned(),
