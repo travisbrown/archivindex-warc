@@ -1,7 +1,11 @@
 //! The versions of the WARC standard that this crate can read and write.
+//!
+//! [`WarcVersion`] is the usual runtime representation. [`marker`] provides type-level versions.
 
 use std::fmt::Display;
 use std::str::FromStr;
+
+pub mod marker;
 
 /// A version number that names no supported WARC version.
 ///
