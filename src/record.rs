@@ -393,6 +393,10 @@ impl<T: BodyKind> Record<T> {
 
     /// Set a WARC header in this record, returning the previous value if present.
     ///
+    /// `Content-Length` is derived from the body and cannot be changed here: an equivalent
+    /// value is accepted and returns the canonical previous value, while a mismatch is an
+    /// error.
+    ///
     /// # Errors
     ///
     /// If setting a header whose value has a well-formedness test, an error is returned if the
@@ -430,13 +434,14 @@ impl<T: BodyKind> Record<T> {
                 Ok(old_type.map(|old| (Cow::Owned(old.to_string()))))
             }
             WarcHeader::ContentLength => {
-                if Record::<T>::parse_content_length(&value)? != self.body.content_length() {
+                let content_length = self.body.content_length();
+                if Record::<T>::parse_content_length(&value)? != content_length {
                     Err(WarcError::MalformedHeader(
                         WarcHeader::ContentLength,
                         "content length != body size".to_string(),
                     ))
                 } else {
-                    Ok(Some(Cow::Owned(value)))
+                    Ok(Some(Cow::Owned(content_length.to_string())))
                 }
             }
             _ => Ok(self
@@ -1102,7 +1107,6 @@ mod record_tests {
     /// Setting the derived content length returns its canonical previous value, not the
     /// caller's alternate but equivalent spelling.
     #[test]
-    #[ignore = "known bug (RECORD-006: set_header returns the new content length)"]
     fn set_header_content_length_returns_canonical_previous_value() {
         let mut record = Record::<EmptyBody>::default();
 
