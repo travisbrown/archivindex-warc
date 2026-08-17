@@ -782,7 +782,7 @@ impl RecordBuilder {
 #[cfg(test)]
 mod record_tests {
     use crate::header::WarcHeader;
-    use crate::{BufferedBody, Record, RecordType};
+    use crate::{BufferedBody, EmptyBody, Error, Record, RecordType, TruncatedType};
 
     use chrono::prelude::*;
 
@@ -842,6 +842,232 @@ mod record_tests {
         assert_eq!(
             record.header(WarcHeader::TargetURI).unwrap(),
             "https://docs.rs"
+        );
+    }
+
+    /// The truncation reason is a header like any other, so it is readable through the
+    /// untyped accessor as well as the typed one.
+    #[test]
+    #[ignore = "known bug (RECORD-002: WARC-Truncated dropped in conversion)"]
+    fn get_header_truncated() {
+        let mut record = Record::<BufferedBody>::default();
+        assert!(record.header(WarcHeader::Truncated).is_none());
+
+        record.set_truncated_type(TruncatedType::Length);
+        assert_eq!(record.header(WarcHeader::Truncated).unwrap(), "length");
+
+        record
+            .set_header(WarcHeader::Truncated, "disconnect")
+            .unwrap();
+        assert_eq!(record.header(WarcHeader::Truncated).unwrap(), "disconnect");
+
+        record.clear_truncated_type();
+        assert!(record.header(WarcHeader::Truncated).is_none());
+    }
+
+    /// Values that would inject header lines, or end the header block early, are rejected.
+    #[test]
+    #[ignore = "known bug (RECORD-009: header injection)"]
+    fn set_header_rejects_values_with_line_breaks() {
+        let mut record = Record::<BufferedBody>::default();
+
+        for value in ["a\r\nwarc-type: evil", "a\rb", "a\nb"] {
+            assert!(
+                matches!(
+                    record.set_header(WarcHeader::TargetURI, value),
+                    Err(Error::MalformedHeader(WarcHeader::TargetURI, _))
+                ),
+                "{:?}",
+                value
+            );
+        }
+
+        // Headers backed by typed record fields go through the same validation.
+        assert!(matches!(
+            record.set_header(WarcHeader::RecordID, "<urn:a>\r\nevil: x"),
+            Err(Error::MalformedHeader(WarcHeader::RecordID, _))
+        ));
+    }
+
+    /// Unknown header names outside the parser's token grammar are rejected.
+    #[test]
+    #[ignore = "known bug (RECORD-009: header injection)"]
+    fn set_header_rejects_invalid_unknown_names() {
+        let mut record = Record::<BufferedBody>::default();
+
+        for name in ["", "evil name", "evil:name", "evil\r\nname"] {
+            let header = WarcHeader::Unknown(name.to_string());
+            assert!(
+                matches!(
+                    record.set_header(header, "value"),
+                    Err(Error::MalformedHeader(WarcHeader::Unknown(_), _))
+                ),
+                "{:?}",
+                name
+            );
+        }
+
+        assert!(record
+            .set_header(WarcHeader::Unknown("x-custom".to_string()), "value")
+            .is_ok());
+    }
+
+    /// DEL is a control character, so it cannot appear in an extension field-name token.
+    #[test]
+    #[ignore = "known bug (PARSE-004: DEL accepted in field names)"]
+    fn set_header_rejects_del_in_unknown_name() {
+        let mut record = Record::<BufferedBody>::default();
+        let header = WarcHeader::Unknown("evil\u{7f}name".to_string());
+
+        assert!(matches!(
+            record.set_header(header, "value"),
+            Err(Error::MalformedHeader(WarcHeader::Unknown(_), _))
+        ));
+    }
+
+    /// An `Unknown` spelling of a well-known name is folded into its variant, so it cannot
+    /// bypass the interception that keeps derived fields out of the stored header map.
+    #[test]
+    #[ignore = "known bug (RECORD-008: unknown spellings bypass typed handling)"]
+    fn set_header_normalizes_unknown_spellings() {
+        let mut record = Record::<BufferedBody>::default();
+
+        record
+            .set_header(
+                WarcHeader::Unknown("WARC-Date".to_string()),
+                "2020-07-08T02:52:55Z",
+            )
+            .unwrap();
+        assert_eq!(
+            record.header(WarcHeader::Date).unwrap(),
+            "2020-07-08T02:52:55Z"
+        );
+
+        record
+            .set_header(WarcHeader::Unknown("warc-type".to_string()), "revisit")
+            .unwrap();
+        assert_eq!(record.warc_type(), &RecordType::Revisit);
+
+        // Lookups normalize the same way, and genuinely unknown names are lower-cased.
+        assert_eq!(
+            record
+                .header(WarcHeader::Unknown("content-length".to_string()))
+                .unwrap(),
+            "0"
+        );
+        record
+            .set_header(WarcHeader::Unknown("X-Custom".to_string()), "value")
+            .unwrap();
+        assert_eq!(
+            record
+                .header(WarcHeader::Unknown("x-custom".to_string()))
+                .unwrap(),
+            "value"
+        );
+    }
+
+    /// The record serializes a single `warc-date` line, so its own reader accepts it again;
+    /// the unnormalized spelling used to produce a duplicate line the reader rejected.
+    #[test]
+    #[ignore = "known bug (RECORD-008: unknown spellings bypass typed handling)"]
+    fn unknown_spelling_of_known_header_round_trips() {
+        let mut record = Record::<BufferedBody>::default();
+        record
+            .set_header(
+                WarcHeader::Unknown("WARC-Date".to_string()),
+                "2020-07-08T02:52:55Z",
+            )
+            .unwrap();
+
+        let mut writer = crate::WarcWriter::new(std::io::BufWriter::new(Vec::new()));
+        writer.write(&record).unwrap();
+        let bytes = writer.into_inner().unwrap();
+
+        let block = String::from_utf8(bytes).unwrap();
+        assert_eq!(
+            block.to_lowercase().matches("warc-date:").count(),
+            1,
+            "{}",
+            block
+        );
+
+        let reader = crate::WarcReader::new(std::io::Cursor::new(block.into_bytes()));
+        let records = reader
+            .iter_records()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].header(WarcHeader::Date).unwrap(),
+            "2020-07-08T02:52:55Z"
+        );
+    }
+
+    /// `Display` for an empty-bodied record renders the same header block a buffered record
+    /// does, not a debug view of the stored extra headers.
+    #[test]
+    #[ignore = "known bug (RECORD-005: empty-bodied Display renders a debug view)"]
+    fn display_empty_record_renders_full_header_block() {
+        let mut record = Record::<EmptyBody>::new();
+        record
+            .set_header(WarcHeader::TargetURI, "https://example.com/")
+            .unwrap();
+
+        let rendered = record.to_string();
+
+        assert!(rendered.starts_with("Record(WARC/1.0"), "{}", rendered);
+        for expected in [
+            "warc-type: resource",
+            &format!("warc-record-id: {}", record.warc_id()),
+            "warc-date: ",
+            "warc-target-uri: https://example.com/",
+            "content-length: 0",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "{:?} in {}",
+                expected,
+                rendered
+            );
+        }
+        assert!(rendered.ends_with(", Empty)"), "{}", rendered);
+    }
+
+    /// `Content-Length` values follow the `1*DIGIT` grammar at the record entry points too:
+    /// linear whitespace around the digits is tolerated, a sign is not.
+    #[test]
+    #[ignore = "known bug (PARSE-001: lax content-length parsing)"]
+    fn set_header_content_length_grammar() {
+        let mut record = Record::<BufferedBody>::default();
+
+        assert!(record.set_header(WarcHeader::ContentLength, "0 ").is_ok());
+        assert!(record
+            .set_header(WarcHeader::ContentLength, "\t0\t")
+            .is_ok());
+
+        // A sign is rejected even when the value would match the body size.
+        assert!(matches!(
+            record.set_header(WarcHeader::ContentLength, "+0"),
+            Err(Error::MalformedHeader(WarcHeader::ContentLength, _))
+        ));
+    }
+
+    /// Setting the derived content length returns its canonical previous value, not the
+    /// caller's alternate but equivalent spelling.
+    #[test]
+    #[ignore = "known bug (RECORD-006: set_header returns the new content length)"]
+    fn set_header_content_length_returns_canonical_previous_value() {
+        let mut record = Record::<EmptyBody>::default();
+
+        let previous = record
+            .set_header(WarcHeader::ContentLength, "\t0\t")
+            .unwrap();
+
+        assert_eq!(previous.as_deref(), Some("0"));
+        assert_eq!(
+            record.header(WarcHeader::ContentLength).as_deref(),
+            Some("0")
         );
     }
 
@@ -920,7 +1146,7 @@ mod record_tests {
 #[cfg(test)]
 mod raw_tests {
     use crate::header::WarcHeader;
-    use crate::{EmptyBody, RawRecordHeader, Record, RecordType};
+    use crate::{EmptyBody, Error, RawRecordHeader, Record, RecordType, TruncatedType};
 
     use std::collections::HashMap;
     use std::convert::TryFrom;
@@ -1043,6 +1269,127 @@ mod raw_tests {
         assert!(Record::<EmptyBody>::try_from(headers).is_err());
     }
 
+    /// A block that converts cleanly, with one field replaced by the given value.
+    fn headers_with(header: WarcHeader, value: Vec<u8>) -> RawRecordHeader {
+        let mut headers = RawRecordHeader {
+            version: "1.0".to_owned(),
+            headers: vec![
+                (WarcHeader::WarcType, b"dunno".to_vec()),
+                (WarcHeader::ContentLength, b"5".to_vec()),
+                (
+                    WarcHeader::RecordID,
+                    b"<urn:test:basic-record:record-0>".to_vec(),
+                ),
+                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        headers.as_mut().insert(header, value);
+        headers
+    }
+
+    #[test]
+    #[ignore = "known bug (RECORD-001: conversion blames the wrong field)"]
+    fn verify_malformed_content_length_blames_content_length() {
+        for bad_value in [&b"not-a-number"[..], &[0xff, 0xfe][..]] {
+            let headers = headers_with(WarcHeader::ContentLength, bad_value.to_vec());
+            match Record::<EmptyBody>::try_from(headers) {
+                Err(Error::MalformedHeader(WarcHeader::ContentLength, _)) => {}
+                other => panic!("expected malformed content-length error, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "known bug (RECORD-001: conversion blames the wrong field)"]
+    fn verify_malformed_record_id_blames_record_id() {
+        let headers = headers_with(WarcHeader::RecordID, vec![0xff, 0xfe]);
+        match Record::<EmptyBody>::try_from(headers) {
+            Err(Error::MalformedHeader(WarcHeader::RecordID, _)) => {}
+            other => panic!("expected malformed record-id error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    #[ignore = "known bug (RECORD-002: WARC-Truncated dropped in conversion)"]
+    fn verify_truncated_type_is_extracted() {
+        let headers = headers_with(WarcHeader::Truncated, b"length".to_vec());
+        let record = Record::<EmptyBody>::try_from(headers).unwrap();
+        assert_eq!(record.truncated_type(), &Some(TruncatedType::Length));
+        assert_eq!(record.header(WarcHeader::Truncated).unwrap(), "length");
+    }
+
+    #[test]
+    #[ignore = "known bug (RECORD-003: non-UTF-8 field values accepted)"]
+    fn verify_non_utf8_header_value_is_rejected() {
+        let headers = headers_with(WarcHeader::TargetURI, vec![0xff, 0xfe]);
+        match Record::<EmptyBody>::try_from(headers) {
+            Err(Error::MalformedHeader(WarcHeader::TargetURI, _)) => {}
+            other => panic!("expected malformed target-uri error, got {:?}", other),
+        }
+    }
+
+    /// A hand-built raw block may spell a well-known field as `Unknown`; conversion folds it
+    /// into the typed field.
+    #[test]
+    #[ignore = "known bug (RECORD-008: unknown spellings bypass typed handling)"]
+    fn verify_unknown_spelling_is_normalized() {
+        let headers = RawRecordHeader {
+            version: "1.0".to_owned(),
+            headers: vec![
+                (
+                    WarcHeader::Unknown("Warc-Type".to_string()),
+                    b"dunno".to_vec(),
+                ),
+                (WarcHeader::ContentLength, b"5".to_vec()),
+                (
+                    WarcHeader::RecordID,
+                    b"<urn:test:unknown-spelling:record-0>".to_vec(),
+                ),
+                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        let record = Record::<EmptyBody>::try_from(headers).unwrap();
+        assert_eq!(
+            record.warc_type(),
+            &RecordType::Unknown("dunno".to_string())
+        );
+    }
+
+    /// An `Unknown` spelling that collides with a field already present is a duplicate, and
+    /// a duplicate of a field the record can hold only once is rejected.
+    #[test]
+    #[ignore = "known bug (RECORD-008: unknown spellings bypass typed handling)"]
+    fn verify_unknown_spelling_collision_is_rejected() {
+        let headers = headers_with(
+            WarcHeader::Unknown("WARC-Date".to_string()),
+            b"2021-01-01T00:00:00Z".to_vec(),
+        );
+
+        assert!(Record::<EmptyBody>::try_from(headers).is_err());
+    }
+
+    /// The formatted header block is terminated by CRLF throughout, as the grammar requires.
+    #[test]
+    #[ignore = "known bug (PARSE-002: WARC field grammar divergence)"]
+    fn display_uses_crlf_line_endings() {
+        let headers = RawRecordHeader {
+            version: "1.1".to_owned(),
+            headers: vec![(WarcHeader::WarcType, b"resource".to_vec())]
+                .into_iter()
+                .collect(),
+        };
+
+        assert_eq!(
+            headers.to_string(),
+            "WARC/1.1\r\nwarc-type: resource\r\n\r\n"
+        );
+    }
+
     #[test]
     fn verify_display() {
         let header_entries = vec![
@@ -1082,7 +1429,8 @@ mod raw_tests {
 mod builder_tests {
     use crate::header::WarcHeader;
     use crate::{
-        BufferedBody, EmptyBody, RawRecordHeader, Record, RecordBuilder, RecordType, TruncatedType,
+        BufferedBody, EmptyBody, Error, RawRecordHeader, Record, RecordBuilder, RecordType,
+        TruncatedType,
     };
 
     use std::convert::TryFrom;
@@ -1217,6 +1565,53 @@ mod builder_tests {
         );
 
         assert!(builder.build().is_err());
+    }
+
+    /// A rejected header value no longer fails the build once a later call replaces it with
+    /// a valid one.
+    #[test]
+    #[ignore = "known bug (RECORD-007: rejected values not retried at build time)"]
+    fn broken_header_is_cured_by_a_later_set() {
+        let record = RecordBuilder::default()
+            .header(WarcHeader::Date, "not-a-dayTor:a:time")
+            .header(WarcHeader::Date, "2020-07-08T02:52:55Z")
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            record.header(WarcHeader::Date).unwrap(),
+            "2020-07-08T02:52:55Z"
+        );
+    }
+
+    /// A `Content-Length` set before the body it describes is retried against the finished
+    /// record, so the order of the two calls does not matter.
+    #[test]
+    #[ignore = "known bug (RECORD-007: rejected values not retried at build time)"]
+    fn content_length_before_body_is_cured() {
+        let record = RecordBuilder::default()
+            .header(WarcHeader::ContentLength, "5")
+            .body(b"12345".to_vec())
+            .build()
+            .unwrap();
+
+        assert_eq!(record.content_length(), 5);
+    }
+
+    /// The build error blames a header that is still broken, not one that was broken and
+    /// later fixed.
+    #[test]
+    #[ignore = "known bug (RECORD-007: rejected values not retried at build time)"]
+    fn build_error_blames_a_still_broken_header() {
+        let builder = RecordBuilder::default()
+            .header(WarcHeader::ContentLength, "9")
+            .header(WarcHeader::Date, "not-a-dayTor:a:time")
+            .header(WarcHeader::Date, "2020-07-08T02:52:55Z");
+
+        match builder.build() {
+            Err(Error::MalformedHeader(WarcHeader::ContentLength, _)) => {}
+            other => panic!("expected an error blaming content-length, got {:?}", other),
+        }
     }
 
     #[test]

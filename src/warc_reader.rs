@@ -385,7 +385,7 @@ mod iter_raw_tests {
     use std::io::{BufReader, Cursor};
     use std::iter::FromIterator;
 
-    use crate::{WarcHeader, WarcReader};
+    use crate::{Error, WarcHeader, WarcReader};
     macro_rules! create_reader {
         ($raw:expr) => {{
             BufReader::new(Cursor::new($raw.get(..).unwrap()))
@@ -484,13 +484,207 @@ mod iter_raw_tests {
             assert_eq!(body, expected_body);
         }
     }
+
+    /// The bytes after a body are the record terminator, so a record whose body is followed by
+    /// four other bytes is rejected rather than read as if it had ended properly.
+    #[test]
+    #[ignore = "known bug (IO-002: record terminator not validated)"]
+    fn invalid_record_terminator() {
+        // After the 4-byte body, the record ends with `c\nd\n` instead of `\r\n\r\n`; the byte
+        // counts line up, but the terminator bytes are wrong.
+        let raw = b"\
+            WARC/1.0\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 4\r\n\
+            \r\n\
+            a\nb\nc\nd\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        match reader.next().unwrap() {
+            Err(Error::ParseHeaders(_)) => {}
+            other => panic!(
+                "expected a parse error for an invalid record terminator, got {:?}",
+                other.map(|(headers, body)| (headers, String::from_utf8_lossy(&body).to_string()))
+            ),
+        }
+    }
+
+    /// A header line that does not match the named-field grammar is rejected with an error
+    /// carrying that line, rather than it (and every line after it) being silently dropped.
+    #[test]
+    #[ignore = "known bug (IO-003: malformed header lines dropped)"]
+    fn malformed_header_line_is_rejected() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: dunno\r\n\
+            bad header line without a colon\r\n\
+            Content-Length: 5\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        match reader.next().unwrap() {
+            Err(Error::ParseHeaders(nom::Err::Error((input, _)))) => {
+                assert_eq!(input, b"bad header line without a colon".to_vec());
+            }
+            other => panic!(
+                "expected a parse error naming the malformed line, got {:?}",
+                other.map(|(headers, _)| headers)
+            ),
+        }
+    }
+
+    /// A stream-level error leaves the reader at an unspecified position, so the iterator
+    /// fuses instead of yielding garbage parsed from the middle of the broken record.
+    #[test]
+    #[ignore = "known bug (IO-004: iterators not fused)"]
+    fn raw_iter_fuses_after_stream_error() {
+        // A record with a malformed terminator, followed by a perfectly valid record that a
+        // non-fused iterator would happily (and wrongly) yield.
+        let raw = b"\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            \r\n\
+            12345ABCD\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:after-error:record-1>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        assert!(reader.next().unwrap().is_err());
+        assert!(reader.next().is_none());
+        assert!(reader.next().is_none());
+    }
+
+    /// A field value folded across lines with leading whitespace is unfolded, each fold
+    /// reading as a single space.
+    #[test]
+    #[ignore = "known bug (PARSE-002: WARC field grammar divergence)"]
+    fn folded_header_value_is_unfolded() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: metadata\r\n\
+            Content-Length: 0\r\n\
+            WARC-Record-ID: <urn:test:folded:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            Unfolded-Test: this value\r\n\
+            \tspans lines\r\n\
+            \r\n\
+            \r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        let (headers, body) = reader.next().unwrap().unwrap();
+        assert!(body.is_empty());
+        assert_eq!(
+            headers
+                .as_ref()
+                .get(&WarcHeader::Unknown("unfolded-test".to_owned()))
+                .unwrap(),
+            &b"this value spans lines".to_vec()
+        );
+    }
+
+    /// The specification forbids repeating a named field; when a record repeats one anyway,
+    /// the first occurrence wins consistently: the body is framed by the first
+    /// `Content-Length`, so the surviving header values must be the first ones too.
+    #[test]
+    #[ignore = "known bug (PARSE-002: WARC field grammar divergence)"]
+    fn repeated_field_keeps_first_occurrence() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            Content-Length: 500\r\n\
+            WARC-Record-ID: <urn:test:repeated:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            WARC-Target-URI: https://example.com/first\r\n\
+            WARC-Target-URI: https://example.com/second\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        let (headers, body) = reader.next().unwrap().unwrap();
+        assert_eq!(body, b"12345");
+        assert_eq!(
+            headers.as_ref().get(&WarcHeader::ContentLength).unwrap(),
+            &b"5".to_vec()
+        );
+        assert_eq!(
+            headers.as_ref().get(&WarcHeader::TargetURI).unwrap(),
+            &b"https://example.com/first".to_vec()
+        );
+    }
+
+    /// A record without `Content-Length` cannot be framed; it is rejected with an error naming
+    /// the missing field rather than misread as having an empty body.
+    #[test]
+    #[ignore = "known bug (PARSE-003: missing content-length accepted)"]
+    fn missing_content_length_is_rejected() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: dunno\r\n\
+            WARC-Record-ID: <urn:test:missing-length:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        match reader.next().unwrap() {
+            Err(Error::MissingHeader(WarcHeader::ContentLength)) => {}
+            other => panic!(
+                "expected a missing content-length error, got {:?}",
+                other.map(|(headers, _)| headers)
+            ),
+        }
+    }
+
+    /// WARC 1.0 requires complete UTC timestamps with second precision.
+    #[test]
+    #[ignore = "known bug (RECORD-010: 1.0 reader accepts subsecond dates)"]
+    fn warc_1_0_reading_rejects_subseconds() {
+        let raw = b"\
+            WARC/1.0\r\n\
+            WARC-Type: resource\r\n\
+            Content-Length: 0\r\n\
+            WARC-Record-ID: <urn:test:warc-1.0-date:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55.123456Z\r\n\
+            \r\n\
+            \r\n\
+            \r\n\
+        ";
+
+        let result = WarcReader::new(create_reader!(raw))
+            .iter_records()
+            .next()
+            .unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::MalformedHeader(WarcHeader::Date, _))
+        ));
+    }
 }
 
 #[cfg(test)]
 mod next_item_tests {
     use std::io::{BufReader, Cursor};
 
-    use crate::WarcReader;
+    use crate::{Error, WarcReader};
 
     macro_rules! create_reader {
         ($raw:expr) => {{
@@ -756,5 +950,99 @@ mod next_item_tests {
             assert_eq!(record.warc_id(), "<urn:test:nonzero-content-length>");
             assert_eq!(record.body(), b"1234567");
         }
+    }
+
+    /// The declared `Content-Length` is reported unchanged while the body is being consumed,
+    /// rather than shrinking with every read.
+    #[test]
+    #[ignore = "known bug (RECORD-004: content length shrinks)"]
+    fn streaming_content_length_is_stable_while_reading() {
+        use std::io::Read;
+
+        let raw = b"\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:stable-length:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw));
+        let mut stream_iter = reader.stream_records();
+        let mut record = stream_iter.next_item().unwrap().unwrap();
+
+        assert_eq!(record.content_length(), 5);
+
+        let mut first_two = [0_u8; 2];
+        record.read_exact(&mut first_two).unwrap();
+        assert_eq!(&first_two, b"12");
+        assert_eq!(record.content_length(), 5);
+        assert_eq!(
+            record.header(crate::WarcHeader::ContentLength).as_deref(),
+            Some("5")
+        );
+
+        // Buffering collects the rest of the body; the unread portion is what remains.
+        let buffered = record.into_buffered().unwrap();
+        assert_eq!(buffered.body(), b"345");
+    }
+
+    /// After the final `None`, further calls keep returning `None` instead of yielding a
+    /// spurious error for a body the iterator already consumed.
+    #[test]
+    #[ignore = "known bug (IO-005: next_item not fused)"]
+    fn next_item_is_fused_after_end() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:fused:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw));
+        let mut stream_iter = reader.stream_records();
+
+        // Leave the record's body unread so that reaching the end must skip it.
+        let _record = stream_iter.next_item().unwrap().unwrap();
+        assert!(stream_iter.next_item().is_none());
+        assert!(stream_iter.next_item().is_none());
+        assert!(stream_iter.next_item().is_none());
+    }
+
+    /// A record whose declared body length outruns the stream: 5 bytes are declared but only
+    /// 2 are present.
+    const TRUNCATED_BODY: &[u8] = b"\
+        WARC/1.1\r\n\
+        Warc-Type: dunno\r\n\
+        Content-Length: 5\r\n\
+        WARC-Record-Id: <urn:test:truncated:record-0>\r\n\
+        WARC-Date: 2020-07-08T02:52:55Z\r\n\
+        \r\n\
+        12";
+
+    /// A stream-level error fuses the streaming iterator instead of yielding further errors
+    /// from an unspecified position.
+    #[test]
+    #[ignore = "known bug (IO-004: iterators not fused)"]
+    fn next_item_fuses_after_stream_error() {
+        let mut reader = WarcReader::new(create_reader!(TRUNCATED_BODY));
+        let mut stream_iter = reader.stream_records();
+
+        // Leave the first record's body unread so that the next call must skip it and hit
+        // the truncation.
+        let _record = stream_iter.next_item().unwrap().unwrap();
+        assert!(matches!(
+            stream_iter.next_item(),
+            Some(Err(Error::UnexpectedEOB))
+        ));
+        assert!(stream_iter.next_item().is_none());
+        assert!(stream_iter.next_item().is_none());
     }
 }
