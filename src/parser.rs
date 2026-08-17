@@ -179,7 +179,6 @@ mod tests {
 
     /// DEL is a control character, so it cannot appear in a field-name token.
     #[test]
-    #[ignore = "known bug (PARSE-004: DEL accepted in field names)"]
     fn header_pair_rejects_del_in_name() {
         assert!(header(b"evil\x7fname: value\r\n").is_err());
     }
