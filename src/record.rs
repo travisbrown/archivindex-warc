@@ -32,27 +32,38 @@ mod streaming_trait {
     }
 
     /// An associated type indicating the body is streamed from a reader.
-    pub struct StreamingBody<'t, T: Read + 't>(&'t mut T, &'t mut u64);
+    pub struct StreamingBody<'t, T: Read + 't> {
+        stream: &'t mut T,
+        /// The declared `Content-Length`, unaffected by reads.
+        declared_content_len: u64,
+        /// The unread portion of the body, shared with the iterator that handed it out.
+        remaining_len: &'t mut u64,
+    }
     impl<'t, T: Read + 't> StreamingBody<'t, T> {
-        pub(crate) fn new(stream: &'t mut T, max_len: &'t mut u64) -> StreamingBody<'t, T> {
-            StreamingBody(stream, max_len)
+        pub(crate) fn new(stream: &'t mut T, remaining_len: &'t mut u64) -> StreamingBody<'t, T> {
+            StreamingBody {
+                stream,
+                declared_content_len: *remaining_len,
+                remaining_len,
+            }
         }
 
-        pub(crate) fn len(&self) -> u64 {
-            *self.1
+        /// The unread portion of the body, shrinking as the stream is consumed.
+        pub(crate) fn remaining_len(&self) -> u64 {
+            *self.remaining_len
         }
     }
     impl<'t, T: Read + 't> BodyKind for StreamingBody<'t, T> {
         fn content_length(&self) -> u64 {
-            *self.1
+            self.declared_content_len
         }
     }
 
     impl<'t, T: Read + 't> Read for StreamingBody<'t, T> {
         fn read(&mut self, data: &mut [u8]) -> std::io::Result<usize> {
-            let max_read = std::cmp::min(data.len(), *self.1 as usize);
-            self.0.read(&mut data[..max_read]).inspect(|&n| {
-                *self.1 -= n as u64;
+            let max_read = std::cmp::min(data.len(), *self.remaining_len as usize);
+            self.stream.read(&mut data[..max_read]).inspect(|&n| {
+                *self.remaining_len -= n as u64;
             })
         }
     }
@@ -465,7 +476,10 @@ impl<T: BodyKind> Record<T> {
 
     /// Return the Content-Length header for this record.
     ///
-    /// This value is guaranteed to match the actual length of the body.
+    /// For buffered and empty bodies this is the actual length of the body. For streaming
+    /// bodies it is the declared `Content-Length`, unaffected by how much of the body has
+    /// been read (though the actual stream may still turn out shorter or longer than
+    /// declared).
     pub fn content_length(&self) -> u64 {
         self.body.content_length()
     }
@@ -623,7 +637,7 @@ impl<'t, T: Read + 't> Record<StreamingBody<'t, T>> {
         } = self;
 
         let buf = {
-            let mut body_vec = Vec::with_capacity(body.len() as usize);
+            let mut body_vec = Vec::with_capacity(body.remaining_len() as usize);
             body.read_to_end(&mut body_vec)?;
             body_vec
         };
