@@ -1,5 +1,6 @@
 //! The `media-type` value carried by `Content-Type` and `WARC-Identified-Payload-Type`.
 
+use std::borrow::Cow;
 use std::fmt::Display;
 
 use super::from_ascii;
@@ -24,19 +25,22 @@ use crate::parsing::{QuotedStringError, is_lws, is_token, lossy, unquote};
 /// Type, subtype, and attribute names are case-insensitive; they are kept as written, and
 /// [`is`](Self::is) compares without regard to case. The `OWS` around each `;` is kept as
 /// written too, so a value renders as it was read.
+///
+/// The types WARC records most often declare are available as constants, such as
+/// [`HTTP_RESPONSE`](Self::HTTP_RESPONSE).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MediaType {
-    type_name: Box<str>,
-    subtype: Box<str>,
-    parameters: Box<[Parameter]>,
+    type_name: Cow<'static, str>,
+    subtype: Cow<'static, str>,
+    parameters: Cow<'static, [Parameter]>,
 }
 
 /// One `OWS ";" OWS parameter` of a media type.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Parameter {
     /// The `OWS ";" OWS` introducing the parameter, as written.
-    separator: Box<str>,
-    name: Box<str>,
+    separator: Cow<'static, str>,
+    name: Cow<'static, str>,
     value: ParameterValue,
 }
 
@@ -97,9 +101,9 @@ enum ParameterFailure {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParameterValue {
     /// A bare `token`.
-    Token(Box<str>),
+    Token(Cow<'static, str>),
     /// A `quoted-string`, held with its quotes removed and its `\` escapes resolved.
-    Quoted(Box<str>),
+    Quoted(Cow<'static, str>),
 }
 
 impl ParameterValue {
@@ -131,7 +135,73 @@ impl Display for ParameterValue {
 }
 
 impl MediaType {
+    /// `application/http`: an archived HTTP message.
+    pub const HTTP: Self = Self::constant("application", "http", &[]);
+    /// `application/http;msgtype=request`: an archived HTTP request, which a `request` record
+    /// carries.
+    pub const HTTP_REQUEST: Self = Self::constant("application", "http", &Self::REQUEST);
+    /// `application/http;msgtype=response`: an archived HTTP response, which a `response` record
+    /// carries.
+    pub const HTTP_RESPONSE: Self = Self::constant("application", "http", &Self::RESPONSE);
+    /// `application/warc-fields`: the field lines a `warcinfo` or `metadata` record carries.
+    pub const WARC_FIELDS: Self = Self::constant("application", "warc-fields", &[]);
+    /// `application/octet-stream`: octets the archive does not type further.
+    pub const OCTET_STREAM: Self = Self::constant("application", "octet-stream", &[]);
+    /// `text/plain`: a block of text.
+    pub const TEXT_PLAIN: Self = Self::constant("text", "plain", &[]);
+    /// `text/dns`: a DNS lookup, which archives record as a `resource` record.
+    pub const TEXT_DNS: Self = Self::constant("text", "dns", &[]);
+
+    /// `application/http; msgtype=request`, the spelling with the white space errata #38 admits.
+    /// Archives write it often, so it is read without allocating, but nothing here writes it.
+    const HTTP_REQUEST_SPACE: Self = Self::constant("application", "http", &Self::REQUEST_SPACE);
+    /// `application/http; msgtype=response`, the spelling with the white space errata #38 admits.
+    /// Archives write it often, so it is read without allocating, but nothing here writes it.
+    const HTTP_RESPONSE_SPACE: Self = Self::constant("application", "http", &Self::RESPONSE_SPACE);
+
+    /// `;msgtype=request`, written without the optional white space errata #38 admits.
+    const REQUEST: [Parameter; 1] = [Parameter {
+        separator: Cow::Borrowed(";"),
+        name: Cow::Borrowed("msgtype"),
+        value: ParameterValue::Token(Cow::Borrowed("request")),
+    }];
+    /// `;msgtype=response`, written without the optional white space errata #38 admits.
+    const RESPONSE: [Parameter; 1] = [Parameter {
+        separator: Cow::Borrowed(";"),
+        name: Cow::Borrowed("msgtype"),
+        value: ParameterValue::Token(Cow::Borrowed("response")),
+    }];
+    /// `; msgtype=request`, written with the white space.
+    const REQUEST_SPACE: [Parameter; 1] = [Parameter {
+        separator: Cow::Borrowed("; "),
+        name: Cow::Borrowed("msgtype"),
+        value: ParameterValue::Token(Cow::Borrowed("request")),
+    }];
+    /// `; msgtype=response`, written with the white space.
+    const RESPONSE_SPACE: [Parameter; 1] = [Parameter {
+        separator: Cow::Borrowed("; "),
+        name: Cow::Borrowed("msgtype"),
+        value: ParameterValue::Token(Cow::Borrowed("response")),
+    }];
+
+    /// A media type whose parts are known to match the grammar.
+    const fn constant(
+        type_name: &'static str,
+        subtype: &'static str,
+        parameters: &'static [Parameter],
+    ) -> Self {
+        Self {
+            type_name: Cow::Borrowed(type_name),
+            subtype: Cow::Borrowed(subtype),
+            parameters: Cow::Borrowed(parameters),
+        }
+    }
+
     /// Read a media type.
+    ///
+    /// A value spelled exactly as one of this type's constants is that constant, and so is read
+    /// without allocating. The same spellings with white space around the `;` are read without
+    /// allocating too, and keep that white space.
     ///
     /// # Errors
     ///
@@ -140,6 +210,10 @@ impl MediaType {
     /// stricter than the `TEXT` rule, which admits any octet, because media types are represented
     /// as text here.
     pub fn parse(value: &[u8]) -> Result<Self, Error> {
+        if let Some(constant) = constant_for(value) {
+            return Ok(constant);
+        }
+
         let essence_end = value
             .iter()
             .position(|&byte| byte == b';')
@@ -175,7 +249,7 @@ impl MediaType {
                 parse_parameter(content).map_err(|failure| failure.against(value, content))?;
 
             parameters.push(Parameter {
-                separator: from_ascii(&value[separator_start..content_start]),
+                separator: owned_ascii(&value[separator_start..content_start]),
                 name,
                 value: parameter_value,
             });
@@ -185,9 +259,9 @@ impl MediaType {
         }
 
         Ok(Self {
-            type_name: from_ascii(type_name),
-            subtype: from_ascii(subtype),
-            parameters: parameters.into_boxed_slice(),
+            type_name: owned_ascii(type_name),
+            subtype: owned_ascii(subtype),
+            parameters: Cow::Owned(parameters),
         })
     }
 
@@ -235,12 +309,28 @@ impl Display for MediaType {
             separator,
             name,
             value,
-        } in &self.parameters
+        } in self.parameters.iter()
         {
             write!(f, "{separator}{name}={value}")?;
         }
 
         Ok(())
+    }
+}
+
+/// The constant these bytes are the rendering of, if they are one.
+fn constant_for(value: &[u8]) -> Option<MediaType> {
+    match value {
+        b"application/http;msgtype=request" => Some(MediaType::HTTP_REQUEST),
+        b"application/http;msgtype=response" => Some(MediaType::HTTP_RESPONSE),
+        b"application/warc-fields" => Some(MediaType::WARC_FIELDS),
+        b"application/octet-stream" => Some(MediaType::OCTET_STREAM),
+        b"application/http; msgtype=request" => Some(MediaType::HTTP_REQUEST_SPACE),
+        b"application/http; msgtype=response" => Some(MediaType::HTTP_RESPONSE_SPACE),
+        b"application/http" => Some(MediaType::HTTP),
+        b"text/plain" => Some(MediaType::TEXT_PLAIN),
+        b"text/dns" => Some(MediaType::TEXT_DNS),
+        _ => None,
     }
 }
 
@@ -282,7 +372,7 @@ impl ParameterFailure {
 }
 
 /// Read one `attribute "=" value`, given the content without its surrounding `OWS`.
-fn parse_parameter(input: &[u8]) -> Result<(Box<str>, ParameterValue), ParameterFailure> {
+fn parse_parameter(input: &[u8]) -> Result<(Cow<'static, str>, ParameterValue), ParameterFailure> {
     let equals = input
         .iter()
         .position(|&byte| byte == b'=')
@@ -294,17 +384,20 @@ fn parse_parameter(input: &[u8]) -> Result<(Box<str>, ParameterValue), Parameter
 
     let value = if value.first() == Some(&b'"') {
         let unquoted = unquote(value).map_err(ParameterFailure::Quoted)?;
-        let unquoted = String::from_utf8(unquoted)
-            .map_err(|_| ParameterFailure::NonUtf8)?
-            .into_boxed_str();
-        ParameterValue::Quoted(unquoted)
+        let unquoted = String::from_utf8(unquoted).map_err(|_| ParameterFailure::NonUtf8)?;
+        ParameterValue::Quoted(Cow::Owned(unquoted))
     } else if is_token(value) {
-        ParameterValue::Token(from_ascii(value))
+        ParameterValue::Token(owned_ascii(value))
     } else {
         return Err(ParameterFailure::Malformed);
     };
 
-    Ok((from_ascii(attribute), value))
+    Ok((owned_ascii(attribute), value))
+}
+
+/// Take ownership of bytes already validated as ASCII.
+fn owned_ascii(bytes: &[u8]) -> Cow<'static, str> {
+    Cow::Owned(from_ascii(bytes).to_owned())
 }
 
 /// The length of the `OWS` a value opens with.
@@ -335,7 +428,7 @@ fn trim_ows_end(input: &[u8]) -> &[u8] {
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, MediaType, ParameterValue, QuotedStringError};
+    use super::{Cow, Error, MediaType, ParameterValue, QuotedStringError};
 
     #[test]
     fn parses_a_bare_media_type() {
@@ -401,6 +494,70 @@ mod tests {
             media_type.to_string(),
             r#"text/plain; charset="utf-8"; x="a;b\"c""#
         );
+    }
+
+    /// Whether a value holds nothing of its own, which the constants and only the constants do.
+    fn is_borrowed(media_type: &MediaType) -> bool {
+        matches!(media_type.type_name, Cow::Borrowed(_))
+            && matches!(media_type.subtype, Cow::Borrowed(_))
+            && matches!(media_type.parameters, Cow::Borrowed(_))
+    }
+
+    /// Each constant is the media type it is documented as, and reading that spelling gives the
+    /// constant back rather than a value that only equals it.
+    #[test]
+    fn the_constants_are_the_types_they_are_written_as() {
+        for (constant, spelling) in [
+            (MediaType::HTTP, "application/http"),
+            (MediaType::HTTP_REQUEST, "application/http;msgtype=request"),
+            (
+                MediaType::HTTP_RESPONSE,
+                "application/http;msgtype=response",
+            ),
+            (MediaType::WARC_FIELDS, "application/warc-fields"),
+            (MediaType::OCTET_STREAM, "application/octet-stream"),
+            (MediaType::TEXT_PLAIN, "text/plain"),
+            (MediaType::TEXT_DNS, "text/dns"),
+        ] {
+            assert_eq!(constant.to_string(), spelling);
+
+            let parsed = MediaType::parse(spelling.as_bytes()).expect("a media type");
+
+            assert_eq!(parsed, constant);
+            assert!(is_borrowed(&parsed), "{spelling}");
+        }
+    }
+
+    /// The spelling with white space around the `;` is what archives most often write, so it is
+    /// read without allocating as well, and it is written back as it was read.
+    #[test]
+    fn the_spelling_archives_write_is_read_without_allocating() {
+        for spelling in [
+            "application/http; msgtype=request",
+            "application/http; msgtype=response",
+        ] {
+            let media_type = MediaType::parse(spelling.as_bytes()).expect("a media type");
+
+            assert!(is_borrowed(&media_type), "{spelling}");
+            assert!(media_type.is("application", "http"));
+            assert_eq!(media_type.to_string(), spelling);
+        }
+    }
+
+    /// A media type spelled otherwise than a constant is read as it was written, since a value
+    /// keeps the white space it was read with.
+    #[test]
+    fn a_constant_spelled_another_way_keeps_its_own_spelling() {
+        let media_type = MediaType::parse(b"application/http ;msgtype=response").unwrap();
+
+        assert_ne!(media_type, MediaType::HTTP_RESPONSE);
+        assert!(!is_borrowed(&media_type));
+        assert!(media_type.is("application", "http"));
+        assert_eq!(
+            media_type.parameter("msgtype").map(ParameterValue::as_str),
+            Some("response")
+        );
+        assert_eq!(media_type.to_string(), "application/http ;msgtype=response");
     }
 
     #[test]
