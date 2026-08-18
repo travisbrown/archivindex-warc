@@ -107,7 +107,8 @@ pub use truncated_type::TruncatedType;
 mod version;
 pub use version::WarcVersion;
 
-mod warc_date;
-pub use warc_date::{WarcDate, WarcDatePrecision};
+mod parsing;
+
+pub mod value;
 
 pub mod fields;

@@ -1,8 +1,13 @@
+//! The `WARC-Date` value type.
+//!
+//! The standard gives the field a different grammar in each of its versions, so a value is parsed
+//! and serialized against a [`WarcVersion`] rather than on its own.
+
 use std::fmt::{Display, Formatter};
 
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
 
-use crate::{Error, WarcHeader, WarcVersion};
+use crate::version::WarcVersion;
 
 /// The precision carried by a [`WarcDate`].
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
@@ -35,22 +40,16 @@ pub struct WarcDate {
 impl WarcDate {
     /// Parse a date using the grammar of the given WARC version.
     ///
-    /// WARC 1.0 accepts only `YYYY-MM-DDThh:mm:ssZ`. WARC 1.1 accepts every W3C-DTF
-    /// granularity from a year through a decimal fraction of a second; timezone offsets are
-    /// normalized to UTC.
+    /// WARC 1.0 accepts only `YYYY-MM-DDThh:mm:ssZ`. WARC 1.1 accepts every W3C-DTF granularity
+    /// from a year through a decimal fraction of a second; timezone offsets are normalized to UTC.
     ///
-    /// # Errors
-    ///
-    /// Returns `Error::MalformedHeader` when `value` is not a date permitted by `version`.
-    pub fn parse(value: &str, version: WarcVersion) -> Result<Self, Error> {
-        let parsed = match version {
+    /// Returns `None` when `value` does not match the grammar of `version`.
+    #[must_use]
+    pub fn parse(value: &str, version: WarcVersion) -> Option<Self> {
+        match version {
             WarcVersion::V1_0 => Self::parse_v1_0(value),
             WarcVersion::V1_1 => Self::parse_v1_1(value),
-        };
-
-        parsed.ok_or_else(|| {
-            Error::MalformedHeader(WarcHeader::Date, format!("not a valid WARC {version} date"))
-        })
+        }
     }
 
     /// Return the UTC instant represented by this date.
@@ -282,7 +281,7 @@ fn split_time_zone(value: &str) -> Option<(&str, bool)> {
 #[cfg(test)]
 mod tests {
     use super::{WarcDate, WarcDatePrecision};
-    use crate::{Error, WarcHeader, WarcVersion};
+    use crate::version::WarcVersion;
 
     #[test]
     fn warc_1_0_accepts_only_second_precision() {
@@ -297,10 +296,11 @@ mod tests {
             "2020-07-08T02:52:55.1Z",
             "2020-07-08T03:52:55+01:00",
         ] {
-            assert!(matches!(
+            assert_eq!(
                 WarcDate::parse(invalid, WarcVersion::V1_0),
-                Err(Error::MalformedHeader(WarcHeader::Date, _))
-            ));
+                None,
+                "{invalid}"
+            );
         }
     }
 
@@ -329,7 +329,11 @@ mod tests {
         }
 
         for invalid in ["2020-07-08T02:52:55.1234567890Z", "éabcde"] {
-            assert!(WarcDate::parse(invalid, WarcVersion::V1_1).is_err());
+            assert_eq!(
+                WarcDate::parse(invalid, WarcVersion::V1_1),
+                None,
+                "{invalid}"
+            );
         }
     }
 
