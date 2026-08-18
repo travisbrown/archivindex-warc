@@ -13,6 +13,8 @@ pub use text::Text;
 /// The rule a value did not match.
 ///
 /// Variants name grammar rules because several fields can use the same rule.
+/// [`parse::untyped::Error`](crate::parse::untyped::Error) adds the name of the field that carried
+/// the value.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Error {
     /// A value is not the `1*DIGIT` its field's grammar calls for, or names a number beyond the
