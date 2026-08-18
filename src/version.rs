@@ -1,5 +1,14 @@
+//! The versions of the WARC standard that this crate can read and write.
+
 use std::fmt::Display;
 use std::str::FromStr;
+
+/// A version number that names no supported WARC version.
+///
+/// Only the number is captured here, without the `WARC/` a version line spells it after.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("Malformed version: {0}")]
+pub struct Error(pub String);
 
 /// A version of the WARC standard supported by this crate.
 #[derive(Clone, Copy, Debug, Default, Hash, Eq, PartialEq)]
@@ -12,7 +21,7 @@ pub enum WarcVersion {
 }
 
 impl WarcVersion {
-    /// Return the version number as it appears after `WARC/` in a record.
+    /// The version number as it appears after `WARC/`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -29,21 +38,20 @@ impl Display for WarcVersion {
 }
 
 impl FromStr for WarcVersion {
-    type Err = crate::Error;
+    type Err = Error;
 
     fn from_str(version: &str) -> Result<Self, Self::Err> {
         match version {
             "1.0" => Ok(Self::V1_0),
             "1.1" => Ok(Self::V1_1),
-            _ => Err(crate::Error::MalformedVersion(version.to_owned())),
+            _ => Err(Error(version.to_owned())),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::WarcVersion;
-    use crate::Error;
+    use super::{Error, WarcVersion};
 
     #[test]
     fn supported_versions_round_trip() {
@@ -59,7 +67,7 @@ mod tests {
     fn unsupported_version_is_malformed() {
         assert!(matches!(
             "2.0".parse::<WarcVersion>(),
-            Err(Error::MalformedVersion(version)) if version == "2.0"
+            Err(Error(version)) if version == "2.0"
         ));
     }
 }

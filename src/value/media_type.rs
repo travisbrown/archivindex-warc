@@ -3,7 +3,7 @@
 use std::fmt::Display;
 
 use super::from_ascii;
-use crate::parsing::{is_token, lossy};
+use crate::parsing::{is_token, lossy, unquote};
 use crate::value::Error;
 
 /// A `media-type` value.
@@ -189,7 +189,8 @@ fn parse_parameter(input: &[u8]) -> Option<(Box<str>, ParameterValue)> {
     }
 
     let value = if value.first() == Some(&b'"') {
-        ParameterValue::Quoted(unquote(value)?)
+        let unquoted = String::from_utf8(unquote(value)?).ok()?.into_boxed_str();
+        ParameterValue::Quoted(unquoted)
     } else if is_token(value) {
         ParameterValue::Token(from_ascii(value))
     } else {
@@ -197,35 +198,6 @@ fn parse_parameter(input: &[u8]) -> Option<(Box<str>, ParameterValue)> {
     };
 
     Some((from_ascii(attribute), value))
-}
-
-/// Resolve a `quoted-string` into the text it stands for.
-///
-/// ```text
-/// quoted-string = ( <"> *( qdtext | quoted-pair ) <"> )
-/// qdtext        = <any TEXT except <">>
-/// quoted-pair   = "\" CHAR
-/// ```
-fn unquote(input: &[u8]) -> Option<Box<str>> {
-    let inner = input.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
-    let mut unquoted = Vec::with_capacity(inner.len());
-    let mut index = 0;
-    while index < inner.len() {
-        match inner[index] {
-            b'\\' => {
-                unquoted.push(*inner.get(index + 1)?);
-                index += 2;
-            }
-            // An unescaped quote would have ended the string, so the bounds are wrong.
-            b'"' => return None,
-            byte => {
-                unquoted.push(byte);
-                index += 1;
-            }
-        }
-    }
-
-    String::from_utf8(unquoted).ok().map(String::into_boxed_str)
 }
 
 /// Strip `OWS` from both ends, per errata #38.

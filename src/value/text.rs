@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::fmt::Display;
 
-use crate::parsing::lossy;
+use crate::parsing::{is_ctl, lossy, unquote};
 use crate::value::Error;
 
 /// A `WARC-Filename` value, which the grammar writes either bare or in quotes.
@@ -33,7 +33,7 @@ impl Text {
         let error = || Error::Text(lossy(value));
 
         if value.first() == Some(&b'"') {
-            let content = unquote_bytes(value).ok_or_else(error)?;
+            let content = unquote(value).ok_or_else(error)?;
             if content.iter().any(|&byte| is_ctl(byte)) {
                 return Err(error());
             }
@@ -104,36 +104,6 @@ impl Display for Text {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&String::from_utf8_lossy(&self.to_bytes()))
     }
-}
-
-/// Resolve a `quoted-string` into the octets it stands for.
-///
-/// The escaping is the same as for a media type parameter value, but the result is bytes rather
-/// than text.
-fn unquote_bytes(input: &[u8]) -> Option<Vec<u8>> {
-    let inner = input.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
-    let mut unquoted = Vec::with_capacity(inner.len());
-    let mut index = 0;
-    while index < inner.len() {
-        match inner[index] {
-            b'\\' => {
-                unquoted.push(*inner.get(index + 1)?);
-                index += 2;
-            }
-            b'"' => return None,
-            byte => {
-                unquoted.push(byte);
-                index += 1;
-            }
-        }
-    }
-
-    Some(unquoted)
-}
-
-/// Whether a byte is a control character, which `TEXT` excludes.
-const fn is_ctl(byte: u8) -> bool {
-    byte < 32 || byte == 127
 }
 
 #[cfg(test)]
