@@ -19,13 +19,14 @@
 //! inspecting their headers. [`io::read::WarcReader`] and [`io::write::WarcWriter`] both support
 //! gzip-compressed WARC files.
 //!
-//! Errors are reported at the level that finds them. [`value::Error`] reports violations of field
-//! value grammars, while [`parse::untyped::Error`] adds the field that carried the value.
-//! [`record::Error`] reports semantic violations, including forbidden or repeated fields and
-//! values that are invalid for the declared version or record type. [`record::RenderError`] catches
-//! invalid states introduced through extensions or direct mutation, such as duplicate standard
-//! fields, fields unavailable in the declared version, and names or values that cannot form a
-//! valid header line. [`io::read::Error`] and [`io::write::Error`] add stream failures.
+//! Errors are reported at the level that finds them. [`value::Error`] reports field-value grammar
+//! violations through [`value::TextError`], [`value::MediaTypeError`], and [`value::DigestError`].
+//! [`parse::untyped::Error`] adds the field that carried the value. [`record::Error`] reports
+//! semantic violations, including forbidden or repeated fields and values that are invalid for the
+//! declared version or record type. [`record::RenderError`] catches invalid states introduced
+//! through extensions or direct mutation, such as duplicate standard fields, fields unavailable in
+//! the declared version, and names or values that cannot form a valid header line.
+//! [`io::read::Error`] and [`io::write::Error`] add stream failures.
 //!
 //! [annotated]:
 //!   https://iipc.github.io/warc-specifications/specifications/warc-format/warc-1.1-annotated/

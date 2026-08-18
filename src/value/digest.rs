@@ -5,7 +5,6 @@ use std::str::FromStr;
 
 use super::from_ascii;
 use crate::parsing::{is_token, is_token_char, lossy};
-use crate::value::Error;
 
 /// The digits Base16 is written with, which annotation #80 asks to be lowercase.
 const BASE16_DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -16,6 +15,29 @@ const BASE32_DIGITS: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 /// The digits Base64 is written with, in the standard alphabet of RFC 4648.
 const BASE64_DIGITS: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// The rule a `labelled-digest` value did not match.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum Error {
+    /// The value has no `:` separating the algorithm from the digest.
+    #[error("not a labelled digest: no `:` separating algorithm from digest in `{value}`")]
+    NoSeparator {
+        /// The value as it was read, with any octet that is not UTF-8 replaced.
+        value: String,
+    },
+    /// The algorithm label is not a `token`.
+    #[error("not a labelled digest: `{algorithm}` is not an algorithm label")]
+    MalformedAlgorithm {
+        /// The label as it was read, with any octet that is not UTF-8 replaced.
+        algorithm: String,
+    },
+    /// The digest is not a `digest-value`.
+    #[error("not a labelled digest: `{digest}` is not a digest value")]
+    MalformedValue {
+        /// The digest as it was read, with any octet that is not UTF-8 replaced.
+        digest: String,
+    },
+}
 
 /// A digest algorithm, as named by the `algorithm` half of a labelled digest.
 ///
@@ -97,7 +119,9 @@ impl FromStr for DigestAlgorithm {
         if is_token(label.as_bytes()) {
             Ok(Self::from_label(label))
         } else {
-            Err(Error::Token(label.to_owned()))
+            Err(Error::MalformedAlgorithm {
+                algorithm: label.to_owned(),
+            })
         }
     }
 }
@@ -233,20 +257,29 @@ impl LabelledDigest {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Digest`] when the colon is missing, or when either half is not a token
-    /// (with `=` and `/` also allowed in the digest, per annotation #48).
+    /// Returns [`Error::NoSeparator`] when the colon is missing, [`Error::MalformedAlgorithm`]
+    /// when the algorithm is not a token, and [`Error::MalformedValue`] when the digest is not one
+    /// (with `=` and `/` also allowed there, per annotation #48).
     pub fn parse(value: &[u8]) -> Result<Self, Error> {
-        let error = || Error::Digest(lossy(value));
-
         // An algorithm token cannot contain a colon, so the first colon separates the halves.
-        let colon = value
-            .iter()
-            .position(|&byte| byte == b':')
-            .ok_or_else(error)?;
+        let colon =
+            value
+                .iter()
+                .position(|&byte| byte == b':')
+                .ok_or_else(|| Error::NoSeparator {
+                    value: lossy(value),
+                })?;
         let (algorithm, digest) = (&value[..colon], &value[colon + 1..]);
 
-        if !is_token(algorithm) || !is_digest_value(digest) {
-            return Err(error());
+        if !is_token(algorithm) {
+            return Err(Error::MalformedAlgorithm {
+                algorithm: lossy(algorithm),
+            });
+        }
+        if !is_digest_value(digest) {
+            return Err(Error::MalformedValue {
+                digest: lossy(digest),
+            });
         }
 
         // Both halves are checked above to hold only ASCII, so neither conversion can fail.
@@ -264,7 +297,7 @@ impl LabelledDigest {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Digest`] when either half does not match its grammar.
+    /// Returns the [`Error`] naming the half that does not match its grammar.
     pub fn new(algorithm: &str, value: &str) -> Result<Self, Error> {
         Self::parse(format!("{algorithm}:{value}").as_bytes())
     }
@@ -662,17 +695,39 @@ mod tests {
 
     #[test]
     fn rejects_malformed_digests() {
-        for value in [
-            b"nocolon".as_slice(),
-            b":value".as_slice(),
-            b"algorithm:".as_slice(),
-            b"algorithm:with space".as_slice(),
-            b"with space:value".as_slice(),
+        for (value, expected) in [
+            (
+                b"nocolon".as_slice(),
+                Error::NoSeparator {
+                    value: "nocolon".to_owned(),
+                },
+            ),
+            (
+                b":value".as_slice(),
+                Error::MalformedAlgorithm {
+                    algorithm: String::new(),
+                },
+            ),
+            (
+                b"algorithm:".as_slice(),
+                Error::MalformedValue {
+                    digest: String::new(),
+                },
+            ),
+            (
+                b"algorithm:with space".as_slice(),
+                Error::MalformedValue {
+                    digest: "with space".to_owned(),
+                },
+            ),
+            (
+                b"with space:value".as_slice(),
+                Error::MalformedAlgorithm {
+                    algorithm: "with space".to_owned(),
+                },
+            ),
         ] {
-            assert!(
-                matches!(LabelledDigest::parse(value), Err(Error::Digest(_))),
-                "{value:?}"
-            );
+            assert_eq!(LabelledDigest::parse(value), Err(expected), "{value:?}");
         }
     }
 }
