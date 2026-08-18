@@ -74,11 +74,13 @@ pub use record_type::RecordType;
 mod truncated_type;
 pub use truncated_type::TruncatedType;
 
-mod version;
+pub mod version;
 pub use version::WarcVersion;
 
 mod parsing;
 
+pub mod io;
+pub mod parse;
 pub mod value;
 
 pub mod fields;
