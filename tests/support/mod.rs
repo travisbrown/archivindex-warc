@@ -92,23 +92,50 @@ pub fn roundtrip_records(source: &[u8]) -> Result<Vec<u8>, String> {
 /// rendering says what the record it was rendered from said, which is what reading it again and
 /// comparing the two lifts asks.
 ///
-/// A record that declares no block digest is given one when it is written, so the record compared
-/// against here is the one that declares the digest of its block.
+/// Rendering may add digests, so comparisons use [`as_rendered`] to account for them.
 ///
 /// This can only be asked of an archive every record of which lifts, so the caller checks it only
 /// where the lift is expected to succeed.
+/// Compute the default digest added during rendering.
+fn added_digest(content: &[u8]) -> LabelledDigest {
+    LabelledDigest::from_digest(DigestAlgorithm::Sha256, &sha2::Sha256::digest(content))
+}
+
+/// Clone a record and add the digests rendering would supply.
+fn as_rendered(mut lifted: Record<NoExtension>) -> Record<NoExtension> {
+    if lifted.core().block_digest.is_none() {
+        let digest = added_digest(&lifted.body_bytes());
+        lifted.core_mut().block_digest = Some(digest);
+    }
+
+    // Only complete HTTP request and response payloads receive a payload digest.
+    if !matches!(lifted, Record::Response { .. } | Record::Request { .. })
+        || lifted.segment_number().is_some()
+        || lifted.core().truncated.is_some()
+    {
+        return lifted;
+    }
+
+    let digest = match lifted.payload_bytes() {
+        Ok(Some(payload)) => Some(added_digest(&payload)),
+        Ok(None) | Err(_) => None,
+    };
+
+    if let Some(headers) = lifted.payload_mut() {
+        if headers.payload_digest.is_none() {
+            headers.payload_digest = digest;
+        }
+    }
+
+    lifted
+}
+
 pub fn roundtrip_semantic_meaning(source: &[u8]) -> Result<(), String> {
     for (index, record) in WarcReader::new(source).iter_untyped_records().enumerate() {
         let grammar = record.map_err(|error| error.to_string())?;
-        let mut lifted =
-            Record::<NoExtension>::try_from(grammar).map_err(|error| error.to_string())?;
-        if lifted.core().block_digest.is_none() {
-            let digest = LabelledDigest::from_digest(
-                DigestAlgorithm::Sha256,
-                &sha2::Sha256::digest(lifted.body_bytes()),
-            );
-            lifted.core_mut().block_digest = Some(digest);
-        }
+        let lifted = as_rendered(
+            Record::<NoExtension>::try_from(grammar).map_err(|error| error.to_string())?,
+        );
         let rendered = lifted
             .clone()
             .into_raw()

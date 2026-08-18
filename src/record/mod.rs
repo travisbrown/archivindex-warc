@@ -15,9 +15,13 @@
 //! URI brackets when rendered. A declared `Content-Length` is checked whenever a header and body
 //! are paired, and again when the record is rendered.
 //!
-//! A declared `WARC-Block-Digest` is preserved when a record is read. Use
-//! [`Record::incorrect_block_digest`] to inspect it. Rendering validates a declared digest and
-//! adds one where a record declares none.
+//! Declared digests are preserved when a record is read. Use
+//! [`Record::incorrect_block_digest`] and [`Record::incorrect_payload_digest`] to inspect them.
+//! Rendering validates declared digests and adds missing digests when possible.
+//!
+//! Payload digests follow WARC 1.1 clause 5.10. For `application/http`, this means the HTTP
+//! entity-body after transfer-coding has been removed. Some widely used tools digest the message
+//! body instead, so their chunked records read but cannot be rendered.
 //!
 //! Use [`builder`] to create new records.
 
@@ -39,7 +43,7 @@ use crate::parse::untyped::name::{Field, HeaderName};
 use crate::parse::untyped::value::{HeaderValue, ValueForm};
 use crate::parse::{raw, untyped};
 use crate::parsing::{is_token, unfold};
-use crate::record::digest::{check_block_digest, verify_block_digest};
+use crate::record::digest::{check_block_digest, check_payload_digest, verify_block_digest};
 use crate::record::extension::{
     Extension, ExtensionFields, ExtensionRecordType, NoExtension, Unclaimed,
 };
@@ -83,6 +87,23 @@ pub enum BlockError {
         /// The digest of the block it carries.
         actual: LabelledDigest,
     },
+    /// The payload digest is invalid for its declared algorithm, which this crate computes.
+    #[error("The payload digest `{0}` is not a digest the algorithm it names can have produced.")]
+    MalformedPayloadDigest(LabelledDigest),
+    /// The record's payload digest does not match the payload its block carries.
+    #[error(
+        "The record declares the payload digest `{declared}`, but its payload digests as \
+         `{actual}`."
+    )]
+    PayloadDigestMismatch {
+        /// The digest the record declares.
+        declared: LabelledDigest,
+        /// The digest of the payload it carries.
+        actual: LabelledDigest,
+    },
+    /// The declared payload digest cannot be checked because the HTTP message is malformed.
+    #[error("The record's payload cannot be read from its block: {0}")]
+    Payload(#[from] payload::Error),
     /// A `revisit` record under the identical payload digest profile carries a block without
     /// declaring the truncation such a block is.
     #[error(
@@ -543,6 +564,13 @@ header_accessors! {
         Warcinfo | Metadata | Other => None,
     }
 
+    /// The payload fields, mutably, or `None` if this record type has no payload.
+    pub const fn payload_mut(&mut self) -> Option<&mut PayloadHeaders> {
+        Response | Resource | Request | Revisit | Conversion
+            | Continuation => Some(&mut header.payload),
+        Warcinfo | Metadata | Other => None,
+    }
+
     /// `WARC-Target-URI`: the URI the record's content came from.
     ///
     /// Returns `None` when the field is forbidden or absent.
@@ -747,6 +775,22 @@ impl<E: Extension> Record<E> {
         verify_block_digest(declared, &self.body_bytes()).err()
     }
 
+    /// Check the declared payload digest and return its failure, if any.
+    ///
+    /// Returns `None` for a segment or truncated record, for a payload
+    /// [`payload_bytes`](Self::payload_bytes) does not determine, and when no supported digest can
+    /// be checked. A malformed HTTP message is reported where a digest is declared over it. The
+    /// payload is recomputed on every call.
+    #[must_use]
+    pub fn incorrect_payload_digest(&self) -> Option<BlockError> {
+        check_payload_digest(self).err()
+    }
+
+    /// Whether rendering should add a missing payload digest.
+    const fn takes_added_payload_digest(&self) -> bool {
+        matches!(self, Self::Response { .. } | Self::Request { .. })
+    }
+
     /// Whether this record declares an HTTP message as its block.
     ///
     /// A missing media type is accepted when the target URI uses HTTP or HTTPS.
@@ -776,6 +820,10 @@ impl<E: Extension> Record<E> {
     /// is given one under SHA-256. A digest naming an algorithm this crate does not compute is
     /// written as read and is not checked.
     ///
+    /// `WARC-Payload-Digest` is checked against [`payload_bytes`](Self::payload_bytes). Missing
+    /// digests are added to HTTP `response` and `request` records that are neither segments nor
+    /// truncated.
+    ///
     /// Clone the record first if it must be retained.
     ///
     /// # Errors
@@ -792,8 +840,17 @@ impl<E: Extension> Record<E> {
     /// record carries, and [`RenderError::UnwritableField`] if a field kept as read or written by
     /// the extension carries a name or a value that would not be read back as intended. Returns
     /// [`RenderError::ReservedField`] if such a field names one the standard defines, or
-    /// [`RenderError::RepeatedField`] if a record of an extension type names one twice.
-    pub fn into_raw(self) -> Result<raw::Record, RenderError> {
+    /// [`RenderError::RepeatedField`] if a record of an extension type names one twice. Returns
+    /// [`BlockError::MalformedPayloadDigest`], [`BlockError::PayloadDigestMismatch`], or
+    /// [`BlockError::Payload`] where the payload digest fails as the block digest does.
+    pub fn into_raw(mut self) -> Result<raw::Record, RenderError> {
+        // Resolve the payload digest before rendering the header fields.
+        if let Some(added) = check_payload_digest(&self)? {
+            if let Some(headers) = self.payload_mut() {
+                headers.payload_digest = Some(added);
+            }
+        }
+
         // Read before the record is consumed, since the version and the record type come from
         // the header block and the variant rather than from the core headers.
         let version = self.version();
@@ -927,9 +984,9 @@ impl<E: Extension> RecordHeader<E> {
     /// A declared `Content-Length` must match the block. The resulting record stores its actual
     /// length.
     ///
-    /// A declared `WARC-Block-Digest` is preserved without validation. It can be inspected on the
-    /// resulting [`Record`] and is validated when the record is rendered, which also adds a digest
-    /// where none is declared.
+    /// Declared digests are preserved without validation. They can be inspected on the resulting
+    /// [`Record`] and are validated when it is rendered. Missing digests are also added during
+    /// rendering.
     ///
     /// # Errors
     ///
@@ -948,7 +1005,7 @@ impl<E: Extension> RecordHeader<E> {
             check_revisit_block(header, content_length)?;
         }
 
-        Ok(match self {
+        let record = match self {
             Self::Warcinfo(header) => {
                 let body = FieldsBlock::read(header.core.content_type.as_ref(), body)?;
                 Record::Warcinfo { header, body }
@@ -964,7 +1021,9 @@ impl<E: Extension> RecordHeader<E> {
             Self::Conversion(header) => Record::Conversion { header, body },
             Self::Continuation(header) => Record::Continuation { header, body },
             Self::Other(header) => Record::Other { header, body },
-        })
+        };
+
+        Ok(record)
     }
 
     /// Lift the header of a `warcinfo` record.
@@ -1708,8 +1767,14 @@ mod tests {
     /// Used when comparing a value before and after a rendering round trip.
     pub(super) fn as_rendered<E: Extension>(mut record: Record<E>) -> Record<E> {
         if record.core().block_digest.is_none() {
-            let digest = crate::record::digest::added_block_digest(&record.body_bytes());
+            let digest = crate::record::digest::added_digest(&record.body_bytes());
             record.core_mut().block_digest = Some(digest);
+        }
+
+        if let Ok(Some(digest)) = check_payload_digest(&record) {
+            if let Some(headers) = record.payload_mut() {
+                headers.payload_digest = Some(digest);
+            }
         }
 
         record
@@ -2257,6 +2322,18 @@ mod tests {
                 actual: digest("sha1:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N"),
             }))
         );
+
+        let record = payload_record(
+            "response",
+            &[("WARC-Payload-Digest", of_nothing)],
+            RESPONSE_BLOCK,
+        );
+
+        assert_eq!(record.body_bytes().as_ref(), RESPONSE_BLOCK);
+        assert!(matches!(
+            record.into_raw(),
+            Err(RenderError::Block(BlockError::PayloadDigestMismatch { .. }))
+        ));
     }
 
     /// Valid, absent, and unsupported digests do not report a failure.
@@ -2271,7 +2348,13 @@ mod tests {
             let record = declaring_digest(value);
 
             assert_eq!(record.incorrect_block_digest(), None, "{value}");
+            assert_eq!(record.incorrect_payload_digest(), None, "{value}");
         }
+
+        let record = payload_record("response", &[], RESPONSE_BLOCK);
+
+        assert_eq!(record.incorrect_block_digest(), None);
+        assert_eq!(record.incorrect_payload_digest(), None);
     }
 
     /// Digests using unsupported algorithms are preserved without validation.
@@ -2293,6 +2376,10 @@ mod tests {
     /// [`RESPONSE_BLOCK`] with a chunked entity-body.
     const CHUNKED_RESPONSE_BLOCK: &[u8] =
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+
+    /// The default digest of the entity-body in the HTTP test blocks.
+    const ADDED_PAYLOAD_DIGEST: &str =
+        "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
 
     /// Build a record with an HTTP target and the supplied fields and body.
     fn payload_record(record_type: &str, lines: &[(&str, &str)], body: &[u8]) -> Record {
@@ -2325,6 +2412,127 @@ mod tests {
                 "{record_type}"
             );
         }
+    }
+
+    /// Rendering adds payload digests to requests and responses, but not whole-block payloads.
+    #[test]
+    fn a_record_declaring_no_payload_digest_is_given_one() {
+        for (record_type, block, digest) in [
+            ("response", RESPONSE_BLOCK, Some(ADDED_PAYLOAD_DIGEST)),
+            ("request", RESPONSE_BLOCK, Some(ADDED_PAYLOAD_DIGEST)),
+            ("resource", DIGESTED_BLOCK, None),
+        ] {
+            let raw = payload_record(record_type, &[], block)
+                .into_raw()
+                .expect("renderable record");
+
+            assert_eq!(
+                written(&raw, "WARC-Payload-Digest").as_deref(),
+                digest,
+                "{record_type}"
+            );
+        }
+    }
+
+    /// Payload digests are checked against the payload rather than the enclosing block.
+    #[test]
+    fn a_payload_digest_the_payload_does_not_have_is_reported() {
+        let malformed = "sha1:not-a-digest";
+        let of_another_payload = "sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ";
+        // SHA-1 of the entity-body, not the enclosing HTTP block.
+        let of_the_payload = "sha1:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N";
+
+        for (value, expected) in [
+            (
+                malformed,
+                BlockError::MalformedPayloadDigest(digest(malformed)),
+            ),
+            (
+                of_another_payload,
+                BlockError::PayloadDigestMismatch {
+                    declared: digest(of_another_payload),
+                    actual: digest(of_the_payload),
+                },
+            ),
+        ] {
+            let record = payload_record(
+                "response",
+                &[("WARC-Payload-Digest", value)],
+                RESPONSE_BLOCK,
+            );
+
+            assert_eq!(record.incorrect_payload_digest(), Some(expected), "{value}");
+        }
+    }
+
+    /// A declared digest makes an unparseable HTTP payload an error.
+    #[test]
+    fn a_payload_digest_over_a_block_framing_no_payload_is_reported() {
+        let record = payload_record(
+            "response",
+            &[(
+                "WARC-Payload-Digest",
+                "sha1:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N",
+            )],
+            DIGESTED_BLOCK,
+        );
+
+        assert_eq!(
+            record.incorrect_payload_digest(),
+            Some(BlockError::Payload(payload::Error::UnterminatedHeaders))
+        );
+
+        let raw = payload_record("response", &[], DIGESTED_BLOCK)
+            .into_raw()
+            .expect("renderable record");
+
+        assert_eq!(written(&raw, "WARC-Payload-Digest"), None);
+    }
+
+    /// Partial records preserve declared payload digests and do not receive new ones.
+    #[test]
+    fn the_payload_digest_of_a_partial_record_is_left_alone() {
+        for line in [("WARC-Segment-Number", "1"), ("WARC-Truncated", "length")] {
+            let declared = "sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ";
+            let raw = payload_record(
+                "response",
+                &[line, ("WARC-Payload-Digest", declared)],
+                RESPONSE_BLOCK,
+            )
+            .into_raw()
+            .expect("renderable record");
+
+            assert_eq!(
+                written(&raw, "WARC-Payload-Digest").as_deref(),
+                Some(declared),
+                "{line:?}"
+            );
+
+            let raw = payload_record("response", &[line], RESPONSE_BLOCK)
+                .into_raw()
+                .expect("renderable record");
+
+            assert_eq!(written(&raw, "WARC-Payload-Digest"), None, "{line:?}");
+        }
+    }
+
+    /// A payload using an unsupported transfer-coding cannot be checked and is preserved.
+    #[test]
+    fn a_payload_digest_over_a_coding_this_crate_cannot_remove_is_not_checked() {
+        let declared = "sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ";
+        let block = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\nhello";
+        let raw = payload_record(
+            "response",
+            &[("WARC-Payload-Digest", declared)],
+            block.as_slice(),
+        )
+        .into_raw()
+        .expect("renderable record");
+
+        assert_eq!(
+            written(&raw, "WARC-Payload-Digest").as_deref(),
+            Some(declared)
+        );
     }
 
     /// Every record type keeps its block somewhere different, and the one accessor reads any
