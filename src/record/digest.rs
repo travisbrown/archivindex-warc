@@ -24,7 +24,7 @@ pub fn sha_1_block_digest(block: &[u8]) -> LabelledDigest {
     LabelledDigest::from_digest(DigestAlgorithm::Sha1, &sha1::Sha1::digest(block))
 }
 
-/// Give a record the SHA-1 digest of its block, leaving a declared digest alone.
+/// Add a SHA-1 block digest unless the record already declares one.
 pub fn add_sha_1_block_digest<E: Extension>(record: &mut Record<E>) {
     if record.core().block_digest.is_none() {
         let digest = sha_1_block_digest(&record.body_bytes());
@@ -42,11 +42,28 @@ fn digest_block(algorithm: &DigestAlgorithm, block: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// The block digest to write for a block, checking the one a record declares.
+/// Validate a declared block digest.
 ///
-/// A record that declares no digest is given one, since a digest can always be computed from the
-/// block. A record that declares one under an algorithm this crate does not compute keeps it as
-/// read and is not checked, since nothing here can tell whether it is right.
+/// Unsupported algorithms are not checked.
+pub fn verify_block_digest(declared: &LabelledDigest, block: &[u8]) -> Result<(), BlockError> {
+    let Some(digest) = digest_block(declared.algorithm(), block) else {
+        return Ok(());
+    };
+
+    // A failure names the digest that caused it, which is the only place a copy is needed.
+    match declared.decoded() {
+        None => Err(BlockError::MalformedBlockDigest(declared.clone())),
+        Some(value) if value != digest => Err(BlockError::BlockDigestMismatch {
+            actual: LabelledDigest::from_digest(declared.algorithm().clone(), &digest),
+            declared: declared.clone(),
+        }),
+        Some(_) => Ok(()),
+    }
+}
+
+/// Return the block digest to render, validating a declared digest if present.
+///
+/// If no digest is declared, the default digest is added.
 pub fn check_block_digest(
     declared: Option<LabelledDigest>,
     block: &[u8],
@@ -55,18 +72,9 @@ pub fn check_block_digest(
         return Ok(added_block_digest(block));
     };
 
-    let Some(digest) = digest_block(declared.algorithm(), block) else {
-        return Ok(declared);
-    };
+    verify_block_digest(&declared, block)?;
 
-    match declared.decoded() {
-        None => Err(BlockError::MalformedBlockDigest(declared)),
-        Some(value) if value != digest => Err(BlockError::BlockDigestMismatch {
-            actual: LabelledDigest::from_digest(declared.algorithm().clone(), &digest),
-            declared,
-        }),
-        Some(_) => Ok(declared),
-    }
+    Ok(declared)
 }
 
 #[cfg(test)]
