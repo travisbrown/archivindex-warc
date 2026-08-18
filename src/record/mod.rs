@@ -26,12 +26,14 @@ mod digest;
 pub mod extension;
 pub mod fields;
 pub mod header;
+pub mod payload;
 pub mod record_type;
 
 use std::borrow::Cow;
 use std::net::IpAddr;
 
 use fluent_uri::Uri;
+use fluent_uri::component::Scheme;
 
 use crate::parse::untyped::name::{Field, HeaderName};
 use crate::parse::untyped::value::{HeaderValue, ValueForm};
@@ -703,6 +705,37 @@ impl<E: Extension> Record<E> {
         }
     }
 
+    /// Return this record's payload as defined by WARC 1.1 clause 5.10.
+    ///
+    /// A `resource` or `conversion` payload is the complete block. For an HTTP `response` or
+    /// `request`, it is the entity-body extracted by [`payload::entity_body`].
+    ///
+    /// Returns `None` for records without a locally determinable payload, including revisits,
+    /// continuations, and non-HTTP captures.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an HTTP block cannot be parsed far enough to extract its entity-body.
+    pub fn payload_bytes(&self) -> Result<Option<Cow<'_, [u8]>>, payload::Error> {
+        match self {
+            Self::Resource { body, .. } | Self::Conversion { body, .. } => {
+                Ok(Some(Cow::Borrowed(body)))
+            }
+            Self::Response { body, .. } | Self::Request { body, .. } => {
+                if self.holds_http_message() {
+                    payload::entity_body(body).map(Some)
+                } else {
+                    Ok(None)
+                }
+            }
+            Self::Warcinfo { .. }
+            | Self::Metadata { .. }
+            | Self::Revisit { .. }
+            | Self::Continuation { .. }
+            | Self::Other { .. } => Ok(None),
+        }
+    }
+
     /// Check the declared block digest and return its failure, if any.
     ///
     /// Returns `None` for a valid digest, no digest, or an unsupported algorithm. The current block
@@ -712,6 +745,23 @@ impl<E: Extension> Record<E> {
         let declared = self.core().block_digest.as_ref()?;
 
         verify_block_digest(declared, &self.body_bytes()).err()
+    }
+
+    /// Whether this record declares an HTTP message as its block.
+    ///
+    /// A missing media type is accepted when the target URI uses HTTP or HTTPS.
+    fn holds_http_message(&self) -> bool {
+        const HTTP: &Scheme = Scheme::new_or_panic("http");
+        const HTTPS: &Scheme = Scheme::new_or_panic("https");
+
+        self.target_uri().is_some_and(|target_uri| {
+            let scheme = target_uri.scheme();
+            scheme == HTTP || scheme == HTTPS
+        }) && self
+            .core()
+            .content_type
+            .as_ref()
+            .is_none_or(|content_type| content_type.is("application", "http"))
     }
 
     /// Consume this record and render it as a raw record.
@@ -1824,6 +1874,9 @@ mod tests {
         type ContinuationFields = ();
     }
 
+    /// The HTTP response used by the payload and digest tests.
+    const RESPONSE_BLOCK: &[u8] = b"HTTP/1.1 200 OK\r\n\r\nhello";
+
     #[test]
     fn a_response_lifts_its_fields() {
         let record = lift_grammar(grammar_of(
@@ -1832,11 +1885,14 @@ mod tests {
             &[
                 ("WARC-Target-URI", "http://example.com/"),
                 ("WARC-IP-Address", "93.184.216.34"),
-                ("WARC-Payload-Digest", "sha1:AAAA"),
+                (
+                    "WARC-Payload-Digest",
+                    "sha1:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N",
+                ),
                 ("Content-Type", "application/http; msgtype=response"),
                 ("WARC-Concurrent-To", "<urn:uuid:request>"),
             ],
-            b"hello",
+            RESPONSE_BLOCK,
         ))
         .expect("liftable record");
 
@@ -1850,12 +1906,12 @@ mod tests {
                 .payload
                 .payload_digest
                 .map(|digest| digest.to_string()),
-            Some("sha1:AAAA".to_owned())
+            Some("sha1:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N".to_owned())
         );
         assert_eq!(header.concurrent_to, ["urn:uuid:request"]);
         assert_eq!(header.core.record_id, RECORD_ID);
         assert!(header.core.unrecognized.is_empty());
-        assert_eq!(body, b"hello");
+        assert_eq!(body, RESPONSE_BLOCK);
     }
 
     const WARCINFO_BLOCK: &[u8] = b"SOFTWARE:  archivindex/0.1.0\r\nisPartOf: a-crawl\r\n";
@@ -2230,6 +2286,43 @@ mod tests {
                 written(&raw, "WARC-Block-Digest").as_deref(),
                 Some(value),
                 "{value}"
+            );
+        }
+    }
+
+    /// [`RESPONSE_BLOCK`] with a chunked entity-body.
+    const CHUNKED_RESPONSE_BLOCK: &[u8] =
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+
+    /// Build a record with an HTTP target and the supplied fields and body.
+    fn payload_record(record_type: &str, lines: &[(&str, &str)], body: &[u8]) -> Record {
+        let mut all = vec![("WARC-Target-URI", "http://example.com/")];
+        all.extend_from_slice(lines);
+
+        lift_grammar(grammar_of(WarcVersion::V1_1, record_type, &all, body))
+            .expect("liftable record")
+    }
+
+    /// Payload extraction follows WARC rules for each record type.
+    #[test]
+    fn the_payload_of_a_record_is_what_the_standard_says_it_is() {
+        for (record_type, block, payload) in [
+            ("response", RESPONSE_BLOCK, Some(DIGESTED_BLOCK)),
+            ("response", CHUNKED_RESPONSE_BLOCK, Some(DIGESTED_BLOCK)),
+            ("request", RESPONSE_BLOCK, Some(DIGESTED_BLOCK)),
+            ("resource", DIGESTED_BLOCK, Some(DIGESTED_BLOCK)),
+            ("conversion", DIGESTED_BLOCK, Some(DIGESTED_BLOCK)),
+            ("metadata", DIGESTED_BLOCK, None),
+        ] {
+            let record = payload_record(record_type, &[], block);
+
+            assert_eq!(
+                record
+                    .payload_bytes()
+                    .expect("a block framing a payload")
+                    .as_deref(),
+                payload,
+                "{record_type}"
             );
         }
     }
