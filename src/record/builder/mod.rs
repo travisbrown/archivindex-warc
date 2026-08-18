@@ -241,8 +241,10 @@ macro_rules! shared_setters {
     (block, $($rest:tt)*) => {
         /// `Content-Length`: declare the expected length of the content block.
         ///
-        /// Attaching a block of another length returns [`BlockError::ContentLengthMismatch`].
-        /// Building only a header stores the declaration without checking it against a block.
+        /// The declaration is checked against the block when one is attached, so it is
+        /// [`body`](Self::body) that reports [`BlockError::ContentLengthMismatch`] when the
+        /// block is of another length. Building only a header stores the declaration without
+        /// checking it against a block.
         #[must_use]
         pub const fn content_length(mut self, content_length: u64) -> Self {
             self.header.core.content_length = Some(content_length);
