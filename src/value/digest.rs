@@ -284,12 +284,12 @@ impl LabelledDigest {
 
         // Both halves are checked above to hold only ASCII, so neither conversion can fail.
         let label = from_ascii(algorithm);
-        let algorithm = DigestAlgorithm::from_label(&label);
+        let algorithm = DigestAlgorithm::from_label(label);
 
         Ok(Self {
-            label_as_read: (label.as_ref() != algorithm.label()).then_some(label),
+            label_as_read: (label != algorithm.label()).then(|| label.into()),
             algorithm,
-            value: from_ascii(digest),
+            value: from_ascii(digest).into(),
         })
     }
 

@@ -46,11 +46,9 @@ pub enum Error {
     Text(#[from] TextError),
 }
 
-/// Convert bytes already validated as ASCII into a string.
-fn from_ascii(bytes: &[u8]) -> Box<str> {
-    std::str::from_utf8(bytes)
-        .expect("invariant violation: grammar admitted a non-ASCII byte")
-        .into()
+/// Read bytes already validated as ASCII as a string.
+fn from_ascii(bytes: &[u8]) -> &str {
+    std::str::from_utf8(bytes).expect("invariant violation: grammar admitted a non-ASCII byte")
 }
 
 #[cfg(test)]
