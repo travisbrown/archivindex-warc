@@ -4,7 +4,7 @@ use std::process::Output;
 use tempfile::tempdir;
 
 use crate::install::ToolResolver;
-use crate::model::ValidationResult;
+use crate::model::{ValidationResult, plural};
 
 pub fn run_warchaeology(file: &Path, resolver: &ToolResolver) -> ValidationResult {
     const NAME: &str = "Warchaeology";
@@ -137,11 +137,6 @@ fn exit_summary(output: &Output) -> String {
         .code()
         .map(|code| format!("validator exited with status {code}"))
         .unwrap_or_else(|| "validator was terminated by a signal".to_owned())
-}
-
-fn plural(count: usize, noun: &str) -> String {
-    let suffix = if count == 1 { "" } else { "s" };
-    format!("{count} {noun}{suffix}")
 }
 
 fn summary_count(count: Option<usize>, noun: &str) -> String {

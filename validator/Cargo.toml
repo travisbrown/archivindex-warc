@@ -9,6 +9,8 @@ publish = false
 
 [dependencies]
 anyhow = "1"
+# The crate under test, read from its own source tree rather than from a published release.
+archivindex-warc = { path = ".." }
 # warcat 0.3.4 enables blake3's experimental digest traits, which became incompatible with its
 # digest 0.10 dependency in later blake3 releases.
 blake3 = { version = "=1.5.4", features = ["pure", "traits-preview"] }
