@@ -58,14 +58,13 @@ fn describe_difference(source: &[u8], written: &[u8]) -> Option<String> {
     ))
 }
 
-/// The fixtures a layer cannot read, as `(layer, set, name)`, with the reason each is here.
+/// Fixtures that cannot be round-tripped, as `(layer, set, name)`.
 ///
-/// A grammar record refuses a value the rule its name selects does not admit, which one of the
-/// warcio fixtures was collected for: it writes a space into a `WARC-Target-URI`, and a space is
-/// not a character any URI may spell. Nothing a grammar record refuses can reach the semantic
-/// layer, so that fixture is listed for both. Lifting refuses more: a field the record's type
-/// does not permit, and a field named for the first time in WARC 1.1 under a record declaring
-/// WARC 1.0, which is what stops the other fixtures listed there.
+/// The listed fixtures contain invalid URI syntax, fields forbidden for their record type, or
+/// fields unavailable in their declared WARC version.
+///
+/// The final two declare payload digests that this crate cannot render: one is malformed, and the
+/// other covers a chunked message body instead of its entity-body.
 const UNREADABLE: &[(&str, &str, &str)] = &[
     (
         "grammar records",
@@ -83,6 +82,12 @@ const UNREADABLE: &[(&str, &str, &str)] = &[
     ("semantic records", "pywb", "iana.warc.gz"),
     ("semantic records", "warcio", "example.warc"),
     ("semantic records", "warcio", "example.warc.gz"),
+    ("semantic records", "warcio", "example-digest.warc"),
+    (
+        "semantic records",
+        "warcio",
+        "example-iana.org-chunked.warc",
+    ),
 ];
 
 /// Assert that reading and rewriting a fixture reproduces its uncompressed bytes exactly, at
@@ -101,7 +106,7 @@ fn assert_roundtrip_is_faithful(set: &str, name: &str) {
             Ok(written) => {
                 assert!(
                     !listed,
-                    "{set}/{name}: now reads as {layer}, so drop it from UNREADABLE"
+                    "{set}/{name}: now round trips as {layer}, so drop it from UNREADABLE"
                 );
                 if let Some(difference) = describe_difference(&source, &written) {
                     panic!("{set}/{name} as {layer}: {difference}");
@@ -118,7 +123,7 @@ fn assert_roundtrip_is_faithful(set: &str, name: &str) {
     match roundtrip_semantic_meaning(&source) {
         Ok(()) => assert!(
             !listed,
-            "{set}/{name}: now reads as semantic records, so drop it from UNREADABLE"
+            "{set}/{name}: now round trips as semantic records, so drop it from UNREADABLE"
         ),
         Err(error) => assert!(listed, "{set}/{name} as semantic records: {error}"),
     }
