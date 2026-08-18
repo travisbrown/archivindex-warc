@@ -13,8 +13,11 @@
 //!
 //! Semantic records preserve values, but normalize header order, field spelling, white space, and
 //! URI brackets when rendered. A declared `Content-Length` is checked whenever a header and body
-//! are paired. A declared `WARC-Block-Digest` is checked when the record is rendered, and a record
-//! that declares none is given one there.
+//! are paired, and again when the record is rendered.
+//!
+//! A declared `WARC-Block-Digest` is preserved when a record is read. Use
+//! [`Record::incorrect_block_digest`] to inspect it. Rendering validates a declared digest and
+//! adds one where a record declares none.
 //!
 //! Use [`builder`] to create new records.
 
@@ -34,7 +37,7 @@ use crate::parse::untyped::name::{Field, HeaderName};
 use crate::parse::untyped::value::{HeaderValue, ValueForm};
 use crate::parse::{raw, untyped};
 use crate::parsing::{is_token, unfold};
-use crate::record::digest::check_block_digest;
+use crate::record::digest::{check_block_digest, verify_block_digest};
 use crate::record::extension::{
     Extension, ExtensionFields, ExtensionRecordType, NoExtension, Unclaimed,
 };
@@ -53,7 +56,8 @@ use crate::version::WarcVersion;
 /// The ways a header block and its content block can fail to go together.
 ///
 /// [`Error::Block`] wraps these failures while reading, and [`RenderError::Block`] wraps them while
-/// rendering.
+/// rendering. Digest errors are reported during rendering or by the digest inspection methods on
+/// [`Record`].
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum BlockError {
     /// The record declares a `Content-Length` that is not the length of the block it carries.
@@ -64,9 +68,7 @@ pub enum BlockError {
         /// The length of the block it carries.
         actual: u64,
     },
-    /// The record's block digest names an algorithm this crate computes, but its value is not one
-    /// that algorithm can have produced: it is written in an encoding this crate cannot tell, or
-    /// it decodes to the wrong number of octets.
+    /// The block digest is invalid for its declared algorithm, which this crate computes.
     #[error("The block digest `{0}` is not a digest the algorithm it names can have produced.")]
     MalformedBlockDigest(LabelledDigest),
     /// The record's block digest does not match the block it carries.
@@ -701,6 +703,17 @@ impl<E: Extension> Record<E> {
         }
     }
 
+    /// Check the declared block digest and return its failure, if any.
+    ///
+    /// Returns `None` for a valid digest, no digest, or an unsupported algorithm. The current block
+    /// is digested on every call.
+    #[must_use]
+    pub fn incorrect_block_digest(&self) -> Option<BlockError> {
+        let declared = self.core().block_digest.as_ref()?;
+
+        verify_block_digest(declared, &self.body_bytes()).err()
+    }
+
     /// Consume this record and render it as a raw record.
     ///
     /// Fields use their conventional order and standard spelling. Unrecognized fields preserve
@@ -864,9 +877,9 @@ impl<E: Extension> RecordHeader<E> {
     /// A declared `Content-Length` must match the block. The resulting record stores its actual
     /// length.
     ///
-    /// A declared `WARC-Block-Digest` is kept as read and is not checked here, since an archive
-    /// holding a record whose digest is wrong is an archive this crate still reads. The digest is
-    /// checked when the record is rendered.
+    /// A declared `WARC-Block-Digest` is preserved without validation. It can be inspected on the
+    /// resulting [`Record`] and is validated when the record is rendered, which also adds a digest
+    /// where none is declared.
     ///
     /// # Errors
     ///
@@ -1640,9 +1653,9 @@ mod tests {
             .map(|value| String::from_utf8_lossy(value).trim().to_owned())
     }
 
-    /// The record as rendering writes it, which is what a round trip returns.
+    /// Update a record with the digests rendering would add.
     ///
-    /// Rendering adds a block digest to a record that declares none.
+    /// Used when comparing a value before and after a rendering round trip.
     pub(super) fn as_rendered<E: Extension>(mut record: Record<E>) -> Record<E> {
         if record.core().block_digest.is_none() {
             let digest = crate::record::digest::added_block_digest(&record.body_bytes());
@@ -2063,10 +2076,9 @@ mod tests {
         );
     }
 
-    /// A response record over the block the digest tests are written against, declaring the
-    /// given block digest.
-    fn declaring_digest(value: &str) -> Record {
-        lift_grammar(grammar_of(
+    /// Build an untyped response with the given block digest.
+    fn grammar_declaring_digest(value: &str) -> untyped::Record {
+        grammar_of(
             WarcVersion::V1_1,
             "response",
             &[
@@ -2074,12 +2086,20 @@ mod tests {
                 ("WARC-Block-Digest", value),
             ],
             DIGESTED_BLOCK,
-        ))
-        .expect("liftable record")
+        )
     }
 
-    /// A record that declares no block digest is given a SHA-256 one when it is written, since a
-    /// digest can be computed from any block.
+    /// Build a semantic response with the given block digest.
+    fn declaring_digest(value: &str) -> Record {
+        lift_grammar(grammar_declaring_digest(value)).expect("liftable record")
+    }
+
+    /// Parse a digest used by these tests.
+    fn digest(value: &str) -> LabelledDigest {
+        LabelledDigest::parse(value.as_bytes()).expect("a labelled digest")
+    }
+
+    /// Rendering adds a SHA-256 block digest when none is declared.
     #[test]
     fn a_record_declaring_no_block_digest_is_given_one() {
         let raw = lift_grammar(grammar_of(
@@ -2098,8 +2118,7 @@ mod tests {
         );
     }
 
-    /// A declared digest is checked against the block under the algorithm it names, whatever
-    /// encoding, case, and label it was written with, and is written back as it was read.
+    /// Valid block digests are checked in their declared format and preserved as read.
     #[test]
     fn a_block_digest_the_block_has_is_written_as_read() {
         for value in [
@@ -2122,31 +2141,28 @@ mod tests {
         }
     }
 
-    /// A digest naming an algorithm this crate computes, but written as nothing that algorithm
-    /// produces, is not written: it says something about the block that cannot be true.
+    /// A malformed value is reported without preventing the record from being read.
     #[test]
-    fn a_block_digest_its_algorithm_cannot_have_produced_is_not_written() {
+    fn a_block_digest_its_algorithm_cannot_have_produced_is_reported() {
         for value in [
-            // A value in no encoding this crate reads, one of the wrong length, and one whose
-            // encoding is a digest of another algorithm's length.
+            // Invalid encoding, wrong length, and the length of another algorithm.
             "sha1:not-a-digest",
             "sha1:aaf4c61d",
             "md5:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N",
         ] {
+            let record = declaring_digest(value);
+
             assert_eq!(
-                declaring_digest(value).into_raw(),
-                Err(RenderError::Block(BlockError::MalformedBlockDigest(
-                    LabelledDigest::parse(value.as_bytes()).expect("a labelled digest")
-                ))),
+                record.incorrect_block_digest(),
+                Some(BlockError::MalformedBlockDigest(digest(value))),
                 "{value}"
             );
         }
     }
 
-    /// A digest of the block under another algorithm, or of another block, is the digest of
-    /// something other than what the record carries, and is not written.
+    /// A mismatched digest reports both the declared and computed values.
     #[test]
-    fn a_block_digest_the_block_does_not_have_is_not_written() {
+    fn a_block_digest_the_block_does_not_have_is_reported() {
         for (value, actual) in [
             (
                 "sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ",
@@ -2157,19 +2173,52 @@ mod tests {
                 "md5:5d41402abc4b2a76b9719d911017c592",
             ),
         ] {
+            let record = declaring_digest(value);
+
             assert_eq!(
-                declaring_digest(value).into_raw(),
-                Err(RenderError::Block(BlockError::BlockDigestMismatch {
-                    declared: LabelledDigest::parse(value.as_bytes()).expect("a labelled digest"),
-                    actual: LabelledDigest::parse(actual.as_bytes()).expect("a labelled digest"),
-                })),
+                record.incorrect_block_digest(),
+                Some(BlockError::BlockDigestMismatch {
+                    declared: digest(value),
+                    actual: digest(actual),
+                }),
                 "{value}"
             );
         }
     }
 
-    /// A digest under an algorithm this crate does not compute is written as read, whatever it
-    /// says: nothing here can tell whether it is the digest of the block.
+    /// Invalid declared digests are readable but prevent rendering.
+    #[test]
+    fn a_record_declaring_a_digest_it_does_not_have_is_read_and_not_written() {
+        // SHA-1 of an empty block.
+        let of_nothing = "sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ";
+        let record = declaring_digest(of_nothing);
+
+        assert_eq!(record.body_bytes().as_ref(), DIGESTED_BLOCK);
+        assert_eq!(
+            record.into_raw(),
+            Err(RenderError::Block(BlockError::BlockDigestMismatch {
+                declared: digest(of_nothing),
+                actual: digest("sha1:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N"),
+            }))
+        );
+    }
+
+    /// Valid, absent, and unsupported digests do not report a failure.
+    #[test]
+    fn a_record_declaring_a_digest_it_has_reports_nothing() {
+        for value in [
+            "sha1:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N",
+            "md5:5d41402abc4b2a76b9719d911017c592",
+            "xxh3:1c330fb2d66be8b5",
+            "blake3:not-a-digest",
+        ] {
+            let record = declaring_digest(value);
+
+            assert_eq!(record.incorrect_block_digest(), None, "{value}");
+        }
+    }
+
+    /// Digests using unsupported algorithms are preserved without validation.
     #[test]
     fn a_block_digest_under_an_unknown_algorithm_is_not_checked() {
         for value in ["xxh3:1c330fb2d66be8b5", "blake3:not-a-digest"] {

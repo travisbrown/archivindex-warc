@@ -921,7 +921,7 @@ impl<E: Extension> Record<E> {
 mod tests {
     use super::*;
     use crate::parse::{raw, untyped};
-    use crate::record::digest::added_block_digest;
+    use crate::record::digest::{added_block_digest, sha_1_block_digest};
     use crate::record::extension::{ExtensionRecordType, Never};
     use crate::record::tests::as_rendered;
 
@@ -938,8 +938,7 @@ mod tests {
         WarcDate::parse(DATE, WarcVersion::V1_1).expect("a date at the second precision")
     }
 
-    /// A block whose digest a fixture declares, which a record is written with only when the
-    /// digest it declares is the digest of the block it carries.
+    /// The HTTP block used by the digest tests.
     const RESPONSE_BLOCK: &str = "HTTP/1.1 200 OK\r\n\r\nhello";
 
     fn digest() -> LabelledDigest {
@@ -1094,8 +1093,7 @@ mod tests {
         Ok(())
     }
 
-    /// A record given an already parsed body is digested over the block those fields are
-    /// written as.
+    /// Parsed fields are digested in their rendered form.
     #[test]
     fn a_fields_body_is_digested_as_it_is_written() -> Result<(), BlockError> {
         let fields = fields::Body::parse(b"software: archivindex-warc\r\n")?;
@@ -1113,7 +1111,7 @@ mod tests {
         Ok(())
     }
 
-    /// A digest the caller gave is the digest written, whatever the builder was told to compute.
+    /// A caller-provided digest takes precedence over the SHA-1 option.
     #[test]
     fn a_digest_the_caller_gave_outranks_the_sha_1_option() -> Result<(), BlockError> {
         let record: Record = Record::response(date(), uri(TARGET_URI))
@@ -1129,22 +1127,22 @@ mod tests {
         Ok(())
     }
 
-    /// A builder ended with `build` builds the header block alone, which says what the record
-    /// ended with `body` says, since the record is that same header block around a block.
+    /// `build` returns the same header that `body` uses to create a record.
     #[test]
     fn a_builder_ended_with_build_builds_the_header_block_alone() -> Result<(), BlockError> {
+        // A block a record is given must have the digest the record declares, so the digest here
+        // is the one the block below has.
+        let block_digest = sha_1_block_digest(b"hello");
         // The two are built separately, so the one field a builder would otherwise settle for
         // itself is settled here, leaving nothing that could differ but what is being tested.
         let header: RecordHeader = Record::response(date(), uri(TARGET_URI))
             .record_id(uri(RECORD_ID))
-            .block_digest(digest())
-            // A record declares the length of the block it was given, so a header block saying
-            // what that record says is one told the same length.
+            .block_digest(block_digest.clone())
             .content_length(5)
             .build();
         let record: Record = Record::response(date(), uri(TARGET_URI))
             .record_id(uri(RECORD_ID))
-            .block_digest(digest())
+            .block_digest(block_digest)
             .body("hello")?;
 
         assert_eq!(header.type_name(), "response");

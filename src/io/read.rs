@@ -56,8 +56,7 @@ mod error_tests {
     use super::Error;
     use crate::parse::{raw, untyped};
 
-    /// What a stream can do wrong says what it is here, and what a layer being read for found
-    /// is reported as that layer reports it, since those variants are transparent.
+    /// Stream errors use local messages; transparent variants use their source messages.
     #[test]
     fn each_error_states_its_failure() {
         let expectations = [
@@ -1452,8 +1451,8 @@ mod filter_tests {
 #[cfg(test)]
 mod iter_records_tests {
     use super::{Error, WarcReader};
-    use crate::record::Record;
     use crate::record::extension::{Extension, ExtensionRecordType, Never, NoExtension};
+    use crate::record::{BlockError, Record};
 
     /// A record of a type the standard does not name, which only an extension can lift.
     const SITEMAP_RECORD: &[u8] = b"\
@@ -1556,6 +1555,51 @@ mod iter_records_tests {
         assert!(matches!(records.next(), Some(Err(Error::Record(_)))));
         assert_eq!(records.next().unwrap().unwrap().type_name(), "resource");
         assert!(records.next().is_none());
+    }
+
+    /// Invalid digests are preserved at every reading layer and reported by the semantic record.
+    #[test]
+    fn reads_a_block_digest_the_block_does_not_have() {
+        // The declared value is SHA-1 of an empty block.
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: resource\r\n\
+            WARC-Record-ID: <urn:test:digest:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            WARC-Target-URI: https://example.com/\r\n\
+            WARC-Block-Digest: sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ\r\n\
+            Content-Length: 5\r\n\
+            \r\n\
+            hello\r\n\
+            \r\n\
+        ";
+
+        assert!(
+            WarcReader::new(&raw[..])
+                .iter_untyped_records()
+                .next()
+                .unwrap()
+                .is_ok()
+        );
+
+        for read in [
+            WarcReader::new(&raw[..])
+                .iter_records::<NoExtension>()
+                .next(),
+            WarcReader::new(&raw[..])
+                .filter_records::<NoExtension, _>(|_| true)
+                .next(),
+        ] {
+            let record = read.expect("a record").expect("a readable record");
+
+            assert!(
+                matches!(
+                    record.incorrect_block_digest(),
+                    Some(BlockError::BlockDigestMismatch { .. })
+                ),
+                "{record:?}"
+            );
+        }
     }
 
     /// A record of a type only an extension names is refused without the extension and lifts with
