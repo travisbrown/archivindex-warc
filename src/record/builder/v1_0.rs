@@ -190,7 +190,7 @@ pub fn other<E: Extension>(date: impl Into<WarcDate>, extension: E::Types) -> Ot
 mod tests {
     use super::*;
     use crate::record::builder::tests::{OTHER_ID, TARGET_URI, date, round_trip, uri, written};
-    use crate::record::builder::v1_0;
+    use crate::record::builder::{SOFTWARE, specification_uri, v1_0};
     use crate::record::tests::as_rendered;
 
     /// Every entry point in [`v1_0`] declares WARC 1.0, which is the whole of what the module
@@ -200,11 +200,9 @@ mod tests {
         const TARGET: &str = "a well-formed target URI";
 
         let headers: Vec<RecordHeader> = vec![
-            v1_0::warcinfo(date()).build(),
             v1_0::response(TARGET_URI, date()).expect(TARGET).build(),
             v1_0::resource(TARGET_URI, date()).expect(TARGET).build(),
             v1_0::request(TARGET_URI, date()).expect(TARGET).build(),
-            v1_0::metadata(date()).build(),
             v1_0::revisit(
                 TARGET_URI,
                 date(),
@@ -220,7 +218,35 @@ mod tests {
             assert_eq!(header.version(), WarcVersion::V1_0);
         }
 
+        // The two types whose block is `warc-fields` are built as records rather than headers.
+        assert_eq!(
+            v1_0::warcinfo::<NoExtension>(date()).build().version(),
+            WarcVersion::V1_0
+        );
+        assert_eq!(
+            v1_0::metadata::<NoExtension>(date()).build().version(),
+            WarcVersion::V1_0
+        );
+
         Ok(())
+    }
+
+    /// A `warcinfo` record built for WARC 1.0 says so in the body it opens with, since the
+    /// fields that name the standard are the ones the file's version selects.
+    #[test]
+    fn a_warcinfo_built_for_warc_1_0_describes_warc_1_0() {
+        let record: Record = v1_0::warcinfo(date()).build();
+
+        assert_eq!(
+            String::from_utf8_lossy(&record.body_bytes()),
+            format!(
+                "software: {SOFTWARE}\r\n\
+                 format: WARC file version 1.0\r\n\
+                 conformsTo: {}\r\n",
+                specification_uri(WarcVersion::V1_0)
+            )
+        );
+        assert_eq!(round_trip(&record), as_rendered(record.clone()));
     }
 
     /// A `revisit` record built for WARC 1.0 carries no field WARC 1.0 does not define, so it
