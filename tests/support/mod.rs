@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::parse::raw::Record as RawRecord;
+use archivindex_warc::parse::untyped::Record as UntypedRecord;
+use archivindex_warc::record::Record;
+use archivindex_warc::record::extension::NoExtension;
+use archivindex_warc::value::{DigestAlgorithm, LabelledDigest};
 use data_encoding::{BASE32_NOPAD, BASE64, BASE64URL, HEXLOWER};
 use flate2::bufread::{GzDecoder, MultiGzDecoder};
 use sha1::{Digest, Sha1};
@@ -76,6 +80,60 @@ pub fn roundtrip_records(source: &[u8]) -> Result<Vec<u8>, String> {
     }
 
     Ok(writer.into_inner())
+}
+
+/// Read every record of an uncompressed archive, lift it, render it back, and lift the
+/// rendering again, requiring the second lift to equal the first.
+///
+/// The semantic layer holds what a record means rather than how it was written, and renders a
+/// block afresh from that meaning, so its round trip is not a comparison of bytes: a record read
+/// from a block whose fields are in an unusual order, or whose URIs arrived bracketed, is written
+/// back in the conventional order under this crate's own spelling. What has to hold is that the
+/// rendering says what the record it was rendered from said, which is what reading it again and
+/// comparing the two lifts asks.
+///
+/// A record that declares no block digest is given one when it is written, so the record compared
+/// against here is the one that declares the digest of its block.
+///
+/// This can only be asked of an archive every record of which lifts, so the caller checks it only
+/// where the lift is expected to succeed.
+pub fn roundtrip_semantic_meaning(source: &[u8]) -> Result<(), String> {
+    for (index, record) in WarcReader::new(source).iter_untyped_records().enumerate() {
+        let grammar = record.map_err(|error| error.to_string())?;
+        let mut lifted =
+            Record::<NoExtension>::try_from(grammar).map_err(|error| error.to_string())?;
+        if lifted.core().block_digest.is_none() {
+            let digest = LabelledDigest::from_digest(
+                DigestAlgorithm::Sha256,
+                &sha2::Sha256::digest(lifted.body_bytes()),
+            );
+            lifted.core_mut().block_digest = Some(digest);
+        }
+        let rendered = lifted
+            .clone()
+            .into_raw()
+            .map_err(|error| error.to_string())?;
+        let relifted = UntypedRecord::try_from(rendered)
+            .map_err(|error| error.to_string())
+            .and_then(|grammar| {
+                Record::<NoExtension>::try_from(grammar).map_err(|error| error.to_string())
+            })
+            .map_err(|error| {
+                format!(
+                    "record {} does not lift from its own rendering: {error}",
+                    index + 1
+                )
+            })?;
+
+        if relifted != lifted {
+            return Err(format!(
+                "record {} says something else after rendering\n    read: {lifted:?}\n  reread: {relifted:?}",
+                index + 1
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
