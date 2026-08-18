@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let warcinfo = record(
         "warcinfo",
         &[("Content-Type", "application/warc-fields")],
-        b"software: archivindex-warc/0.4.0\r\n".to_vec(),
+        b"software: archivindex-warc/0.1.0\r\n".to_vec(),
     );
     let resource = record(
         "resource",
