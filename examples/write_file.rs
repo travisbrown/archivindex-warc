@@ -7,10 +7,10 @@
 
 mod common;
 
-use archivindex_warc::fields;
-use archivindex_warc::fields::warcinfo::WarcinfoField;
 use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::parse::raw::RecordHeader;
+use archivindex_warc::record::fields;
+use archivindex_warc::record::fields::warcinfo::WarcinfoField;
 use archivindex_warc::version::WarcVersion;
 use chrono::{SecondsFormat, Utc};
 use uuid::Uuid;

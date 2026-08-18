@@ -148,15 +148,14 @@ impl DcmiTerm {
 
     /// The property's URI in the DCMI Metadata Terms namespace.
     ///
-    /// A term for which [`is_element`](Self::is_element) holds has a second URI, built the same
-    /// way from [`ELEMENTS_NAMESPACE`].
+    /// A term for which [`is_element`](Self::is_element) holds has a second URI, built the same way
+    /// from [`ELEMENTS_NAMESPACE`].
     #[must_use]
     pub fn uri(&self) -> String {
         format!("{TERMS_NAMESPACE}{}", self.name())
     }
 
-    /// Whether this property is one of the 15 that make up the Dublin Core Metadata Element
-    /// Set, the older and much more widely used vocabulary that DCMI Metadata Terms subsumes.
+    /// Whether this property belongs to the 15-term Dublin Core Metadata Element Set.
     #[must_use]
     pub const fn is_element(&self) -> bool {
         matches!(
@@ -282,8 +281,8 @@ mod tests {
         assert_eq!(names.len(), distinct);
     }
 
-    /// Field names are not case-sensitive, so a term is found however it was spelled, and it
-    /// comes back in the canonical spelling.
+    /// Field names are not case-sensitive, so a term is found however it was spelled, and it comes
+    /// back in the canonical spelling.
     #[test]
     fn names_are_matched_case_insensitively() {
         for name in ["isPartOf", "ispartof", "ISPARTOF", "IsPartOf"] {

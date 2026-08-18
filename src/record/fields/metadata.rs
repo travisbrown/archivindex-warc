@@ -1,11 +1,11 @@
 //! The body of a `metadata` record, read as `application/warc-fields`.
 //!
-//! A `metadata` record describes or accompanies a harvested resource. An
-//! `application/warc-fields` body may use any DCMI term, three fields defined for metadata, and
-//! extension fields. Every field is optional.
+//! A `metadata` record describes or accompanies a harvested resource. An `application/warc-fields`
+//! body may use any DCMI term, three fields defined for metadata, and extension fields. Every field
+//! is optional.
 //!
 //! ```
-//! use archivindex_warc::fields::metadata::MetadataBody;
+//! use archivindex_warc::record::fields::metadata::MetadataBody;
 //!
 //! let body = MetadataBody::parse(
 //!     b"via: http://www.archive.org/\r\n\
@@ -16,30 +16,29 @@
 //! assert_eq!(body.via(), Some("http://www.archive.org/"));
 //! assert_eq!(body.hops_from_seed(), Some("E"));
 //! assert_eq!(body.fetch_time_ms(), Some(565));
-//! # Ok::<(), archivindex_warc::fields::Error>(())
+//! # Ok::<(), archivindex_warc::record::fields::Error>(())
 //! ```
 
 use std::fmt::Display;
 use std::str::FromStr;
 
-use crate::fields::dcmi::DcmiTerm;
-use crate::fields::{Body, Field};
+use crate::record::fields::dcmi::DcmiTerm;
+use crate::record::fields::{Body, Field};
 
 /// A field of a `metadata` record's body.
 ///
-/// The three metadata fields come first. Any DCMI metadata term is a
-/// [`Dcmi`](Self::Dcmi), and anything else is an [`Other`](Self::Other).
+/// The three metadata fields come first. Any DCMI metadata term is a [`Dcmi`](Self::Dcmi), and
+/// anything else is an [`Other`](Self::Other).
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum MetadataField {
     /// `via`: the referring URI from which the archived URI was discovered.
     Via,
-    /// `hopsFromSeed`: a symbolic string describing the type of each hop from a starting seed
-    /// URI to the current URI, one character per hop, empty for a seed itself. See [`Hop`] for
-    /// the characters it is usually written with and [`HopsFromSeed`] for reading a value as
-    /// them.
+    /// `hopsFromSeed`: a symbolic string describing the type of each hop from a starting seed URI
+    /// to the current URI, one character per hop, empty for a seed itself. See [`Hop`] for the
+    /// characters it is usually written with and [`HopsFromSeed`] for reading a value as them.
     HopsFromSeed,
-    /// `fetchTimeMs`: the time in milliseconds it took to collect the archived URI, starting
-    /// from the initiation of network traffic.
+    /// `fetchTimeMs`: the time in milliseconds it took to collect the archived URI, starting from
+    /// the initiation of network traffic.
     FetchTimeMs,
     /// A metadata term from the DCMI vocabulary, all of which are allowed here.
     Dcmi(DcmiTerm),
@@ -91,18 +90,18 @@ impl MetadataBody {
         self.get(&MetadataField::Via)
     }
 
-    /// The type of each hop from a starting seed URI to the archived one, one character per hop.
-    /// A seed is an empty string rather than an absent field, so this reports `Some("")` for one.
+    /// The type of each hop from a starting seed URI to the archived one, one character per hop. A
+    /// seed is an empty string rather than an absent field, so this reports `Some("")` for one.
     ///
-    /// The value is reported as it was written, since the standard fixes no alphabet for it.
-    /// Parse it as [`HopsFromSeed`] to read it as the hops it names.
+    /// The value is reported as it was written, since the standard fixes no alphabet for it. Parse
+    /// it as [`HopsFromSeed`] to read it as the hops it names.
     #[must_use]
     pub fn hops_from_seed(&self) -> Option<&str> {
         self.get(&MetadataField::HopsFromSeed)
     }
 
-    /// How long collecting the archived URI took, in milliseconds, or `None` if the field is
-    /// absent or holds something that is not a count of them.
+    /// How long collecting the archived URI took, in milliseconds, or `None` if the field is absent
+    /// or holds something that is not a count of them.
     #[must_use]
     pub fn fetch_time_ms(&self) -> Option<u64> {
         self.get(&MetadataField::FetchTimeMs)?.parse().ok()
@@ -119,8 +118,7 @@ pub enum Hop {
     Link,
     /// `E`: an embedded resource, such as `<img src=...>` or `<script src=...>`.
     Embed,
-    /// `X`: a speculative embed, a URL guessed at from the content of a script such as
-    /// `<script>var url = 'http://example.org/foo.js';</script>`.
+    /// `X`: a speculative embed, such as a resource URL inferred from script content.
     SpeculativeEmbed,
     /// `R`: a redirect, such as the `Location` of an HTTP 302 response.
     Redirect,
@@ -175,8 +173,8 @@ impl Display for Hop {
 
 /// A `hopsFromSeed` value read as the path it describes.
 ///
-/// One hop per character, nearest the seed first, so `"LLE"` is an embedded resource on a page
-/// two links from the seed. A seed URI itself is the empty path.
+/// One hop per character, nearest the seed first, so `"LLE"` is an embedded resource on a page two
+/// links from the seed. A seed URI itself is the empty path.
 #[derive(Clone, Debug, Default, Hash, Eq, PartialEq)]
 pub struct HopsFromSeed(Box<[Hop]>);
 
@@ -187,7 +185,7 @@ impl HopsFromSeed {
         &self.0
     }
 
-    /// Whether this is the empty path, which is what a seed URI itself is written with.
+    /// Whether this is an empty path, representing a seed URI.
     #[must_use]
     pub fn is_seed(&self) -> bool {
         self.0.is_empty()
@@ -230,8 +228,8 @@ pub struct UnknownHop {
 #[cfg(test)]
 mod tests {
     use super::{Hop, HopsFromSeed, MetadataBody, MetadataField, UnknownHop};
-    use crate::fields::Field;
-    use crate::fields::dcmi::DcmiTerm;
+    use crate::record::fields::Field;
+    use crate::record::fields::dcmi::DcmiTerm;
 
     /// Every hop the annotated standard recommends a character for.
     const KNOWN_HOPS: [Hop; 8] = [
@@ -249,8 +247,8 @@ mod tests {
     const ANNEX_EXAMPLE: &[u8] =
         b"via: http://www.archive.org/\r\nhopsFromSeed: E\r\nfetchTimeMs: 565\r\n";
 
-    /// Each of the example's fields is recognized as the field it names, and the block is
-    /// written back as it was read.
+    /// Each of the example's fields is recognized as the field it names, and the block is written
+    /// back as it was read.
     #[test]
     fn the_annex_example_reads_as_its_fields() {
         let body = MetadataBody::parse(ANNEX_EXAMPLE).expect("annex example");
@@ -267,8 +265,8 @@ mod tests {
         assert_eq!(body.to_string().as_bytes(), ANNEX_EXAMPLE);
     }
 
-    /// A seed is written as an empty `hopsFromSeed`, which is a value rather than an absent
-    /// field, and a fetch time that is not a count of milliseconds is reported as absent.
+    /// A seed is written as an empty `hopsFromSeed`, which is a value rather than an absent field,
+    /// and a fetch time that is not a count of milliseconds is reported as absent.
     #[test]
     fn a_seed_and_an_unreadable_fetch_time() {
         let body = MetadataBody::parse(b"hopsFromSeed:\r\nfetchTimeMs: quick\r\n").expect("seed");
@@ -308,8 +306,8 @@ mod tests {
         assert_eq!(symbols.collect::<std::collections::HashSet<_>>().len(), 8);
     }
 
-    /// A path is read as one hop per character, nearest the seed first, and is written back as
-    /// the value it was read from. A seed is the empty path.
+    /// A path is read as one hop per character, nearest the seed first, and is written back as the
+    /// value it was read from. A seed is the empty path.
     #[test]
     fn a_path_round_trips_through_its_value() {
         let path = "LLE".parse::<HopsFromSeed>().expect("a path");

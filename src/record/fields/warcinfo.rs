@@ -1,15 +1,13 @@
 //! The body of a `warcinfo` record, read as `application/warc-fields`.
 //!
-//! A `warcinfo` record opens a WARC file and describes the file or the crawl that produced it.
-//! Its body is recommended to be `application/warc-fields`, and the standard says its allowable
-//! fields "include, but are not limited to, all \[DCMI\]" terms plus seven of its own. Every field
-//! is optional and may repeat, so [`WarcinfoBody`] keeps the fields in the order they were written
-//! and lets a name appear more than once. It also retains the source block for byte-exact
-//! round-tripping, which keeps any digest over the block verifiable.
+//! A `warcinfo` record describes a WARC file or the process that produced it. Its recommended
+//! `application/warc-fields` body supports DCMI terms, seven warcinfo fields, and extension fields.
+//! [`WarcinfoBody`] preserves field order and repetition, and retains the source bytes until
+//! modified.
 //!
 //! ```
-//! use archivindex_warc::fields::dcmi::DcmiTerm;
-//! use archivindex_warc::fields::warcinfo::{WarcinfoBody, WarcinfoField};
+//! use archivindex_warc::record::fields::dcmi::DcmiTerm;
+//! use archivindex_warc::record::fields::warcinfo::{WarcinfoBody, WarcinfoField};
 //!
 //! let body = WarcinfoBody::parse(
 //!     b"software: Heritrix 1.12.0 http://crawler.archive.org\r\n\
@@ -23,43 +21,41 @@
 //!     body.get(&WarcinfoField::Dcmi(DcmiTerm::IsPartOf)),
 //!     Some("testcrawl-20050708")
 //! );
-//! # Ok::<(), archivindex_warc::fields::Error>(())
+//! # Ok::<(), archivindex_warc::record::fields::Error>(())
 //! ```
 
 use std::fmt::Display;
 use std::net::IpAddr;
 
-use crate::fields::dcmi::DcmiTerm;
-use crate::fields::{Body, Field};
+use crate::record::fields::dcmi::DcmiTerm;
+use crate::record::fields::{Body, Field};
 
 /// A field of a `warcinfo` record's body.
 ///
-/// The seven variants defined for `warcinfo` come first. Any DCMI metadata term is a
-/// [`Dcmi`](Self::Dcmi), and anything else is an [`Other`](Self::Other). The standard invites
-/// further fields, naming "technical information such as base encoding of the digests used in
-/// named fields" as an example.
+/// The seven warcinfo fields have dedicated variants. DCMI terms use [`Dcmi`](Self::Dcmi); other
+/// names use [`Other`](Self::Other).
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum WarcinfoField {
-    /// `operator`: contact information for the operator who created this WARC resource. A name
-    /// or a name and email address is recommended.
+    /// `operator`: contact information for the operator who created this WARC resource. A name or a
+    /// name and email address is recommended.
     Operator,
-    /// `software`: the software and software version used to create this WARC resource, such
-    /// as `heritrix/1.12.0`.
+    /// `software`: the software and software version used to create this WARC resource, such as
+    /// `heritrix/1.12.0`.
     Software,
-    /// `robots`: the robots policy followed by the harvester creating this WARC resource. The
-    /// value `classic` means the 1994 web robots exclusion standard rules are being obeyed.
+    /// `robots`: the robots policy followed by the harvester creating this WARC resource. The value
+    /// `classic` means the 1994 web robots exclusion standard rules are being obeyed.
     Robots,
     /// `hostname`: the hostname of the machine that created this WARC resource, such as
     /// `crawling17.archive.org`.
     Hostname,
     /// `ip`: the IP address of the machine that created this WARC resource.
     Ip,
-    /// `http-header-user-agent`: the HTTP `user-agent` header the harvester usually sent with
-    /// each request. A `request` or `metadata` record reporting a different one for a specific
-    /// request is the more reliable of the two.
+    /// `http-header-user-agent`: the HTTP `user-agent` header the harvester usually sent with each
+    /// request. A `request` or `metadata` record reporting a different one for a specific request
+    /// is the more reliable of the two.
     HttpHeaderUserAgent,
-    /// `http-header-from`: the HTTP `from` header the harvester usually sent with each
-    /// request, subject to the same caveat as the `user-agent` above.
+    /// `http-header-from`: the HTTP `from` header the harvester usually sent with each request,
+    /// subject to the same caveat as the `user-agent` above.
     HttpHeaderFrom,
     /// A metadata term from the DCMI vocabulary, all of which are allowed here.
     Dcmi(DcmiTerm),
@@ -142,8 +138,8 @@ impl WarcinfoBody {
         self.get(&WarcinfoField::Hostname)
     }
 
-    /// The IP address of the machine that created this WARC resource, or `None` if the field
-    /// is absent or holds something that is not an address.
+    /// The IP address of the machine that created this WARC resource, or `None` if the field is
+    /// absent or holds something that is not an address.
     #[must_use]
     pub fn ip(&self) -> Option<IpAddr> {
         self.get(&WarcinfoField::Ip)?.parse().ok()
@@ -165,8 +161,8 @@ impl WarcinfoBody {
 #[cfg(test)]
 mod tests {
     use super::{WarcinfoBody, WarcinfoField};
-    use crate::fields::Field;
-    use crate::fields::dcmi::DcmiTerm;
+    use crate::record::fields::Field;
+    use crate::record::fields::dcmi::DcmiTerm;
 
     /// The `warcinfo` example from Annex B.1 of the standard.
     const ANNEX_EXAMPLE: &[u8] = b"software: Heritrix 1.12.0 http://crawler.archive.org\r\n\
@@ -220,8 +216,8 @@ mod tests {
         assert_eq!(body.to_string().as_bytes(), ANNEX_EXAMPLE);
     }
 
-    /// Field names are not case-sensitive, and an unrecognized name is kept lower-cased so
-    /// that two spellings of one extension field are still the same field.
+    /// Field names are not case-sensitive, and an unrecognized name is kept lower-cased so that two
+    /// spellings of one extension field are still the same field.
     #[test]
     fn names_are_matched_case_insensitively() {
         let body = WarcinfoBody::parse(
@@ -242,8 +238,8 @@ mod tests {
         );
     }
 
-    /// Every field the standard names for a `warcinfo` record is reached by its own name, and
-    /// no two of them share one.
+    /// Every field the standard names for a `warcinfo` record is reached by its own name, and no
+    /// two of them share one.
     #[test]
     fn the_standards_own_fields_are_recognized() {
         for field in WarcinfoField::KNOWN {

@@ -15,10 +15,10 @@ pub mod warcinfo;
 use std::fmt::Display;
 use std::str;
 
-use crate::fields::dcmi::DcmiTerm;
 use crate::parsing::{is_text, is_token};
+use crate::record::fields::dcmi::DcmiTerm;
 
-/// An error returned by reading a record body written as `application/warc-fields`.
+/// Errors in reading or modifying an `application/warc-fields` body.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Error {
     /// The block contains something other than a named field at the given byte offset.
@@ -173,11 +173,11 @@ impl<F: Field> Body<F> {
         Ok(())
     }
 
-    /// The number of octets the body renders as, which is the `Content-Length` of a record
-    /// carrying it.
+    /// The number of octets the body renders as, which is the `Content-Length` of a record carrying
+    /// it.
     ///
-    /// Computed without building the block. A body still holding the block it was read from
-    /// reports that block's length.
+    /// Computed without building the block. A body still holding the block it was read from reports
+    /// that block's length.
     #[must_use]
     pub fn rendered_len(&self) -> usize {
         self.source.as_ref().map_or_else(
@@ -202,16 +202,16 @@ impl<F: Field> Body<F> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::NotANamedField`] if the block holds anything that is not a named
-    /// field, or [`Error::InvalidValue`] if a field's value is not valid UTF-8.
+    /// Returns [`Error::NotANamedField`] if the block holds anything that is not a named field, or
+    /// [`Error::InvalidValue`] if a field's value is not valid UTF-8.
     ///
     /// # Panics
     ///
     /// If a block that parsed as named fields is not UTF-8 taken as a whole, which cannot happen:
     /// every value in it has been decoded by then, and the rest of the grammar is ASCII.
     pub fn parse(block: &[u8]) -> Result<Self, Error> {
-        // Supplying the missing terminator allows an unterminated last line; the copy is made
-        // only for a block that lacks one.
+        // Supplying the missing terminator allows an unterminated last line; the copy is made only
+        // for a block that lacks one.
         let mut body = if block.last().is_some_and(|byte| *byte != b'\n') {
             let mut terminated = Vec::with_capacity(block.len() + 2);
             terminated.extend_from_slice(block);
@@ -222,10 +222,10 @@ impl<F: Field> Body<F> {
             Self::parse_terminated(block)?
         };
 
-        // Every value has just been decoded as UTF-8, everything the grammar writes around a
-        // value is ASCII, and folds are joined at a space, so a block that parsed is valid UTF-8.
-        // We keep the caller's block rather than the terminated copy, so that a body written back
-        // out is the bytes that were read.
+        // Every value has just been decoded as UTF-8, everything the grammar writes around a value
+        // is ASCII, and folds are joined at a space, so a block that parsed is valid UTF-8. We keep
+        // the caller's block rather than the terminated copy, so that a body written back out is
+        // the bytes that were read.
         let source = str::from_utf8(block)
             .expect("invariant violation: a parsed warc-fields block is not UTF-8");
         body.source = Some(source.into());
@@ -321,10 +321,10 @@ impl<F: Field> Display for Body<F> {
 mod tests {
     use super::warcinfo::{WarcinfoBody, WarcinfoField};
     use super::{Error, Field};
-    use crate::fields::dcmi::DcmiTerm;
+    use crate::record::fields::dcmi::DcmiTerm;
 
-    /// Writing a body out and reading it back gives the same body, and the rendering is the
-    /// named fields of the block in the order they were added.
+    /// Writing a body out and reading it back gives the same body, and the rendering is the named
+    /// fields of the block in the order they were added.
     #[test]
     fn a_body_round_trips_through_its_rendering() -> Result<(), Error> {
         let mut body = WarcinfoBody::new();
@@ -362,9 +362,9 @@ mod tests {
         Ok(())
     }
 
-    /// A body that has not been changed is written back out as the block it was read from,
-    /// down to the spelling of each name, the folding of each value, the space after each
-    /// colon, and the way the block ends.
+    /// A body that has not been changed is written back out as the block it was read from, down to
+    /// the spelling of each name, the folding of each value, the space after each colon, and the
+    /// way the block ends.
     #[test]
     fn an_unmodified_body_is_written_as_it_was_read() {
         for block in [
@@ -427,8 +427,8 @@ mod tests {
         assert_eq!(body.len(), 3);
     }
 
-    /// A block may close with the bare CRLF of the grammar, may stop at the last character of
-    /// its last value, and may be empty, all reading as the same fields.
+    /// A block may close with the bare CRLF of the grammar, may stop at the last character of its
+    /// last value, and may be empty, all reading as the same fields.
     #[test]
     fn a_block_may_be_terminated_any_of_the_ways_it_is_written() {
         for block in [
@@ -450,8 +450,8 @@ mod tests {
     /// dropped.
     #[test]
     fn a_block_that_is_not_named_fields_is_rejected() {
-        // The offset is where reading stopped, which is the start of the block when nothing in
-        // it was a field at all.
+        // The offset is where reading stopped, which is the start of the block when nothing in it
+        // was a field at all.
         for (block, offset) in [
             (&b"not a named field\r\n"[..], 0),
             (&b"software: one\r\nthen some prose\r\n"[..], 15),
