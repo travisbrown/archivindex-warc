@@ -12,8 +12,8 @@ use crate::Error as WarcError;
 use crate::header::{FieldName, WarcHeader};
 use crate::record_type::RecordType;
 use crate::truncated_type::TruncatedType;
+use crate::value::WarcDate;
 use crate::version::WarcVersion;
-use crate::warc_date::WarcDate;
 
 mod streaming_trait {
     use std::io::Read;
@@ -551,7 +551,9 @@ impl Record<EmptyBody> {
     }
 
     fn parse_record_date(version: WarcVersion, date: &str) -> Result<WarcDate, WarcError> {
-        WarcDate::parse(date, version)
+        WarcDate::parse(date, version).ok_or_else(|| {
+            WarcError::MalformedHeader(WarcHeader::Date, format!("not a valid WARC {version} date"))
+        })
     }
 }
 
