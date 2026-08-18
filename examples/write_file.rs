@@ -17,8 +17,8 @@ use uuid::Uuid;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut body: fields::Body<WarcinfoField> = fields::Body::new();
-    body.push(WarcinfoField::Software, "archivindex-warc/0.4.0");
-    body.push(WarcinfoField::Hostname, "localhost");
+    body.push(WarcinfoField::Software, "archivindex-warc/0.4.0")?;
+    body.push(WarcinfoField::Hostname, "localhost")?;
 
     let block = body.to_string().into_bytes();
 

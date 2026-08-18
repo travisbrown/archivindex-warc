@@ -16,6 +16,7 @@ use std::fmt::Display;
 use std::str;
 
 use crate::fields::dcmi::DcmiTerm;
+use crate::parsing::{is_text, is_token};
 
 /// An error returned by reading a record body written as `application/warc-fields`.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -31,6 +32,14 @@ pub enum Error {
     InvalidValue {
         /// The name of the field, as it was spelled in the block.
         name: String,
+    },
+    /// A field carries a name or a value that cannot be written as a valid field line.
+    #[error("The `{name}` field cannot be written: {reason}.")]
+    UnwritableField {
+        /// The field's name, as it was given.
+        name: String,
+        /// What about the field cannot be written.
+        reason: String,
     },
 }
 
@@ -79,6 +88,9 @@ pub trait Field: Sized + Clone + Eq + 'static {
 ///
 /// A parsed body keeps its source block for byte-exact round-tripping. Changing the body discards
 /// the source, after which the fields are rendered canonically. See [`source`](Self::source).
+///
+/// A field of a body is one the grammar can write back: [`push`](Self::push) refuses a name that
+/// is not a token or a value that is not `TEXT`, and a parsed block holds nothing else.
 #[derive(Clone, Debug)]
 pub struct Body<F> {
     fields: Vec<(F, String)>,
@@ -94,14 +106,6 @@ impl<F> Body<F> {
             fields: Vec::new(),
             source: None,
         }
-    }
-
-    /// Add a field to the end of the body, whether or not it already appears.
-    ///
-    /// This releases the retained source block, so the body is written canonically from here on.
-    pub fn push(&mut self, field: impl Into<F>, value: impl Into<String>) {
-        self.fields.push((field.into(), value.into()));
-        self.source = None;
     }
 
     /// The block this body was read from, exactly as it was read.
@@ -135,6 +139,40 @@ impl<F> Body<F> {
 }
 
 impl<F: Field> Body<F> {
+    /// Add a field to the end of the body, whether or not it already appears.
+    ///
+    /// This releases the retained source block, so the body is written canonically from here on.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnwritableField`] if the field's name is not a token or its value is not
+    /// `TEXT`. A value holding a line break would be read back as a field of its own, and a name
+    /// outside the token grammar would not be read back as a field at all.
+    pub fn push(&mut self, field: impl Into<F>, value: impl Into<String>) -> Result<(), Error> {
+        let field = field.into();
+        let value = value.into();
+
+        if !is_token(field.name().as_bytes()) {
+            return Err(Error::UnwritableField {
+                name: field.name().to_owned(),
+                reason: "the name is not a token".to_owned(),
+            });
+        }
+        // A value is held here with its folds already resolved, so a line break in one is a field
+        // line the caller wrote into it rather than a fold.
+        if !is_text(value.as_bytes()) {
+            return Err(Error::UnwritableField {
+                name: field.name().to_owned(),
+                reason: "the value holds a control character".to_owned(),
+            });
+        }
+
+        self.fields.push((field, value));
+        self.source = None;
+
+        Ok(())
+    }
+
     /// The number of octets the body renders as, which is the `Content-Length` of a record
     /// carrying it.
     ///
@@ -288,39 +326,40 @@ mod tests {
     /// Writing a body out and reading it back gives the same body, and the rendering is the
     /// named fields of the block in the order they were added.
     #[test]
-    fn a_body_round_trips_through_its_rendering() {
+    fn a_body_round_trips_through_its_rendering() -> Result<(), Error> {
         let mut body = WarcinfoBody::new();
         assert!(body.is_empty());
 
-        body.push(WarcinfoField::Software, "archivindex/0.1.0");
-        body.push(WarcinfoField::Dcmi(DcmiTerm::IsPartOf), "a-crawl");
-        body.push("x-custom", "a value");
+        body.push(WarcinfoField::Software, "archivindex/0.1.0")?;
+        body.push(WarcinfoField::Dcmi(DcmiTerm::IsPartOf), "a-crawl")?;
+        body.push("x-custom", "a value")?;
 
         assert_eq!(
             body.to_string(),
             "software: archivindex/0.1.0\r\nisPartOf: a-crawl\r\nx-custom: a value\r\n"
         );
-        assert_eq!(
-            WarcinfoBody::parse(body.to_string().as_bytes()).expect("round trip"),
-            body
-        );
+        assert_eq!(WarcinfoBody::parse(body.to_string().as_bytes())?, body);
+
+        Ok(())
     }
 
     /// The length a body reports is the length of what it writes, whether that is the block it
     /// was read from or the canonical rendering it falls back to once it has been changed.
     #[test]
-    fn a_body_reports_the_length_it_writes() {
+    fn a_body_reports_the_length_it_writes() -> Result<(), Error> {
         for block in [
             &b"SOFTWARE:  one\r\nIsPartOf:\r\n\ttwo\r\nX-Custom: three\r\n\r\n"[..],
             &b"software: one"[..],
             &b""[..],
         ] {
-            let mut body = WarcinfoBody::parse(block).expect("block");
+            let mut body = WarcinfoBody::parse(block)?;
             assert_eq!(body.rendered_len(), block.len(), "{block:?}");
 
-            body.push(WarcinfoField::Hostname, "crawler.example.com");
+            body.push(WarcinfoField::Hostname, "crawler.example.com")?;
             assert_eq!(body.rendered_len(), body.to_string().len(), "{block:?}");
         }
+
+        Ok(())
     }
 
     /// A body that has not been changed is written back out as the block it was read from,
@@ -344,31 +383,35 @@ mod tests {
     /// Once a body has been changed it is written canonically rather than from the block it was
     /// read from.
     #[test]
-    fn a_modified_body_is_written_canonically() {
-        let mut body = WarcinfoBody::parse(b"SOFTWARE:  one\r\nX-Custom: two\r\n").expect("block");
+    fn a_modified_body_is_written_canonically() -> Result<(), Error> {
+        let mut body = WarcinfoBody::parse(b"SOFTWARE:  one\r\nX-Custom: two\r\n")?;
         assert!(body.source().is_some());
 
-        body.push(WarcinfoField::Robots, "classic");
+        body.push(WarcinfoField::Robots, "classic")?;
 
         assert_eq!(body.source(), None);
         assert_eq!(
             body.to_string(),
             "software: one\r\nx-custom: two\r\nrobots: classic\r\n"
         );
+
+        Ok(())
     }
 
     /// A body read from a block and a body built by hand are equal when their fields match.
     #[test]
-    fn equality_ignores_the_block_the_body_was_read_from() {
-        let read = WarcinfoBody::parse(b"SOFTWARE:  one\r\nIsPartOf:\r\n two\r\n").expect("block");
+    fn equality_ignores_the_block_the_body_was_read_from() -> Result<(), Error> {
+        let read = WarcinfoBody::parse(b"SOFTWARE:  one\r\nIsPartOf:\r\n two\r\n")?;
 
         let mut built = WarcinfoBody::new();
-        built.push(WarcinfoField::Software, "one");
-        built.push(WarcinfoField::Dcmi(DcmiTerm::IsPartOf), "two");
+        built.push(WarcinfoField::Software, "one")?;
+        built.push(WarcinfoField::Dcmi(DcmiTerm::IsPartOf), "two")?;
 
         assert_eq!(read, built);
         assert!(read.source().is_some());
         assert_eq!(built.source(), None);
+
+        Ok(())
     }
 
     /// A repeated field keeps every value it was given, in order, and reports the first as its
@@ -430,22 +473,63 @@ mod tests {
         );
     }
 
-    /// A name outside both vocabularies is an extension field under its lower-cased spelling.
-    /// A value is written between the colon that names its field and the line break that ends
-    /// the field, so a value holding a line break of its own spells a field the body does not
-    /// hold.
+    /// A value holding a line break would be written as further field lines, so it is refused
+    /// rather than written.
     #[test]
-    #[ignore = "known bug (a value can spell a second field): fix incoming"]
     fn a_value_that_would_be_written_as_another_field_is_refused() {
         let mut body = WarcinfoBody::new();
-        body.push(WarcinfoField::Software, "one\r\ninjected: two");
 
-        assert_eq!(
-            WarcinfoBody::parse(body.to_string().as_bytes()).expect("a body"),
-            body
-        );
+        for value in ["one\r\ninjected: two", "one\rtwo", "one\ntwo"] {
+            assert_eq!(
+                body.push(WarcinfoField::Software, value),
+                Err(Error::UnwritableField {
+                    name: "software".to_string(),
+                    reason: "the value holds a control character".to_string()
+                }),
+                "{value:?}"
+            );
+        }
+
+        assert!(body.is_empty());
     }
 
+    /// A value is `TEXT`, which admits the white space a field line is written with and no other
+    /// control character.
+    #[test]
+    fn a_value_holds_text_alone() -> Result<(), Error> {
+        let mut body = WarcinfoBody::new();
+
+        for value in ["\x00", "\x7f", "\x1b[0m"] {
+            assert!(body.push("x-custom", value).is_err(), "{value:?}");
+        }
+
+        body.push("x-custom", "one\ttwo three")?;
+        assert_eq!(body.to_string(), "x-custom: one\ttwo three\r\n");
+
+        Ok(())
+    }
+
+    /// A name is a token, so one holding the punctuation that separates a field from its value
+    /// or from the next field is refused.
+    #[test]
+    fn a_name_that_is_not_a_token_is_refused() {
+        let mut body = WarcinfoBody::new();
+
+        for name in ["x-custom: injected\r\nevil", "x custom", "x:custom", ""] {
+            assert_eq!(
+                body.push(name, "a value"),
+                Err(Error::UnwritableField {
+                    name: name.to_lowercase(),
+                    reason: "the name is not a token".to_string()
+                }),
+                "{name:?}"
+            );
+        }
+
+        assert!(body.is_empty());
+    }
+
+    /// A name outside both vocabularies is an extension field under its lower-cased spelling.
     #[test]
     fn a_name_in_neither_vocabulary_is_an_extension_field() {
         assert_eq!(
