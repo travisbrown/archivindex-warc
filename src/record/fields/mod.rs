@@ -151,23 +151,41 @@ impl<F: Field> Body<F> {
     pub fn push(&mut self, field: impl Into<F>, value: impl Into<String>) -> Result<(), Error> {
         let field = field.into();
         let value = value.into();
-
-        if !is_token(field.name().as_bytes()) {
-            return Err(Error::UnwritableField {
-                name: field.name().to_owned(),
-                reason: "the name is not a token".to_owned(),
-            });
-        }
-        // A value is held here with its folds already resolved, so a line break in one is a field
-        // line the caller wrote into it rather than a fold.
-        if !is_text(value.as_bytes()) {
-            return Err(Error::UnwritableField {
-                name: field.name().to_owned(),
-                reason: "the value holds a control character".to_owned(),
-            });
-        }
+        check_writable(&field, &value)?;
 
         self.fields.push((field, value));
+        self.source = None;
+
+        Ok(())
+    }
+
+    /// Give a field one value, in place of every value it already has.
+    ///
+    /// A field the body does not carry is added at the end. One it carries already keeps the
+    /// position of its first appearance and loses any other.
+    ///
+    /// This releases the retained source block, so the body is written canonically from here on.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnwritableField`] under the same conditions as [`push`](Self::push).
+    pub fn set(&mut self, field: impl Into<F>, value: impl Into<String>) -> Result<(), Error> {
+        let field = field.into();
+        let value = value.into();
+        check_writable(&field, &value)?;
+
+        if let Some(first) = self.fields.iter().position(|(name, _)| *name == field) {
+            self.fields[first].1 = value;
+
+            let mut index = 0;
+            self.fields.retain(|(name, _)| {
+                let keep = index <= first || *name != field;
+                index += 1;
+                keep
+            });
+        } else {
+            self.fields.push((field, value));
+        }
         self.source = None;
 
         Ok(())
@@ -286,6 +304,26 @@ impl<F: Field> Body<F> {
     }
 }
 
+/// Check that a field can be written back as a field line before it is added to a body.
+fn check_writable<F: Field>(field: &F, value: &str) -> Result<(), Error> {
+    if !is_token(field.name().as_bytes()) {
+        return Err(Error::UnwritableField {
+            name: field.name().to_owned(),
+            reason: "the name is not a token".to_owned(),
+        });
+    }
+    // A value is held here with its folds already resolved, so a line break in one is a field
+    // line the caller wrote into it rather than a fold.
+    if !is_text(value.as_bytes()) {
+        return Err(Error::UnwritableField {
+            name: field.name().to_owned(),
+            reason: "the value holds a control character".to_owned(),
+        });
+    }
+
+    Ok(())
+}
+
 impl<F> Default for Body<F> {
     fn default() -> Self {
         Self::new()
@@ -339,6 +377,28 @@ mod tests {
             "software: archivindex/0.1.0\r\nisPartOf: a-crawl\r\nx-custom: a value\r\n"
         );
         assert_eq!(WarcinfoBody::parse(body.to_string().as_bytes())?, body);
+
+        Ok(())
+    }
+
+    /// Setting a field gives it the value in place of every one it had, at the position its
+    /// first appearance held, and adds it at the end when the body did not carry it at all.
+    #[test]
+    fn setting_a_field_replaces_every_value_it_had() -> Result<(), Error> {
+        let mut body = WarcinfoBody::new();
+
+        body.push(WarcinfoField::Software, "one")?;
+        body.push(WarcinfoField::Hostname, "a-host")?;
+        body.push(WarcinfoField::Software, "two")?;
+
+        body.set(WarcinfoField::Software, "three")?;
+        body.set(WarcinfoField::Operator, "an-operator")?;
+
+        assert_eq!(
+            body.to_string(),
+            "software: three\r\nhostname: a-host\r\noperator: an-operator\r\n"
+        );
+        assert_eq!(body.get_all(&WarcinfoField::Software).count(), 1);
 
         Ok(())
     }

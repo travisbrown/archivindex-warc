@@ -5,22 +5,18 @@
 mod common;
 
 use archivindex_warc::io::write::WarcWriter;
-use archivindex_warc::record::fields::warcinfo::WarcinfoField;
-use archivindex_warc::record::{Record, fields};
+use archivindex_warc::record::Record;
 use chrono::Utc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut body = fields::Body::new();
-    body.push(WarcinfoField::Software, "archivindex-warc/0.1.0")?;
-    body.push(WarcinfoField::Hostname, "localhost")?;
-
     // The builder is chosen by record type, so `WARC-Filename` is a method here and would not be
-    // one on any other type, and the record declares the `application/warc-fields` type a
-    // `warcinfo` block customarily has. The record is left to name itself, which it does with a
-    // generated `urn:uuid` identifier.
+    // one on any other type, as are the fields a `warcinfo` block is written from. The record is
+    // left to name itself, which it does with a generated `urn:uuid` identifier, and its body
+    // opens naming this software and the version of the standard the record declares.
     let record: Record = Record::warcinfo(Utc::now())
         .filename("warc_example.warc")?
-        .fields(body)?;
+        .hostname("localhost")?
+        .build();
 
     // Render the semantic record into raw field lines and a body.
     let record = record.into_raw()?;

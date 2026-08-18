@@ -3,8 +3,8 @@
 //! Each entry point selects a record type and requires its mandatory fields. The returned builder
 //! exposes only the optional fields allowed for that type.
 //!
-//! [`build`](ResponseBuilder::build) returns a header block, while
-//! [`body`](ResponseBuilder::body) attaches a content block and returns a record:
+//! For builders that accept an arbitrary content block, [`build`](ResponseBuilder::build) returns
+//! a header and [`body`](ResponseBuilder::body) attaches the block and returns a record:
 //!
 //! ```
 //! use archivindex_warc::record::{Record, RecordHeader};
@@ -33,15 +33,21 @@
 //!
 //! Record types whose block has a customary media type declare it: `application/http` with the
 //! matching `msgtype` for `request` and `response` records, and `application/warc-fields` for
-//! `warcinfo` and `metadata` records. [`content_type`](ResponseBuilder::content_type) replaces it.
+//! `warcinfo` and `metadata` records. [`content_type`](ResponseBuilder::content_type) replaces it
+//! on the builders that are given a block. Attaching a body fails if a declared `Content-Length`
+//! does not match it.
 //!
-//! Attaching a body can fail if a declared `Content-Length` does not match, or if a `warcinfo` or
-//! `metadata` body declared as `application/warc-fields` cannot be parsed. Use
-//! [`fields`](WarcinfoBuilder::fields) to attach an already parsed fields body.
+//! The `warcinfo` and `metadata` builders write the `warc-fields` body their record type carries
+//! rather than being given a block, so [`build`](WarcinfoBuilder::build) finishes a record and
+//! cannot fail. A `warcinfo` body opens naming this software and the version of the standard the
+//! record declares; a `metadata` body opens empty. Neither builder offers what the others declare
+//! about a block they are given: `Content-Length`, `WARC-Block-Digest`, `Content-Type`,
+//! `WARC-Truncated`, and `WARC-Segment-Number`. A record carrying any other block is written by
+//! constructing it directly.
 //!
 //! Rendering adds SHA-256 block and payload digests when possible. Use
-//! [`sha_1_digests`](ResponseBuilder::sha_1_digests) to add SHA-1 digests when attaching the
-//! block instead.
+//! [`sha_1_digests`](ResponseBuilder::sha_1_digests) to add SHA-1 digests to the record
+//! instead.
 //!
 //! Records declare WARC 1.1. The [`v1_0`] module mirrors every entry point here for an archive
 //! that has to be written as WARC 1.0.
@@ -57,17 +63,16 @@ use uuid::Uuid;
 use crate::parse::untyped::name::Field;
 use crate::record::digest::{add_sha_1_block_digest, add_sha_1_payload_digest};
 use crate::record::extension::{Extension, NoExtension};
-use crate::record::fields::metadata::MetadataField;
-use crate::record::fields::warcinfo::WarcinfoField;
+use crate::record::fields::dcmi::DcmiTerm;
+use crate::record::fields::metadata::{HopsFromSeed, MetadataBody, MetadataField};
+use crate::record::fields::warcinfo::{WarcinfoBody, WarcinfoField};
 use crate::record::header::truncated_type::TruncatedType;
 use crate::record::header::{
     ContinuationHeader, ConversionHeader, CoreHeaders, MetadataHeader, OtherHeader, PayloadHeaders,
     RequestHeader, ResourceHeader, ResponseHeader, RevisitHeader, RevisitProfile, SegmentNumber,
     WarcinfoHeader,
 };
-use crate::record::{
-    BlockError, Error, FieldsBlock, Record, RecordHeader, check_declared_length, fields,
-};
+use crate::record::{BlockError, Error, FieldsBlock, Record, RecordHeader, fields};
 use crate::value::{LabelledDigest, MediaType, Text, TextError, WarcDate};
 use crate::version::WarcVersion;
 
@@ -109,6 +114,78 @@ fn add_sha_1_digests<E: Extension>(record: &mut Record<E>, sha_1: bool) {
     }
 }
 
+/// The `software` a `warcinfo` record built here names, which is this crate.
+const SOFTWARE: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+
+/// Where the specification a WARC file of the given version conforms to is published.
+const fn specification_uri(version: WarcVersion) -> &'static str {
+    match version {
+        WarcVersion::V1_0 => {
+            "http://iipc.github.io/warc-specifications/specifications/warc-format/warc-1.0/"
+        }
+        WarcVersion::V1_1 => {
+            "http://iipc.github.io/warc-specifications/specifications/warc-format/warc-1.1/"
+        }
+    }
+}
+
+/// Write a field of a record body from a value this crate rendered, which is always writable.
+fn set_rendered<F: fields::Field>(body: &mut fields::Body<F>, field: F, value: impl Into<String>) {
+    body.set(field, value)
+        .expect("invariant violation: a value rendered here is not a writable field value");
+}
+
+/// Write what a `warcinfo` record says about the version of the file it opens, in the two
+/// fields Annex B.1 of the standard writes it in.
+fn describe_version(body: &mut WarcinfoBody, version: WarcVersion) {
+    set_rendered(
+        body,
+        WarcinfoField::Dcmi(DcmiTerm::Format),
+        format!("WARC file version {version}"),
+    );
+    set_rendered(
+        body,
+        WarcinfoField::Dcmi(DcmiTerm::ConformsTo),
+        specification_uri(version),
+    );
+}
+
+/// Generate setters for the fields of a record body written as `warc-fields`.
+macro_rules! body_setters {
+    ($body:ty; $($setter:ident: $field:expr, $name:literal, $description:literal;)*) => {
+        /// Write a field the setters here do not name, such as one outside the vocabulary the
+        /// standard fixes for this record type.
+        ///
+        /// Each call appends a value. The named setters replace their field's existing value.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`fields::Error::UnwritableField`] if the name is not a token or the value
+        /// holds a control character, neither of which a field line can be written from.
+        pub fn field(mut self, field: $body, value: &str) -> Result<Self, fields::Error> {
+            self.body.push(field, value)?;
+
+            Ok(self)
+        }
+
+        $(
+            #[doc = concat!("`", $name, "`: ", $description)]
+            ///
+            /// This replaces any value the field already carries.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`fields::Error::UnwritableField`] if the value holds a control
+            /// character, which the `TEXT` rule a field value is written under does not admit.
+            pub fn $setter(mut self, value: &str) -> Result<Self, fields::Error> {
+                self.body.set($field, value)?;
+
+                Ok(self)
+            }
+        )*
+    };
+}
+
 /// Generate setters shared by several record types.
 macro_rules! shared_setters {
     () => {};
@@ -126,8 +203,12 @@ macro_rules! shared_setters {
         shared_setters!($($rest)*);
     };
 
-    // The optional fields every record carries, whatever its type.
+    // The optional fields every record carries whose block the builder is given.
     (core, $($rest:tt)*) => {
+        shared_setters!(record_id, sha_1_digests, block, truncated, $($rest)*);
+    };
+
+    (record_id, $($rest:tt)*) => {
         /// `WARC-Record-ID`: replace the generated identifier for this record.
         #[must_use]
         pub fn record_id(mut self, record_id: Uri<String>) -> Self {
@@ -135,6 +216,26 @@ macro_rules! shared_setters {
             self
         }
 
+        shared_setters!($($rest)*);
+    };
+
+    (sha_1_digests, $($rest:tt)*) => {
+        /// Add SHA-1 digests to the record's content block.
+        ///
+        /// Digests use unpadded uppercase Base32. Existing digests are preserved, and a header
+        /// built without a block gets none.
+        #[must_use]
+        pub const fn sha_1_digests(mut self) -> Self {
+            self.sha_1 = true;
+            self
+        }
+
+        shared_setters!($($rest)*);
+    };
+
+    // What a record says about a block it is given, which a record type whose block the builder
+    // writes has no use for.
+    (block, $($rest:tt)*) => {
         /// `Content-Length`: declare the expected length of the content block.
         ///
         /// The declaration is checked against the block when one is attached, so it is
@@ -156,16 +257,6 @@ macro_rules! shared_setters {
             self
         }
 
-        /// Add SHA-1 digests when attaching the content block.
-        ///
-        /// Digests use unpadded uppercase Base32. Existing digests are preserved, and building a
-        /// header without a block adds nothing.
-        #[must_use]
-        pub const fn sha_1_digests(mut self) -> Self {
-            self.sha_1 = true;
-            self
-        }
-
         /// `Content-Type`: the media type of the record's block, which for an archived HTTP
         /// message is `application/http` rather than the type that message declares.
         ///
@@ -176,6 +267,10 @@ macro_rules! shared_setters {
             self
         }
 
+        shared_setters!($($rest)*);
+    };
+
+    (truncated, $($rest:tt)*) => {
         /// `WARC-Truncated`: why the record's block holds less than what was captured.
         #[must_use]
         pub fn truncated(mut self, reason: TruncatedType<E::TruncatedReasons>) -> Self {
@@ -296,7 +391,38 @@ macro_rules! shared_setters {
 
 /// Generate methods that finish a builder as a header or complete record.
 macro_rules! builder_end {
-    ($builder:ident as $variant:ident $(, fields $field:ty)?) => {
+    // The record types whose block is written as `warc-fields`, which the builder writes
+    // rather than is given, so that building one finishes a record and cannot fail.
+    ($builder:ident as $variant:ident, fields) => {
+        impl<E: Extension> $builder<E> {
+            /// Build the record from the fields the builder was told.
+            ///
+            /// A block these fields cannot express is written by constructing the record
+            /// directly.
+            #[must_use]
+            pub fn build(self) -> Record<E> {
+                let Self {
+                    mut header,
+                    body,
+                    sha_1,
+                } = self;
+
+                // A block is held in memory, so its length is a `usize` that fits a `u64`
+                // on every platform this crate builds for.
+                header.core.content_length = Some(body.rendered_len() as u64);
+
+                let mut record = Record::$variant {
+                    header,
+                    body: FieldsBlock::Fields(body),
+                };
+                add_sha_1_digests(&mut record, sha_1);
+
+                record
+            }
+        }
+    };
+
+    ($builder:ident as $variant:ident) => {
         impl<E: Extension> $builder<E> {
             /// Build the record header without a content block.
             #[must_use]
@@ -309,43 +435,16 @@ macro_rules! builder_end {
             /// # Errors
             ///
             /// Returns [`BlockError::ContentLengthMismatch`] if the builder was told a
-            /// `Content-Length` this block does not have, and [`BlockError::Fields`] if the
-            /// block is declared `application/warc-fields` and is not those fields, which only
-            /// a `warcinfo` or `metadata` record can be.
+            /// `Content-Length` this block does not have, and
+            /// [`BlockError::UndeclaredRevisitTruncation`] if a `revisit` record under the
+            /// identical payload digest profile carries a block without declaring it truncated.
             pub fn body(self, body: impl Into<Vec<u8>>) -> Result<Record<E>, BlockError> {
                 let sha_1 = self.sha_1;
-                let mut record = self.build().with_body(body.into())?;
+                let mut record = RecordHeader::$variant(self.header).with_body(body.into())?;
                 add_sha_1_digests(&mut record, sha_1);
 
                 Ok(record)
             }
-
-            $(
-                /// Build a record with an already parsed `warc-fields` body.
-                ///
-                /// # Errors
-                ///
-                /// Returns [`BlockError::ContentLengthMismatch`] if the rendered fields do not
-                /// match the declared `Content-Length`.
-                pub fn fields(
-                    mut self,
-                    fields: fields::Body<$field>,
-                ) -> Result<Record<E>, BlockError> {
-                    // A block is held in memory, so its length is a `usize` that fits a `u64`
-                    // on every platform this crate builds for.
-                    let rendered_len = fields.rendered_len() as u64;
-                    check_declared_length(self.header.core.content_length, rendered_len)?;
-                    self.header.core.content_length = Some(rendered_len);
-
-                    let mut record = Record::$variant {
-                        header: self.header,
-                        body: FieldsBlock::Fields(fields),
-                    };
-                    add_sha_1_digests(&mut record, self.sha_1);
-
-                    Ok(record)
-                }
-            )?
         }
     };
 }
@@ -395,19 +494,43 @@ macro_rules! capture_builder {
 }
 
 /// A builder for a `warcinfo` record, which describes the records that follow it.
+///
+/// The setters here write the record's `warc-fields` body, which opens naming this software and
+/// the version of the standard the file is written under:
+///
+/// ```
+/// # use archivindex_warc::record::{Record, extension::NoExtension};
+/// # use chrono::Utc;
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let record = Record::<NoExtension>::warcinfo(Utc::now())
+///     .hostname("crawling017.archive.org")?
+///     .build();
+///
+/// assert_eq!(record.type_name(), "warcinfo");
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, Debug)]
 pub struct WarcinfoBuilder<E: Extension = NoExtension> {
     header: WarcinfoHeader<E>,
+    body: WarcinfoBody,
     sha_1: bool,
 }
 
 impl<E: Extension> WarcinfoBuilder<E> {
     /// Create a `warcinfo` builder with its required fields.
+    ///
+    /// The body opens naming this software as its `software` and the standard the record
+    /// declares as its `format` and `conformsTo`. Each is replaced by the setter for it.
     #[must_use]
     pub fn new(date: impl Into<WarcDate>) -> Self
     where
         E::WarcinfoFields: Default,
     {
+        let mut body = WarcinfoBody::new();
+        set_rendered(&mut body, WarcinfoField::Software, SOFTWARE);
+        describe_version(&mut body, WarcVersion::V1_1);
+
         Self {
             header: WarcinfoHeader {
                 version: WarcVersion::V1_1,
@@ -416,13 +539,59 @@ impl<E: Extension> WarcinfoBuilder<E> {
                 segment_origin: false,
                 other: Default::default(),
             },
+            body,
             sha_1: false,
         }
+    }
+
+    /// Declare this record, and the file it describes, as WARC 1.0.
+    ///
+    /// Only the `v1_0` entry points declare anything but WARC 1.1, so this stays private.
+    #[must_use]
+    fn into_v1_0(mut self) -> Self {
+        self.header.version = WarcVersion::V1_0;
+        describe_version(&mut self.body, WarcVersion::V1_0);
+
+        self
     }
 }
 
 impl<E: Extension> WarcinfoBuilder<E> {
-    shared_setters!(v1_0, core, segment_origin, extension(WarcinfoFields),);
+    shared_setters!(record_id, sha_1_digests, extension(WarcinfoFields),);
+
+    body_setters!(
+        WarcinfoField;
+        operator: WarcinfoField::Operator, "operator",
+            "contact information for the operator who created this WARC resource.";
+        software: WarcinfoField::Software, "software",
+            "the software and software version used to create this WARC resource.";
+        robots: WarcinfoField::Robots, "robots",
+            "the robots policy followed by the harvester creating this WARC resource.";
+        hostname: WarcinfoField::Hostname, "hostname",
+            "the hostname of the machine that created this WARC resource.";
+        http_header_user_agent: WarcinfoField::HttpHeaderUserAgent, "http-header-user-agent",
+            "the HTTP `user-agent` header the harvester usually sent with each request.";
+        http_header_from: WarcinfoField::HttpHeaderFrom, "http-header-from",
+            "the HTTP `from` header the harvester usually sent with each request.";
+        description: WarcinfoField::Dcmi(DcmiTerm::Description), "description",
+            "an account of the crawl or the file this record describes.";
+        is_part_of: WarcinfoField::Dcmi(DcmiTerm::IsPartOf), "isPartOf",
+            "the crawl or collection this file belongs to.";
+        format: WarcinfoField::Dcmi(DcmiTerm::Format), "format",
+            "the format of the file this record opens, such as `WARC file version 1.1`.";
+        conforms_to: WarcinfoField::Dcmi(DcmiTerm::ConformsTo), "conformsTo",
+            "the specification this file conforms to, named by its URI.";
+    );
+
+    /// `ip`: the IP address of the machine that created this WARC resource.
+    ///
+    /// This replaces any value the field already carries.
+    #[must_use]
+    pub fn ip(mut self, ip_address: IpAddr) -> Self {
+        set_rendered(&mut self.body, WarcinfoField::Ip, ip_address.to_string());
+
+        self
+    }
 
     /// `WARC-Filename`: the name of the file holding this record, which no other record type
     /// may carry.
@@ -438,7 +607,7 @@ impl<E: Extension> WarcinfoBuilder<E> {
     }
 }
 
-builder_end!(WarcinfoBuilder as Warcinfo, fields WarcinfoField);
+builder_end!(WarcinfoBuilder as Warcinfo, fields);
 
 /// A builder for a `response` record, which holds a complete scheme-specific response.
 #[derive(Clone, Debug)]
@@ -489,9 +658,12 @@ capture_builder!(
 builder_end!(RequestBuilder as Request);
 
 /// A builder for a `metadata` record, which describes another record.
+///
+/// The setters here write the record's `warc-fields` body, which starts empty.
 #[derive(Clone, Debug)]
 pub struct MetadataBuilder<E: Extension = NoExtension> {
     header: MetadataHeader<E>,
+    body: MetadataBody,
     sha_1: bool,
 }
 
@@ -514,6 +686,7 @@ impl<E: Extension> MetadataBuilder<E> {
                 segment_origin: false,
                 other: Default::default(),
             },
+            body: MetadataBody::new(),
             sha_1: false,
         }
     }
@@ -522,18 +695,56 @@ impl<E: Extension> MetadataBuilder<E> {
 impl<E: Extension> MetadataBuilder<E> {
     shared_setters!(
         v1_0,
-        core,
+        record_id,
+        sha_1_digests,
         target_uri,
         warcinfo_id,
         ip_address,
         concurrent_to,
         refers_to,
-        segment_origin,
         extension(MetadataFields),
     );
+
+    body_setters!(
+        MetadataField;
+        via: MetadataField::Via, "via",
+            "the referring URI from which the archived URI was discovered.";
+    );
+
+    /// `hopsFromSeed`: the type of each hop from a starting seed URI to the archived one, which
+    /// is the empty path for a seed itself.
+    ///
+    /// This replaces any value the field already carries. The standard fixes no alphabet for the
+    /// value, so a path spelled outside the one [`Hop`](fields::metadata::Hop) recommends is
+    /// written through [`field`](Self::field).
+    #[must_use]
+    pub fn hops_from_seed(mut self, hops: &HopsFromSeed) -> Self {
+        set_rendered(
+            &mut self.body,
+            MetadataField::HopsFromSeed,
+            hops.to_string(),
+        );
+
+        self
+    }
+
+    /// `fetchTimeMs`: how long collecting the archived URI took, in milliseconds, starting from
+    /// the initiation of network traffic.
+    ///
+    /// This replaces any value the field already carries.
+    #[must_use]
+    pub fn fetch_time_ms(mut self, milliseconds: u64) -> Self {
+        set_rendered(
+            &mut self.body,
+            MetadataField::FetchTimeMs,
+            milliseconds.to_string(),
+        );
+
+        self
+    }
 }
 
-builder_end!(MetadataBuilder as Metadata, fields MetadataField);
+builder_end!(MetadataBuilder as Metadata, fields);
 
 /// Generate a `revisit` builder for one WARC version.
 macro_rules! revisit_builder {
@@ -969,8 +1180,9 @@ mod tests {
             Record::warcinfo(date())
                 .filename("example.warc")
                 .expect("a file name")
-                .segment_origin()
-                .body("software: archivindex-warc\r\n")?,
+                .software("archivindex-warc")
+                .expect("a writable field")
+                .build(),
             Record::response(TARGET_URI, date())
                 .expect("a well-formed target URI")
                 .block_digest(added_digest(RESPONSE_BLOCK.as_bytes()))
@@ -990,7 +1202,9 @@ mod tests {
             Record::metadata(date())
                 .target_uri(uri(TARGET_URI))
                 .refers_to(uri(OTHER_ID))
-                .body("via: https://example.com/\r\n")?,
+                .via("https://example.com/")
+                .expect("a writable field")
+                .build(),
             Record::revisit(TARGET_URI, date(), RevisitProfile::IDENTICAL_PAYLOAD_DIGEST)
                 .expect("a well-formed target URI")
                 .payload_digest(digest())
@@ -1105,16 +1319,18 @@ mod tests {
         Ok(())
     }
 
-    /// Parsed fields are digested in their rendered form.
+    /// A body the builder wrote is digested in its rendered form.
     #[test]
-    fn a_fields_body_is_digested_as_it_is_written() -> Result<(), BlockError> {
-        let fields = fields::Body::parse(b"software: archivindex-warc\r\n")?;
-        let record: Record = Record::warcinfo(date()).sha_1_digests().fields(fields)?;
+    fn a_fields_body_is_digested_as_it_is_written() -> Result<(), fields::Error> {
+        let record: Record = Record::metadata(date())
+            .sha_1_digests()
+            .via("http://www.archive.org/")?
+            .build();
         let written = record.core().block_digest.as_ref().map(ToString::to_string);
 
         assert_eq!(
             written.as_deref(),
-            Some("sha1:K3BHB7RNS422KCX4ORM7HYYH6RNAGKOI")
+            Some("sha1:LIXK6ZKWZ7NJHZ2PLYGDQEZJJH4QM4IB")
         );
         assert_eq!(round_trip(&record), record);
 
@@ -1159,17 +1375,14 @@ mod tests {
         Ok(())
     }
 
-    /// A block given as `warc-fields` is declared as those fields, so that the record it is
+    /// A block written as `warc-fields` is declared as those fields, so that the record it is
     /// written into reads back as the fields it was built from rather than as octets.
     #[test]
-    fn a_block_given_as_fields_declares_itself_as_them() {
-        let mut body = fields::Body::new();
-        body.push(WarcinfoField::Software, "archivindex-warc")
-            .expect("a writable field");
-
+    fn a_block_written_as_fields_declares_itself_as_them() {
         let record: Record = Record::warcinfo(date())
-            .fields(body)
-            .expect("a block of the declared length");
+            .software("archivindex-warc")
+            .expect("a writable field")
+            .build();
 
         assert!(
             record
@@ -1188,18 +1401,113 @@ mod tests {
         ));
     }
 
+    /// A `warcinfo` body opens naming this software and the version of the standard the record
+    /// declares, and building the builder writes those fields as the record's block.
+    #[test]
+    fn a_warcinfo_body_opens_describing_this_software_and_the_standard() {
+        let record: Record = Record::warcinfo(date()).build();
+
+        assert_eq!(
+            String::from_utf8_lossy(&record.body_bytes()),
+            format!(
+                "software: {SOFTWARE}\r\n\
+                 format: WARC file version 1.1\r\n\
+                 conformsTo: {}\r\n",
+                specification_uri(WarcVersion::V1_1)
+            )
+        );
+        assert_eq!(round_trip(&record), as_rendered(record.clone()));
+    }
+
+    /// A setter writes the field's only value at the position the body already held it in, so
+    /// the fields the builder opens with are replaced rather than repeated.
+    #[test]
+    fn a_warcinfo_setter_replaces_the_value_the_builder_opened_with() -> Result<(), fields::Error> {
+        let record: Record = Record::warcinfo(date())
+            .software("heritrix/3.4.0")?
+            .hostname("crawling017.archive.org")?
+            .ip("207.241.227.234".parse().expect("an address"))
+            .is_part_of("testcrawl-20050708")?
+            .build();
+
+        assert_eq!(
+            String::from_utf8_lossy(&record.body_bytes()),
+            format!(
+                "software: heritrix/3.4.0\r\n\
+                 format: WARC file version 1.1\r\n\
+                 conformsTo: {}\r\n\
+                 hostname: crawling017.archive.org\r\n\
+                 ip: 207.241.227.234\r\n\
+                 isPartOf: testcrawl-20050708\r\n",
+                specification_uri(WarcVersion::V1_1)
+            )
+        );
+        assert_eq!(round_trip(&record), as_rendered(record.clone()));
+
+        Ok(())
+    }
+
+    /// A `metadata` body opens empty, so a record built from one holds only what its setters
+    /// were told.
+    #[test]
+    fn a_metadata_body_holds_only_what_its_setters_were_told() -> Result<(), fields::Error> {
+        let empty: Record = Record::metadata(date()).build();
+
+        assert_eq!(empty.body_bytes().as_ref(), b"");
+
+        let record: Record = Record::metadata(date())
+            .via("http://www.archive.org/")?
+            .hops_from_seed(&"E".parse().expect("a path"))
+            .fetch_time_ms(565)
+            .build();
+
+        assert_eq!(
+            String::from_utf8_lossy(&record.body_bytes()),
+            "via: http://www.archive.org/\r\nhopsFromSeed: E\r\nfetchTimeMs: 565\r\n"
+        );
+        assert_eq!(round_trip(&record), as_rendered(record.clone()));
+
+        Ok(())
+    }
+
+    /// A field the setters do not name is written by name, and each call adds a value rather
+    /// than replacing the one before it, since a `warc-fields` body may repeat a field.
+    #[test]
+    fn a_field_written_by_name_adds_a_value_rather_than_replacing_one() -> Result<(), fields::Error>
+    {
+        let record: Record = Record::metadata(date())
+            .field(MetadataField::Other("x-note".to_owned()), "first")?
+            .field(MetadataField::Other("x-note".to_owned()), "second")?
+            .build();
+
+        assert_eq!(
+            String::from_utf8_lossy(&record.body_bytes()),
+            "x-note: first\r\nx-note: second\r\n"
+        );
+        assert_eq!(round_trip(&record), as_rendered(record.clone()));
+
+        Ok(())
+    }
+
     /// A record type whose block has a customary media type is built declaring it, and the
     /// declaration is written as the standard spells it.
     #[test]
     fn a_record_type_with_a_customary_media_type_declares_it() -> Result<(), Error> {
         let declared = |header: RecordHeader| header.core().content_type.clone();
 
+        // The two types whose block is `warc-fields` are built as records rather than headers.
         assert_eq!(
-            declared(Record::warcinfo(date()).build()),
+            Record::<NoExtension>::warcinfo(date())
+                .build()
+                .core()
+                .content_type,
             Some(MediaType::WARC_FIELDS)
         );
         assert_eq!(
-            declared(Record::metadata(date()).build()),
+            Record::<NoExtension>::metadata(date())
+                .build()
+                .core()
+                .content_type,
             Some(MediaType::WARC_FIELDS)
         );
         assert_eq!(
@@ -1305,106 +1613,17 @@ mod tests {
         );
     }
 
-    /// A content type the caller set stands, since the standard recommends the format for these
-    /// blocks rather than requiring it and a caller naming another one means it.
+    /// A body the builder writes declares what it renders as, since that is what the record
+    /// carrying it is written under.
     #[test]
-    fn a_content_type_the_caller_set_stands() {
-        let record: Record = Record::metadata(date())
-            .content_type(MediaType::TEXT_PLAIN)
-            .fields(fields::Body::new())
-            .expect("a block of the declared length");
-
-        assert!(
-            record
-                .core()
-                .content_type
-                .as_ref()
-                .is_some_and(|content_type| content_type.is("text", "plain"))
-        );
-    }
-
-    /// A block of octets declared `warc-fields` is read as those fields, so octets that are not
-    /// them are what ending a builder with a block can fail on.
-    #[test]
-    fn a_block_that_is_not_the_fields_it_is_declared_to_be_is_an_error() {
-        let record: Result<Record, BlockError> =
-            Record::warcinfo(date()).body("this line names no field\r\n");
-
-        assert!(matches!(
-            record,
-            Err(BlockError::Fields(fields::Error::NotANamedField {
-                offset: 0
-            }))
-        ));
-
-        // The same octets under any other content type are the record's as they stand.
+    fn a_fields_body_declares_the_length_it_renders_as() {
         let record: Record = Record::warcinfo(date())
-            .content_type(MediaType::TEXT_PLAIN)
-            .body("this line names no field\r\n")
-            .expect("a block that is not read as fields cannot fail to be read as them");
+            .software("archivindex-warc")
+            .expect("a writable field")
+            .build();
 
-        assert_eq!(
-            record.body_bytes().as_ref(),
-            b"this line names no field\r\n"
-        );
-    }
-
-    /// A builder told a `Content-Length` ends at a record only where the block it is given is
-    /// that length, so a declaration made here cannot be made to disagree with the block it
-    /// describes.
-    #[test]
-    fn a_builder_told_a_content_length_refuses_a_block_of_another_length() {
-        let mismatched: Result<Record, BlockError> = Record::response(TARGET_URI, date())
-            .expect("a well-formed target URI")
-            .content_length(5)
-            .body("good day");
-
-        assert_eq!(
-            mismatched,
-            Err(BlockError::ContentLengthMismatch {
-                declared: 5,
-                actual: 8,
-            })
-        );
-
-        let record: Record = Record::response(TARGET_URI, date())
-            .expect("a well-formed target URI")
-            .content_length(5)
-            .body("hello")
-            .expect("a block of the declared length");
-
-        assert_eq!(record.core().content_length, Some(5));
-        assert_eq!(round_trip(&record), as_rendered(record));
-    }
-
-    /// A block given as fields is held to the declaration by what it renders as, since that is
-    /// what the record carrying it is written under.
-    #[test]
-    fn a_block_given_as_fields_is_measured_by_what_it_renders_as() {
-        let mut body = fields::Body::new();
-        body.push(WarcinfoField::Software, "archivindex-warc")
-            .expect("a writable field");
-        let rendered_len = body.rendered_len() as u64;
-
-        let mismatched: Result<Record, BlockError> = Record::warcinfo(date())
-            .content_length(rendered_len + 1)
-            .fields(body.clone());
-
-        assert_eq!(
-            mismatched,
-            Err(BlockError::ContentLengthMismatch {
-                declared: rendered_len + 1,
-                actual: rendered_len,
-            })
-        );
-
-        let record: Record = Record::warcinfo(date())
-            .content_length(rendered_len)
-            .fields(body)
-            .expect("a block of the declared length");
-
-        assert_eq!(record.core().content_length, Some(rendered_len));
-        assert_eq!(record.content_length(), rendered_len);
+        assert_eq!(record.core().content_length, Some(record.content_length()));
+        assert_eq!(record.content_length(), record.body_bytes().len() as u64);
     }
 
     /// A vocabulary standing in for a small archiving extension, which defines one record type
