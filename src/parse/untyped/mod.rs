@@ -220,6 +220,20 @@ mod tests {
         );
     }
 
+    /// A control character breaks no framing, so the raw layer keeps it. It is outside `TEXT`, so
+    /// it is refused here, where the grammar is applied.
+    #[test]
+    fn refuses_a_control_character_the_raw_layer_kept() {
+        let fields = [("Content-Length", "0"), ("X-Custom", "a\u{1}b")];
+        assert!(raw(&fields).header.validate().is_ok());
+
+        let error = Record::try_from(raw(&fields)).unwrap_err();
+        assert!(
+            matches!(&error, Error { name, .. } if name == "X-Custom"),
+            "{error}"
+        );
+    }
+
     /// Reading and rendering are inverses when the bytes are the ones a grammar would write.
     #[test]
     fn renders_back_the_bytes_it_read() {

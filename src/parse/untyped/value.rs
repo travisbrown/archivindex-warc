@@ -8,7 +8,7 @@ use std::net::IpAddr;
 use fluent_uri::Uri;
 
 use super::name::Field;
-use crate::parsing::{is_ctl, is_token, lossy, parse_content_length, unfold};
+use crate::parsing::{is_text, is_token, lossy, parse_content_length, unfold};
 use crate::value::{Error, LabelledDigest, MediaType, Text, WarcDate};
 use crate::version::WarcVersion;
 
@@ -144,7 +144,7 @@ impl HeaderValue {
         let form = if let Some(kind) = field.map(form_of) {
             Some(parse_form(kind, &content)?)
         } else {
-            if content.iter().any(|&byte| is_ctl(byte)) {
+            if !is_text(&content) {
                 return Err(Error::Text(lossy(&content)));
             }
             None
@@ -375,6 +375,10 @@ mod tests {
             HeaderValue::parse(None, b"with\x07bell"),
             Err(Error::Text(_))
         ));
+
+        // `TEXT` includes linear white space, so a tab inside a value is not one of them.
+        let tabbed = HeaderValue::parse(None, b" with\ttab").unwrap();
+        assert_eq!(tabbed.as_bytes(), b" with\ttab");
     }
 
     /// Bytes that are not UTF-8 fail every grammar that reads a value as text, and are kept

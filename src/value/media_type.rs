@@ -294,14 +294,15 @@ mod tests {
         }
     }
 
-    /// A quoted parameter value is made of `qdtext` and `quoted-pair`; an unescaped control
-    /// character is neither and must not be accepted as ordinary text.
+    /// A quoted parameter value is made of `qdtext` and `quoted-pair`, and a control character is
+    /// neither: `quoted-pair` escapes an octet, so a backslash does not admit one.
     #[test]
-    #[ignore = "known bug (quoted media type parameters accept controls): fix incoming"]
-    fn rejects_unescaped_controls_in_a_quoted_parameter() {
+    fn rejects_controls_in_a_quoted_parameter() {
         for value in [
             b"text/plain; x=\"a\0b\"".as_slice(),
             b"text/plain; x=\"a\x7fb\"".as_slice(),
+            b"text/plain; x=\"a\\\0b\"".as_slice(),
+            b"text/plain; x=\"a\\\x7fb\"".as_slice(),
         ] {
             assert!(
                 matches!(MediaType::parse(value), Err(Error::MediaType(_))),
