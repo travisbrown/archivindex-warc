@@ -12,7 +12,7 @@ use chrono::Utc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut body = fields::Body::new();
-    body.push(WarcinfoField::Software, "archivindex-warc/0.4.0")?;
+    body.push(WarcinfoField::Software, "archivindex-warc/0.1.0")?;
     body.push(WarcinfoField::Hostname, "localhost")?;
 
     // The builder is chosen by record type, so `WARC-Filename` is a method here and would not be
