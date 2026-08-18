@@ -2164,8 +2164,37 @@ mod tests {
         );
     }
 
-    /// A record is also assembled by naming its variant, where nothing holds its declaration to
-    /// its block, so writing asks again rather than writing what no reader would read back.
+    /// A block paired with a header block declaring `warc-fields` is read as those fields, so
+    /// octets that are not them are what the pairing fails on.
+    #[test]
+    fn a_header_block_declaring_fields_refuses_a_block_that_is_not_them() {
+        const BLOCK: &[u8] = b"this line names no field\r\n";
+
+        let header = lift_header(
+            "warcinfo",
+            &[("Content-Type", "application/warc-fields")],
+            BLOCK,
+        )
+        .expect("liftable header block");
+
+        assert_eq!(
+            header.with_body(BLOCK.to_vec()),
+            Err(BlockError::Fields(fields::Error::NotANamedField {
+                offset: 0
+            }))
+        );
+
+        // The same octets under any other content type are the record's as they stand.
+        let header = lift_header("warcinfo", &[("Content-Type", "text/plain")], BLOCK)
+            .expect("liftable header block");
+        let record = header
+            .with_body(BLOCK.to_vec())
+            .expect("a block that is not read as fields cannot fail to be read as them");
+
+        assert_eq!(record.body_bytes().as_ref(), BLOCK);
+    }
+
+    /// Rendering checks the content length of directly constructed or modified records.
     #[test]
     fn a_record_declaring_a_length_its_block_does_not_have_is_not_written() {
         let mut record = lift_grammar(grammar_of(
