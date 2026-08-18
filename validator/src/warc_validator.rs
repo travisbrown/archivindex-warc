@@ -5,13 +5,17 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use warc::WarcReader;
 
-use crate::model::ValidationResult;
+use crate::model::{ValidationResult, is_gzip, plural};
 
 pub fn run_warc(file: &Path) -> ValidationResult {
     const NAME: &str = "warc 0.4";
     match validate(file) {
         Ok(0) => ValidationResult::failed(NAME, "file contains no WARC records", String::new()),
-        Ok(count) => ValidationResult::passed(NAME, record_count(count), String::new()),
+        Ok(count) => ValidationResult::passed(
+            NAME,
+            format!("{} parsed", plural(count, "record")),
+            String::new(),
+        ),
         Err(error) => ValidationResult::failed(NAME, format!("{error:#}"), String::new()),
     }
 }
@@ -41,17 +45,6 @@ where
         count += 1;
     }
     Ok(count)
-}
-
-fn is_gzip(file: &Path) -> bool {
-    file.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
-}
-
-fn record_count(count: usize) -> String {
-    let suffix = if count == 1 { "" } else { "s" };
-    format!("{count} record{suffix} parsed")
 }
 
 #[cfg(test)]
