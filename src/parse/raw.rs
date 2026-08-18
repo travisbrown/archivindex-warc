@@ -555,6 +555,38 @@ mod tests {
         }
     }
 
+    /// `Content-Length` is what frames the body, so a second one leaves the end of the record
+    /// ambiguous. It is refused whether or not it agrees with the first, and refused when the block
+    /// is written as well as when it is read, since a reader taking the other one would find a
+    /// different record there.
+    #[test]
+    #[ignore = "known bug (a repeated Content-Length is accepted): fix incoming"]
+    fn rejects_a_repeated_content_length() {
+        for lines in [
+            ["Content-Length: 0", "Content-Length: 0"],
+            ["Content-Length: 5", "Content-Length: 0"],
+            ["Content-Length: 0", "Content-Length: five"],
+            ["Content-Length: 0", "content-length: 0"],
+        ] {
+            let block = block(&lines);
+
+            assert!(RecordHeader::parse(&block).is_err(), "{lines:?}");
+
+            let mut header = RecordHeader {
+                version: WarcVersion::V1_0,
+                headers: Vec::new(),
+            };
+            for line in lines {
+                let (name, value) = line.split_once(':').expect("a field line");
+                header
+                    .headers
+                    .push((name.to_owned(), format!(" {}", value.trim()).into_bytes()));
+            }
+
+            assert!(header.validate().is_err(), "{lines:?}");
+        }
+    }
+
     #[test]
     fn rejects_a_block_with_no_terminator() {
         assert!(matches!(
