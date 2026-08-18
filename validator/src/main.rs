@@ -1,3 +1,4 @@
+mod archivindex_validator;
 mod external;
 mod install;
 mod model;
@@ -12,6 +13,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use directories::ProjectDirs;
 
+use crate::archivindex_validator::{Layer, run_archivindex};
 use crate::external::{run_jwat_tools, run_warchaeology, run_warcio};
 use crate::install::ToolResolver;
 use crate::model::{Status, ValidationResult};
@@ -44,6 +46,9 @@ struct Cli {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum)]
 enum ValidatorName {
+    ArchivindexRaw,
+    ArchivindexUntyped,
+    ArchivindexRecord,
     Warc,
     #[value(name = "warcat-rs")]
     WarcatRs,
@@ -54,7 +59,11 @@ enum ValidatorName {
     Warcio,
 }
 
-const ALL_VALIDATORS: [ValidatorName; 5] = [
+/// Validators in execution order, with the local crate first.
+const ALL_VALIDATORS: [ValidatorName; 8] = [
+    ValidatorName::ArchivindexRaw,
+    ValidatorName::ArchivindexUntyped,
+    ValidatorName::ArchivindexRecord,
     ValidatorName::Warc,
     ValidatorName::WarcatRs,
     ValidatorName::Warchaeology,
@@ -98,6 +107,9 @@ fn run(cli: Cli) -> Result<bool> {
         }
 
         let result = match validator {
+            ValidatorName::ArchivindexRaw => run_archivindex(&file, Layer::Raw),
+            ValidatorName::ArchivindexUntyped => run_archivindex(&file, Layer::Untyped),
+            ValidatorName::ArchivindexRecord => run_archivindex(&file, Layer::Record),
             ValidatorName::Warc => run_warc(&file),
             ValidatorName::WarcatRs => run_warcat(&file),
             ValidatorName::Warchaeology => run_warchaeology(&file, &resolver),
@@ -120,12 +132,12 @@ fn default_tools_dir() -> Result<PathBuf> {
 fn print_summary(file: &std::path::Path, results: &[ValidationResult], verbose: bool) {
     println!("{}", file.display());
     println!();
-    println!("{:<16} {:<12} Summary", "Validator", "Status");
-    println!("{:-<16} {:-<12} {:-<40}", "", "", "");
+    println!("{:<20} {:<12} Summary", "Validator", "Status");
+    println!("{:-<20} {:-<12} {:-<40}", "", "", "");
 
     for result in results {
         println!(
-            "{:<16} {:<12} {}",
+            "{:<20} {:<12} {}",
             result.validator,
             result.status.label(),
             result.summary
