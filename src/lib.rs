@@ -21,7 +21,9 @@
 //! gzip-compressed WARC files.
 //!
 //! Errors are reported at the level that finds them. [`value::Error`] reports violations of field
-//! value grammars, while [`parse::untyped::Error`] adds the field that carried the value.
+//! value grammars, naming the rule that broke through [`value::TextError`],
+//! [`value::MediaTypeError`], and [`value::DigestError`], while [`parse::untyped::Error`] adds the
+//! field that carried the value.
 //! [`record::Error`] reports semantic violations, including forbidden or repeated fields and
 //! values that are invalid for the declared version or record type. [`record::RenderError`] catches
 //! invalid states introduced through extensions or direct mutation, such as duplicate standard

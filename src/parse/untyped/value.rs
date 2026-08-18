@@ -8,8 +8,8 @@ use std::net::IpAddr;
 use fluent_uri::Uri;
 
 use super::name::Field;
-use crate::parsing::{is_text, is_token, lossy, parse_content_length, unfold};
-use crate::value::{Error, LabelledDigest, MediaType, Text, WarcDate};
+use crate::parsing::{is_text_char, is_token, lossy, parse_content_length, unfold};
+use crate::value::{Error, LabelledDigest, MediaType, Text, TextError, WarcDate};
 use crate::version::WarcVersion;
 
 /// The parsed form of a field value.
@@ -144,8 +144,12 @@ impl HeaderValue {
         let form = if let Some(kind) = field.map(form_of) {
             Some(parse_form(kind, &content)?)
         } else {
-            if !is_text(&content) {
-                return Err(Error::Text(lossy(&content)));
+            if let Some(index) = content.iter().position(|&byte| !is_text_char(byte)) {
+                return Err(TextError::ControlCharacter {
+                    value: lossy(&content),
+                    index,
+                }
+                .into());
             }
             None
         };
@@ -230,9 +234,15 @@ fn parse_form(kind: FormKind, content: &[u8]) -> Result<ValueForm, Error> {
                 Err(Error::Token(lossy(content)))
             }
         }
-        FormKind::Digest => LabelledDigest::parse(content).map(ValueForm::Digest),
-        FormKind::MediaType => MediaType::parse(content).map(ValueForm::MediaType),
-        FormKind::Text => Text::parse(content).map(ValueForm::Text),
+        FormKind::Digest => LabelledDigest::parse(content)
+            .map(ValueForm::Digest)
+            .map_err(Error::from),
+        FormKind::MediaType => MediaType::parse(content)
+            .map(ValueForm::MediaType)
+            .map_err(Error::from),
+        FormKind::Text => Text::parse(content)
+            .map(ValueForm::Text)
+            .map_err(Error::from),
         FormKind::IpAddress => std::str::from_utf8(content)
             .ok()
             .and_then(|text| text.parse().ok())
