@@ -559,6 +559,35 @@ mod tests {
         ));
     }
 
+    /// `field-content` admits no control characters, so they must be refused both when a header is
+    /// read and when one assembled in code is validated for writing.
+    #[test]
+    #[ignore = "known bug (control characters other than CR and LF are accepted): fix incoming"]
+    fn rejects_control_characters_in_a_value() {
+        for control in *b"\0\x1f\x7f" {
+            let mut source = b"WARC/1.1\r\nContent-Length: 0\r\nX-Foo: a".to_vec();
+            source.push(control);
+            source.extend_from_slice(b"b\r\n\r\n");
+            assert!(
+                matches!(
+                    RecordHeader::parse(&source),
+                    Err(Error::MalformedFieldLine(_))
+                ),
+                "{control:?}"
+            );
+
+            let (mut header, _) =
+                RecordHeader::parse(&block(&["Content-Length: 0"])).expect("base header");
+            header
+                .headers
+                .push(("X-Foo".to_owned(), vec![b' ', b'a', control, b'b']));
+            assert!(
+                matches!(header.validate(), Err(Error::MalformedFieldLine(_))),
+                "{control:?}"
+            );
+        }
+    }
+
     #[test]
     fn rejects_a_block_with_no_terminator() {
         assert!(matches!(
