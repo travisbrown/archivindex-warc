@@ -15,7 +15,10 @@
 //! URI brackets when rendered. A declared `Content-Length` is checked whenever a header and body
 //! are paired. A declared `WARC-Block-Digest` is checked when the record is rendered, and a record
 //! that declares none is given one there.
+//!
+//! Use [`builder`] to create new records.
 
+pub mod builder;
 mod digest;
 pub mod extension;
 pub mod fields;
