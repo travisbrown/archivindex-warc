@@ -41,7 +41,9 @@ impl WarcDate {
     /// Parse a date using the grammar of the given WARC version.
     ///
     /// WARC 1.0 accepts only `YYYY-MM-DDThh:mm:ssZ`. WARC 1.1 accepts every W3C-DTF granularity
-    /// from a year through a decimal fraction of a second; timezone offsets are normalized to UTC.
+    /// from a year through a decimal fraction of a second. Both read `w3c-iso8601` as the UTC
+    /// timestamp the field definition calls for, so a value carrying a zone offset is refused
+    /// rather than converted.
     ///
     /// Returns `None` when `value` does not match the grammar of `version`.
     #[must_use]
@@ -151,7 +153,7 @@ impl WarcDate {
             });
         }
 
-        let (body, utc) = split_time_zone(value)?;
+        let body = value.strip_suffix('Z')?;
         let precision = match body.len() {
             16 if valid_date_time_layout(body, false) => WarcDatePrecision::Minute,
             19 if valid_date_time_layout(body, true) => WarcDatePrecision::Second,
@@ -167,20 +169,13 @@ impl WarcDate {
             _ => return None,
         };
 
-        let date_time = match precision {
-            WarcDatePrecision::Minute if utc => {
-                NaiveDateTime::parse_from_str(body, "%Y-%m-%dT%H:%M")
-                    .ok()?
-                    .and_utc()
-            }
-            WarcDatePrecision::Minute => DateTime::parse_from_str(value, "%Y-%m-%dT%H:%M%:z")
-                .ok()?
-                .to_utc(),
-            WarcDatePrecision::Second | WarcDatePrecision::Fraction(_) => {
-                DateTime::parse_from_rfc3339(value).ok()?.to_utc()
-            }
+        let layout = match precision {
+            WarcDatePrecision::Minute => "%Y-%m-%dT%H:%M",
+            WarcDatePrecision::Second => "%Y-%m-%dT%H:%M:%S",
+            WarcDatePrecision::Fraction(_) => "%Y-%m-%dT%H:%M:%S%.f",
             _ => unreachable!("reduced precisions returned above"),
         };
+        let date_time = NaiveDateTime::parse_from_str(body, layout).ok()?.and_utc();
 
         Some(Self {
             date_time,
@@ -254,30 +249,6 @@ fn valid_date_time_layout(value: &str, seconds: bool) -> bool {
                     .is_some_and(|second| second <= 59)))
 }
 
-/// Split a W3C-DTF timezone designator, reporting whether it was the canonical UTC `Z`.
-fn split_time_zone(value: &str) -> Option<(&str, bool)> {
-    if let Some(body) = value.strip_suffix('Z') {
-        return Some((body, true));
-    }
-
-    let zone_start = value.len().checked_sub(6)?;
-    if !matches!(value.as_bytes().get(zone_start), Some(b'+' | b'-')) {
-        return None;
-    }
-
-    let zone = value.get(zone_start..)?;
-    let bytes = zone.as_bytes();
-    if matches!(bytes[0], b'+' | b'-')
-        && bytes[3] == b':'
-        && ascii_digits(&zone[1..3])
-        && ascii_digits(&zone[4..])
-    {
-        Some((value.get(..zone_start)?, false))
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{WarcDate, WarcDatePrecision};
@@ -311,7 +282,6 @@ mod tests {
             ("2020-07", "2020-07"),
             ("2020-07-08", "2020-07-08"),
             ("2020-07-08T02:52Z", "2020-07-08T02:52Z"),
-            ("2020-07-08T02:52+01:00", "2020-07-08T01:52Z"),
             ("2020-07-08T02:52:55Z", "2020-07-08T02:52:55Z"),
             ("2020-07-08T02:52:55.100Z", "2020-07-08T02:52:55.100Z"),
             (
@@ -342,7 +312,6 @@ mod tests {
     ///
     /// [W3CDTF]: https://www.w3.org/TR/NOTE-datetime
     #[test]
-    #[ignore = "known bug (WARC 1.1 accepts a zone offset): fix incoming"]
     fn warc_1_1_requires_utc() {
         for invalid in [
             "2020-07-08T02:52+01:00",

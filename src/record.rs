@@ -1247,7 +1247,6 @@ mod record_tests {
             ("2020-07", "2020-07"),
             ("2020-07-08", "2020-07-08"),
             ("2020-07-08T02:52Z", "2020-07-08T02:52Z"),
-            ("2020-07-08T02:52+01:00", "2020-07-08T01:52Z"),
             ("2020-07-08T02:52:55Z", "2020-07-08T02:52:55Z"),
             (
                 "2020-07-08T02:52:55.123456789Z",
@@ -1264,7 +1263,14 @@ mod record_tests {
             );
         }
 
-        for invalid in ["yesterday", "202", "2020-7", "2020-07-08T02Z", "20200708"] {
+        for invalid in [
+            "yesterday",
+            "202",
+            "2020-7",
+            "2020-07-08T02Z",
+            "20200708",
+            "2020-07-08T02:52+01:00",
+        ] {
             assert!(
                 Record::parse_record_date(crate::WarcVersion::V1_1, invalid).is_err(),
                 "{invalid}"
@@ -1285,8 +1291,8 @@ mod record_tests {
         assert!(!uri.contains(char::is_whitespace));
     }
 
-    /// Emitted `WARC-Date` values are ISO 8601 UTC timestamps: non-UTC offsets are converted, and
-    /// a decimal fraction (at most nine digits) appears only when the moment requires one.
+    /// Emitted `WARC-Date` values are ISO 8601 UTC timestamps, with a decimal fraction (at most
+    /// nine digits) only when the moment requires one.
     #[test]
     fn emitted_date_is_iso_8601_utc() {
         let mut record = Record::<BufferedBody>::default();
@@ -1294,7 +1300,7 @@ mod record_tests {
             ("2020-07-08T02:52:55Z", "2020-07-08T02:52:55Z"),
             ("2020-07-08T02:52:55.123Z", "2020-07-08T02:52:55.123Z"),
             (
-                "2020-07-08T03:52:55.123456789+01:00",
+                "2020-07-08T02:52:55.123456789Z",
                 "2020-07-08T02:52:55.123456789Z",
             ),
         ] {
