@@ -15,8 +15,8 @@ pub mod warcinfo;
 use std::fmt::Display;
 use std::str;
 
-use crate::fields::dcmi::DcmiTerm;
 use crate::parsing::{is_text, is_token};
+use crate::record::fields::dcmi::DcmiTerm;
 
 /// An error returned by reading a record body written as `application/warc-fields`.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -321,7 +321,7 @@ impl<F: Field> Display for Body<F> {
 mod tests {
     use super::warcinfo::{WarcinfoBody, WarcinfoField};
     use super::{Error, Field};
-    use crate::fields::dcmi::DcmiTerm;
+    use crate::record::fields::dcmi::DcmiTerm;
 
     /// Writing a body out and reading it back gives the same body, and the rendering is the
     /// named fields of the block in the order they were added.

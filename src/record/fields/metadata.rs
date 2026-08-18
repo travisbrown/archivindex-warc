@@ -5,7 +5,7 @@
 //! extension fields. Every field is optional.
 //!
 //! ```
-//! use archivindex_warc::fields::metadata::MetadataBody;
+//! use archivindex_warc::record::fields::metadata::MetadataBody;
 //!
 //! let body = MetadataBody::parse(
 //!     b"via: http://www.archive.org/\r\n\
@@ -16,14 +16,14 @@
 //! assert_eq!(body.via(), Some("http://www.archive.org/"));
 //! assert_eq!(body.hops_from_seed(), Some("E"));
 //! assert_eq!(body.fetch_time_ms(), Some(565));
-//! # Ok::<(), archivindex_warc::fields::Error>(())
+//! # Ok::<(), archivindex_warc::record::fields::Error>(())
 //! ```
 
 use std::fmt::Display;
 use std::str::FromStr;
 
-use crate::fields::dcmi::DcmiTerm;
-use crate::fields::{Body, Field};
+use crate::record::fields::dcmi::DcmiTerm;
+use crate::record::fields::{Body, Field};
 
 /// A field of a `metadata` record's body.
 ///
@@ -230,8 +230,8 @@ pub struct UnknownHop {
 #[cfg(test)]
 mod tests {
     use super::{Hop, HopsFromSeed, MetadataBody, MetadataField, UnknownHop};
-    use crate::fields::Field;
-    use crate::fields::dcmi::DcmiTerm;
+    use crate::record::fields::Field;
+    use crate::record::fields::dcmi::DcmiTerm;
 
     /// Every hop the annotated standard recommends a character for.
     const KNOWN_HOPS: [Hop; 8] = [

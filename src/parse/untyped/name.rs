@@ -133,6 +133,13 @@ impl Field {
             )
         )
     }
+
+    /// This field's position in the conventional ordering of a header block.
+    ///
+    /// The variants are declared in that order, so a field's discriminant is its position.
+    pub(crate) const fn canonical_rank(self) -> usize {
+        self as usize
+    }
 }
 
 impl Display for Field {
@@ -353,6 +360,15 @@ mod tests {
             assert_eq!(field.name(), field.standard_name().to_ascii_lowercase());
             assert_eq!(Field::from_name(field.standard_name()), Some(field));
             assert_eq!(Field::from_name(field.name()), Some(field));
+        }
+    }
+
+    /// Each field ranks at its place in the conventional order, which also proves the array above
+    /// holds all twenty-one fields, one apiece.
+    #[test]
+    fn every_field_is_ranked() {
+        for (position, field) in CANONICAL_ORDER.into_iter().enumerate() {
+            assert_eq!(field.canonical_rank(), position, "{field}");
         }
     }
 

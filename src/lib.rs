@@ -36,14 +36,8 @@
 
 mod parsing;
 
-pub mod fields;
 pub mod io;
 pub mod parse;
+pub mod record;
 pub mod value;
 pub mod version;
-
-mod record_type;
-pub use record_type::RecordType;
-
-mod truncated_type;
-pub use truncated_type::TruncatedType;

@@ -8,8 +8,8 @@
 //! round-tripping, which keeps any digest over the block verifiable.
 //!
 //! ```
-//! use archivindex_warc::fields::dcmi::DcmiTerm;
-//! use archivindex_warc::fields::warcinfo::{WarcinfoBody, WarcinfoField};
+//! use archivindex_warc::record::fields::dcmi::DcmiTerm;
+//! use archivindex_warc::record::fields::warcinfo::{WarcinfoBody, WarcinfoField};
 //!
 //! let body = WarcinfoBody::parse(
 //!     b"software: Heritrix 1.12.0 http://crawler.archive.org\r\n\
@@ -23,14 +23,14 @@
 //!     body.get(&WarcinfoField::Dcmi(DcmiTerm::IsPartOf)),
 //!     Some("testcrawl-20050708")
 //! );
-//! # Ok::<(), archivindex_warc::fields::Error>(())
+//! # Ok::<(), archivindex_warc::record::fields::Error>(())
 //! ```
 
 use std::fmt::Display;
 use std::net::IpAddr;
 
-use crate::fields::dcmi::DcmiTerm;
-use crate::fields::{Body, Field};
+use crate::record::fields::dcmi::DcmiTerm;
+use crate::record::fields::{Body, Field};
 
 /// A field of a `warcinfo` record's body.
 ///
@@ -165,8 +165,8 @@ impl WarcinfoBody {
 #[cfg(test)]
 mod tests {
     use super::{WarcinfoBody, WarcinfoField};
-    use crate::fields::Field;
-    use crate::fields::dcmi::DcmiTerm;
+    use crate::record::fields::Field;
+    use crate::record::fields::dcmi::DcmiTerm;
 
     /// The `warcinfo` example from Annex B.1 of the standard.
     const ANNEX_EXAMPLE: &[u8] = b"software: Heritrix 1.12.0 http://crawler.archive.org\r\n\
