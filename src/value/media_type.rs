@@ -3,7 +3,7 @@
 use std::fmt::Display;
 
 use super::from_ascii;
-use crate::parsing::{is_token, lossy, unquote};
+use crate::parsing::{is_lws, is_token, lossy, unquote};
 use crate::value::Error;
 
 /// A `media-type` value.
@@ -23,12 +23,22 @@ use crate::value::Error;
 /// is what we implement.
 ///
 /// Type, subtype, and attribute names are case-insensitive; they are kept as written, and
-/// [`is`](Self::is) compares without regard to case.
+/// [`is`](Self::is) compares without regard to case. The `OWS` around each `;` is kept as
+/// written too, so a value renders as it was read.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MediaType {
     type_name: Box<str>,
     subtype: Box<str>,
-    parameters: Box<[(Box<str>, ParameterValue)]>,
+    parameters: Box<[Parameter]>,
+}
+
+/// One `OWS ";" OWS parameter` of a media type.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Parameter {
+    /// The `OWS ";" OWS` introducing the parameter, as written.
+    separator: Box<str>,
+    name: Box<str>,
+    value: ParameterValue,
 }
 
 /// A media type parameter's value, which the grammar writes either bare or in quotes.
@@ -94,14 +104,28 @@ impl MediaType {
         }
 
         let mut parameters = Vec::new();
-        let mut rest = &value[essence_end..];
-        while let Some(remainder) = rest.strip_prefix(b";") {
-            let (parameter, tail) = split_parameter(trim_ows_start(remainder));
-            parameters.push(parse_parameter(parameter).ok_or_else(error)?);
-            rest = tail;
-        }
-        if !rest.is_empty() {
-            return Err(error());
+        // A separator runs from the end of the element before it to the parameter it introduces,
+        // so it starts at the white space that element was trimmed of rather than at the `;`.
+        let mut separator_start = essence_end - trailing_ows(&value[..essence_end]);
+        let mut index = essence_end;
+
+        // `index` sits on a `;` whenever there is one left, since `split_parameter` stops there.
+        while index < value.len() {
+            let after_semicolon = index + 1;
+            let content_start = after_semicolon + leading_ows(&value[after_semicolon..]);
+            let (chunk, rest) = split_parameter(&value[content_start..]);
+            // Trailing `OWS` belongs to the separator that follows, not to this parameter.
+            let content = trim_ows_end(chunk);
+            let (name, parameter_value) = parse_parameter(content).ok_or_else(error)?;
+
+            parameters.push(Parameter {
+                separator: from_ascii(&value[separator_start..content_start]),
+                name,
+                value: parameter_value,
+            });
+
+            separator_start = content_start + content.len();
+            index = value.len() - rest.len();
         }
 
         Ok(Self {
@@ -127,7 +151,7 @@ impl MediaType {
     pub fn parameters(&self) -> impl Iterator<Item = (&str, &ParameterValue)> {
         self.parameters
             .iter()
-            .map(|(name, value)| (name.as_ref(), value))
+            .map(|parameter| (parameter.name.as_ref(), &parameter.value))
     }
 
     /// The first parameter with the given name, compared case-insensitively.
@@ -135,8 +159,8 @@ impl MediaType {
     pub fn parameter(&self, name: &str) -> Option<&ParameterValue> {
         self.parameters
             .iter()
-            .find(|(parameter, _)| parameter.eq_ignore_ascii_case(name))
-            .map(|(_, value)| value)
+            .find(|parameter| parameter.name.eq_ignore_ascii_case(name))
+            .map(|parameter| &parameter.value)
     }
 
     /// Whether this is the given type and subtype, compared case-insensitively and ignoring any
@@ -148,10 +172,16 @@ impl MediaType {
 }
 
 impl Display for MediaType {
+    /// Write the type and its parameters, each spelled with the `OWS` it was read with.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.type_name, self.subtype)?;
-        for (name, value) in &self.parameters {
-            write!(f, "; {name}={value}")?;
+        for Parameter {
+            separator,
+            name,
+            value,
+        } in &self.parameters
+        {
+            write!(f, "{separator}{name}={value}")?;
         }
 
         Ok(())
@@ -179,9 +209,8 @@ fn split_parameter(input: &[u8]) -> (&[u8], &[u8]) {
     (input, &[])
 }
 
-/// Read one `attribute "=" value`.
+/// Read one `attribute "=" value`, given the content without its surrounding `OWS`.
 fn parse_parameter(input: &[u8]) -> Option<(Box<str>, ParameterValue)> {
-    let input = trim_ows(input);
     let equals = input.iter().position(|&byte| byte == b'=')?;
     let (attribute, value) = (&input[..equals], &input[equals + 1..]);
     if !is_token(attribute) {
@@ -200,27 +229,30 @@ fn parse_parameter(input: &[u8]) -> Option<(Box<str>, ParameterValue)> {
     Some((from_ascii(attribute), value))
 }
 
-/// Strip `OWS` from both ends, per errata #38.
-fn trim_ows(input: &[u8]) -> &[u8] {
-    trim_ows_end(trim_ows_start(input))
+/// The length of the `OWS` a value opens with.
+fn leading_ows(input: &[u8]) -> usize {
+    input
+        .iter()
+        .position(|&byte| !is_lws(byte))
+        .unwrap_or(input.len())
 }
 
-fn trim_ows_start(input: &[u8]) -> &[u8] {
-    let start = input
-        .iter()
-        .position(|&byte| !matches!(byte, b' ' | b'\t'))
-        .unwrap_or(input.len());
+/// The length of the `OWS` a value closes with.
+fn trailing_ows(input: &[u8]) -> usize {
+    input.len()
+        - input
+            .iter()
+            .rposition(|&byte| !is_lws(byte))
+            .map_or(0, |index| index + 1)
+}
 
-    &input[start..]
+/// Strip `OWS` from both ends, per errata #38.
+fn trim_ows(input: &[u8]) -> &[u8] {
+    trim_ows_end(&input[leading_ows(input)..])
 }
 
 fn trim_ows_end(input: &[u8]) -> &[u8] {
-    let end = input
-        .iter()
-        .rposition(|&byte| !matches!(byte, b' ' | b'\t'))
-        .map_or(0, |index| index + 1);
-
-    &input[..end]
+    &input[..input.len() - trailing_ows(input)]
 }
 
 #[cfg(test)]
@@ -253,7 +285,24 @@ mod tests {
                 media_type.parameter("msgtype").map(ParameterValue::as_str),
                 Some("response")
             );
+            // The `OWS` is kept as read, so each spelling writes back as itself.
+            assert_eq!(media_type.to_string().as_bytes(), value);
         }
+    }
+
+    /// Each separator is the white space around its own `;`, so spellings that differ from one
+    /// parameter to the next are each kept.
+    #[test]
+    fn keeps_the_whitespace_of_each_parameter_separately() {
+        let value = b"text/plain ;a=1;\tb=\"x ; y\" ;  c=3".as_slice();
+        let media_type = MediaType::parse(value).unwrap();
+
+        assert_eq!(media_type.parameters().count(), 3);
+        assert_eq!(
+            media_type.parameter("b").map(ParameterValue::as_str),
+            Some("x ; y")
+        );
+        assert_eq!(media_type.to_string().as_bytes(), value);
     }
 
     #[test]
