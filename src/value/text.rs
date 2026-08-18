@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::fmt::Display;
 
-use crate::parsing::{is_ctl, lossy, unquote};
+use crate::parsing::{is_text, lossy, unquote};
 use crate::value::Error;
 
 /// A `WARC-Filename` value, which the grammar writes either bare or in quotes.
@@ -26,16 +26,13 @@ impl Text {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Text`] when the value holds a control character, or when it opens with a
-    /// quote it does not close.
+    /// Returns [`Error::Text`] when the value holds a control character other than linear white
+    /// space, or when it opens with a quote it does not close.
     pub fn parse(value: &[u8]) -> Result<Self, Error> {
         let error = || Error::Text(lossy(value));
 
         if value.first() == Some(&b'"') {
             let content = unquote(value).ok_or_else(error)?;
-            if content.iter().any(|&byte| is_ctl(byte)) {
-                return Err(error());
-            }
 
             return Ok(Self {
                 content: content.into_boxed_slice(),
@@ -43,7 +40,7 @@ impl Text {
             });
         }
 
-        if value.iter().any(|&byte| is_ctl(byte)) {
+        if !is_text(value) {
             return Err(error());
         }
 
@@ -135,10 +132,26 @@ mod tests {
         assert_eq!(bytes.to_string(), "caf\u{fffd}.warc");
     }
 
+    /// `TEXT` includes linear white space, so a tab is not one of the control characters it
+    /// excludes, however it is written.
+    #[test]
+    fn keeps_a_tab() {
+        for value in [
+            b"with\ttab.warc".as_slice(),
+            b"\"with\\\ttab.warc\"".as_slice(),
+        ] {
+            let text = Text::parse(value).expect("parsed");
+            assert_eq!(text.as_bytes(), b"with\ttab.warc");
+        }
+    }
+
     #[test]
     fn rejects_malformed_text() {
         for value in [
             b"with\x01control".as_slice(),
+            b"\"with\x01control\"".as_slice(),
+            // An escape does not make a control character text.
+            b"\"with\\\x01control\"".as_slice(),
             br#""unterminated"#.as_slice(),
             br#""with"gap""#.as_slice(),
         ] {

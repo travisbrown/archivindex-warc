@@ -34,9 +34,15 @@ pub const fn is_lws(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t')
 }
 
-/// Whether a byte is a control character, which `TEXT` excludes.
-pub const fn is_ctl(byte: u8) -> bool {
+/// Whether a byte is a control character.
+const fn is_ctl(byte: u8) -> bool {
     byte < 32 || byte == 127
+}
+
+/// Whether a byte is `TEXT`, which is any octet except a control character that is not linear
+/// white space.
+pub const fn is_text_char(byte: u8) -> bool {
+    !is_ctl(byte) || is_lws(byte)
 }
 
 /// Where a line's content ends and where the line after it begins.
@@ -92,12 +98,43 @@ pub fn is_token(value: &[u8]) -> bool {
     !value.is_empty() && value.iter().copied().all(is_token_char)
 }
 
+/// Whether every byte of a value is `TEXT`.
+pub fn is_text(value: &[u8]) -> bool {
+    value.iter().copied().all(is_text_char)
+}
+
+/// Whether a value holds no line break other than the `CRLF` of a fold.
+///
+/// A fold is `CRLF` followed by at least one space or tab. Any other line break would end the
+/// field line rather than continue the value, so a value holding one cannot be written back as it
+/// was read. Control characters other than line breaks are left to the grammar layer.
+pub fn is_folded_value(value: &[u8]) -> bool {
+    let mut index = 0;
+    while index < value.len() {
+        match value[index] {
+            b'\r' => {
+                if value.get(index + 1) != Some(&b'\n')
+                    || !matches!(value.get(index + 2), Some(b' ' | b'\t'))
+                {
+                    return false;
+                }
+                index += 3;
+            }
+            b'\n' => return false,
+            _ => index += 1,
+        }
+    }
+
+    true
+}
+
 /// Resolve a `quoted-string` into the octets it stands for.
 ///
 /// The surrounding quotes are removed, each `quoted-pair` loses its leading backslash, and an
-/// unescaped quote or a trailing backslash makes the value malformed. Validation of the decoded
-/// octets belongs to the field-specific caller: a media type requires UTF-8 text, while
-/// `WARC-Filename` may hold arbitrary non-control octets.
+/// unescaped quote, a trailing backslash, or a control character makes the value malformed. A
+/// backslash escapes an octet, not a control character, so escaping one does not admit it.
+/// Validation of the decoded octets belongs to the field-specific caller: a media type requires
+/// UTF-8 text, while `WARC-Filename` may hold arbitrary `TEXT`.
 pub fn unquote(value: &[u8]) -> Option<Vec<u8>> {
     let inner = value.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
     let mut unquoted = Vec::with_capacity(inner.len());
@@ -105,11 +142,16 @@ pub fn unquote(value: &[u8]) -> Option<Vec<u8>> {
     while index < inner.len() {
         match inner[index] {
             b'\\' => {
-                unquoted.push(*inner.get(index + 1)?);
+                let escaped = *inner.get(index + 1)?;
+                if !is_text_char(escaped) {
+                    return None;
+                }
+                unquoted.push(escaped);
                 index += 2;
             }
             // An unescaped quote would have ended the string, so the bounds are wrong.
             b'"' => return None,
+            byte if !is_text_char(byte) => return None,
             byte => {
                 unquoted.push(byte);
                 index += 1;
@@ -279,11 +321,18 @@ mod tests {
         );
         assert_eq!(unquote(b"\"\""), Some(Vec::new()));
 
+        // A tab is white space rather than a control character here, escaped or not.
+        assert_eq!(unquote(b"\"a\tb\""), Some(b"a\tb".to_vec()));
+        assert_eq!(unquote(b"\"a\\\tb\""), Some(b"a\tb".to_vec()));
+
         for malformed in [
             b"not quoted".as_slice(),
             br#""unterminated"#.as_slice(),
             br#""with"gap""#.as_slice(),
             b"\"trailing\\\"".as_slice(),
+            b"\"a\0b\"".as_slice(),
+            // An escape does not make a control character text.
+            b"\"a\\\0b\"".as_slice(),
         ] {
             assert_eq!(unquote(malformed), None, "{malformed:?}");
         }

@@ -12,7 +12,9 @@
 use std::io::Write;
 
 use crate::parse;
-use crate::parsing::{is_lws, is_token_char, lossy, parse_content_length, split_field_line};
+use crate::parsing::{
+    is_folded_value, is_lws, is_token_char, lossy, parse_content_length, split_field_line,
+};
 use crate::version::WarcVersion;
 
 /// The ways a run of octets can fail to be a record.
@@ -125,7 +127,7 @@ impl RecordHeader {
 
             // A CR that opens no fold would have ended the field line, and every layer above
             // reads one in a value as a fold, so it is refused here rather than carried along.
-            if !value_folds_only(value) {
+            if !is_folded_value(value) {
                 return Err(Error::MalformedFieldLine(lossy(&block[start..value_end])));
             }
 
@@ -175,7 +177,7 @@ impl RecordHeader {
             if name.is_empty() || !name.bytes().all(is_token_char) {
                 return Err(Error::MalformedFieldLine(name.clone()));
             }
-            if !value_folds_only(value) {
+            if !is_folded_value(value) {
                 return Err(Error::MalformedFieldLine(name.clone()));
             }
 
@@ -348,33 +350,6 @@ fn parse_length(value: &[u8]) -> Result<u64, Error> {
         .ok()
         .and_then(parse_content_length)
         .ok_or_else(|| Error::MalformedContentLength(lossy(value)))
-}
-
-/// Whether a value holds no line break other than the CRLF of a fold.
-///
-/// Reading and validating share this rule, so that a block that can be read can also be written
-/// back. Each reports its failure the way its own errors are spelled, which is why this answers
-/// with a bool rather than with an [`Error`].
-fn value_folds_only(value: &[u8]) -> bool {
-    let mut index = 0;
-    while index < value.len() {
-        match value[index] {
-            b'\r' => {
-                // A fold is CRLF followed by at least one space or tab. Anything else would
-                // end the field line, splitting one field into two or truncating the block.
-                if value.get(index + 1) != Some(&b'\n')
-                    || !matches!(value.get(index + 2), Some(b' ' | b'\t'))
-                {
-                    return false;
-                }
-                index += 3;
-            }
-            b'\n' => return false,
-            _ => index += 1,
-        }
-    }
-
-    true
 }
 
 #[cfg(test)]
@@ -558,32 +533,25 @@ mod tests {
         ));
     }
 
-    /// `field-content` admits no control characters, so they must be refused both when a header is
-    /// read and when one assembled in code is validated for writing.
+    /// A control character breaks no framing, so this layer reads it and writes it back. The
+    /// grammar layer is what refuses it.
     #[test]
-    #[ignore = "known bug (control characters other than CR and LF are accepted): fix incoming"]
-    fn rejects_control_characters_in_a_value() {
+    fn keeps_a_control_character_in_a_value() {
         for control in *b"\0\x1f\x7f" {
             let mut source = b"WARC/1.1\r\nContent-Length: 0\r\nX-Foo: a".to_vec();
             source.push(control);
             source.extend_from_slice(b"b\r\n\r\n");
-            assert!(
-                matches!(
-                    RecordHeader::parse(&source),
-                    Err(Error::MalformedFieldLine(_))
-                ),
-                "{control:?}"
-            );
 
-            let (mut header, _) =
-                RecordHeader::parse(&block(&["Content-Length: 0"])).expect("base header");
-            header
-                .headers
-                .push(("X-Foo".to_owned(), vec![b' ', b'a', control, b'b']));
-            assert!(
-                matches!(header.validate(), Err(Error::MalformedFieldLine(_))),
-                "{control:?}"
+            let (header, _) = RecordHeader::parse(&source).expect("parsed");
+            assert_eq!(
+                header.get("X-Foo"),
+                Some([b' ', b'a', control, b'b'].as_slice())
             );
+            assert!(header.validate().is_ok(), "{control:?}");
+
+            let mut written = Vec::new();
+            header.write_to(&mut written).expect("written");
+            assert_eq!(written, source);
         }
     }
 
