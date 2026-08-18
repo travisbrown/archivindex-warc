@@ -47,6 +47,10 @@ pub enum Error {
     /// A record carries no `Content-Length`, so its body cannot be framed.
     #[error("Missing Content-Length.")]
     MissingContentLength,
+    /// A record carries more than one `Content-Length`, so where its body ends depends on which
+    /// one a reader takes.
+    #[error("Repeated Content-Length.")]
+    RepeatedContentLength,
     /// A record's `Content-Length` is not the `1*DIGIT` the grammar requires, or names a length
     /// beyond the unsigned 64-bit range.
     #[error("Malformed Content-Length: {0}")]
@@ -82,8 +86,9 @@ impl RecordHeader {
     /// does not support, [`Error::MalformedFieldLine`] when a line is not
     /// `field-name ":" field-value` or holds a line break that does not fold the value,
     /// [`Error::UnexpectedEndOfHeaderBlock`] when the block does not
-    /// end with its blank line, and [`Error::MissingContentLength`] or
-    /// [`Error::MalformedContentLength`] when the body cannot be framed.
+    /// end with its blank line, and [`Error::MissingContentLength`],
+    /// [`Error::RepeatedContentLength`], or [`Error::MalformedContentLength`] when the body cannot
+    /// be framed.
     pub fn parse(block: &[u8]) -> Result<(Self, u64), Error> {
         let mut cursor = 0;
         let (start, end) = next_line(block, &mut cursor)?;
@@ -132,7 +137,10 @@ impl RecordHeader {
                 return Err(Error::MalformedFieldLine(lossy(&block[start..value_end])));
             }
 
-            if content_length.is_none() && name.eq_ignore_ascii_case(CONTENT_LENGTH) {
+            if name.eq_ignore_ascii_case(CONTENT_LENGTH) {
+                if content_length.is_some() {
+                    return Err(Error::RepeatedContentLength);
+                }
                 content_length = Some(parse_length(value)?);
             }
 
@@ -164,13 +172,13 @@ impl RecordHeader {
     ///
     /// Every field name must be a token, and no value may contain a bare CR or LF: the only line
     /// break a value may hold is the `CRLF SP` or `CRLF HTAB` of a fold, which continues the value
-    /// rather than ending it. `Content-Length` must be present and must be `1*DIGIT`. Whether it
-    /// matches the length of the body is checked by [`Record::validate`].
+    /// rather than ending it. `Content-Length` must appear exactly once and must be `1*DIGIT`.
+    /// Whether it matches the length of the body is checked by [`Record::validate`].
     ///
     /// # Errors
     ///
-    /// Returns [`Error::MalformedFieldLine`], [`Error::MissingContentLength`], or
-    /// [`Error::MalformedContentLength`].
+    /// Returns [`Error::MalformedFieldLine`], [`Error::MissingContentLength`],
+    /// [`Error::RepeatedContentLength`], or [`Error::MalformedContentLength`].
     pub fn validate(&self) -> Result<u64, Error> {
         let mut declared = None;
 
@@ -182,7 +190,10 @@ impl RecordHeader {
                 return Err(Error::MalformedFieldLine(name.clone()));
             }
 
-            if declared.is_none() && name.eq_ignore_ascii_case(CONTENT_LENGTH) {
+            if name.eq_ignore_ascii_case(CONTENT_LENGTH) {
+                if declared.is_some() {
+                    return Err(Error::RepeatedContentLength);
+                }
                 declared = Some(parse_length(value)?);
             }
         }
@@ -434,17 +445,21 @@ mod tests {
         );
     }
 
-    /// Field names are case-insensitive, and only the first `Content-Length` frames the body.
+    /// Field names are case-insensitive, and a name the standard lets repeat keeps every value.
     #[test]
-    fn finds_content_length_in_any_case() {
-        let (header, length) =
-            RecordHeader::parse(&block(&["CONTENT-length: 4", "Content-Length: 9"])).unwrap();
+    fn finds_fields_in_any_case() {
+        let (header, length) = RecordHeader::parse(&block(&[
+            "CONTENT-length: 4",
+            "WARC-Concurrent-To: <urn:uuid:one>",
+            "warc-concurrent-to: <urn:uuid:two>",
+        ]))
+        .unwrap();
 
         assert_eq!(length, 4);
         assert_eq!(header.get("content-length"), Some(&b" 4"[..]));
         assert_eq!(
-            header.get_all("Content-Length").collect::<Vec<_>>(),
-            vec![&b" 4"[..], &b" 9"[..]]
+            header.get_all("WARC-Concurrent-To").collect::<Vec<_>>(),
+            vec![&b" <urn:uuid:one>"[..], &b" <urn:uuid:two>"[..]]
         );
         assert_eq!(header.get("absent"), None);
     }
@@ -561,7 +576,6 @@ mod tests {
     /// is written as well as when it is read, since a reader taking the other one would find a
     /// different record there.
     #[test]
-    #[ignore = "known bug (a repeated Content-Length is accepted): fix incoming"]
     fn rejects_a_repeated_content_length() {
         for lines in [
             ["Content-Length: 0", "Content-Length: 0"],
@@ -571,7 +585,13 @@ mod tests {
         ] {
             let block = block(&lines);
 
-            assert!(RecordHeader::parse(&block).is_err(), "{lines:?}");
+            assert!(
+                matches!(
+                    RecordHeader::parse(&block),
+                    Err(Error::RepeatedContentLength)
+                ),
+                "{lines:?}"
+            );
 
             let mut header = RecordHeader {
                 version: WarcVersion::V1_0,
@@ -584,7 +604,10 @@ mod tests {
                     .push((name.to_owned(), format!(" {}", value.trim()).into_bytes()));
             }
 
-            assert!(header.validate().is_err(), "{lines:?}");
+            assert!(
+                matches!(header.validate(), Err(Error::RepeatedContentLength)),
+                "{lines:?}"
+            );
         }
     }
 
