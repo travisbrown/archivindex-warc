@@ -128,6 +128,34 @@ pub fn is_folded_value(value: &[u8]) -> bool {
     true
 }
 
+/// The rule a `quoted-string` did not match.
+///
+/// Offsets count from the opening quote, so they index the value as it was read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum QuotedStringError {
+    /// The value does not both open and close with a quote.
+    #[error("it does not open and close with a quote")]
+    Unterminated,
+    /// The value ends on a backslash, which has nothing left to escape.
+    #[error("the backslash at byte {index} escapes nothing")]
+    DanglingEscape {
+        /// Where the backslash is written.
+        index: usize,
+    },
+    /// A quote inside the string is not escaped, so it would have ended the string.
+    #[error("the quote at byte {index} is not escaped")]
+    UnescapedQuote {
+        /// Where the quote is written.
+        index: usize,
+    },
+    /// A control character `TEXT` excludes is written inside the string.
+    #[error("a control character is written at byte {index}")]
+    ControlCharacter {
+        /// Where the control character is written.
+        index: usize,
+    },
+}
+
 /// Resolve a `quoted-string` into the octets it stands for.
 ///
 /// The surrounding quotes are removed, each `quoted-pair` loses its leading backslash, and an
@@ -135,23 +163,35 @@ pub fn is_folded_value(value: &[u8]) -> bool {
 /// backslash escapes an octet, not a control character, so escaping one does not admit it.
 /// Validation of the decoded octets belongs to the field-specific caller: a media type requires
 /// UTF-8 text, while `WARC-Filename` may hold arbitrary `TEXT`.
-pub fn unquote(value: &[u8]) -> Option<Vec<u8>> {
-    let inner = value.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
+///
+/// # Errors
+///
+/// Returns the [`QuotedStringError`] naming the rule the value broke.
+pub fn unquote(value: &[u8]) -> Result<Vec<u8>, QuotedStringError> {
+    let inner = value
+        .strip_prefix(b"\"")
+        .and_then(|inner| inner.strip_suffix(b"\""))
+        .ok_or(QuotedStringError::Unterminated)?;
     let mut unquoted = Vec::with_capacity(inner.len());
     let mut index = 0;
+    // Offsets are reported against `value`, which the opening quote puts one ahead of `inner`.
     while index < inner.len() {
         match inner[index] {
             b'\\' => {
-                let escaped = *inner.get(index + 1)?;
+                let escaped = *inner
+                    .get(index + 1)
+                    .ok_or(QuotedStringError::DanglingEscape { index: index + 1 })?;
                 if !is_text_char(escaped) {
-                    return None;
+                    return Err(QuotedStringError::ControlCharacter { index: index + 2 });
                 }
                 unquoted.push(escaped);
                 index += 2;
             }
             // An unescaped quote would have ended the string, so the bounds are wrong.
-            b'"' => return None,
-            byte if !is_text_char(byte) => return None,
+            b'"' => return Err(QuotedStringError::UnescapedQuote { index: index + 1 }),
+            byte if !is_text_char(byte) => {
+                return Err(QuotedStringError::ControlCharacter { index: index + 1 });
+            }
             byte => {
                 unquoted.push(byte);
                 index += 1;
@@ -159,7 +199,7 @@ pub fn unquote(value: &[u8]) -> Option<Vec<u8>> {
         }
     }
 
-    Some(unquoted)
+    Ok(unquoted)
 }
 
 /// Reduce a field value to the content its field's grammar applies to.
@@ -239,7 +279,9 @@ pub fn lossy(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Line, next_line, parse_content_length, split_field_line, unfold, unquote};
+    use super::{
+        Line, QuotedStringError, next_line, parse_content_length, split_field_line, unfold, unquote,
+    };
 
     /// A line ends at its line ending, which is reported as written so that a strict reader can
     /// refuse a bare `LF` that a lenient one accepts.
@@ -317,24 +359,43 @@ mod tests {
     fn quoted_string_decoding() {
         assert_eq!(
             unquote(br#""with \"quotes\" and \\ slashes""#),
-            Some(br#"with "quotes" and \ slashes"#.to_vec())
+            Ok(br#"with "quotes" and \ slashes"#.to_vec())
         );
-        assert_eq!(unquote(b"\"\""), Some(Vec::new()));
+        assert_eq!(unquote(b"\"\""), Ok(Vec::new()));
 
         // A tab is white space rather than a control character here, escaped or not.
-        assert_eq!(unquote(b"\"a\tb\""), Some(b"a\tb".to_vec()));
-        assert_eq!(unquote(b"\"a\\\tb\""), Some(b"a\tb".to_vec()));
+        assert_eq!(unquote(b"\"a\tb\""), Ok(b"a\tb".to_vec()));
+        assert_eq!(unquote(b"\"a\\\tb\""), Ok(b"a\tb".to_vec()));
+    }
 
-        for malformed in [
-            b"not quoted".as_slice(),
-            br#""unterminated"#.as_slice(),
-            br#""with"gap""#.as_slice(),
-            b"\"trailing\\\"".as_slice(),
-            b"\"a\0b\"".as_slice(),
+    /// Each offset counts from the opening quote, so it indexes the value as it was read.
+    #[test]
+    fn quoted_string_failures() {
+        for (malformed, expected) in [
+            (b"not quoted".as_slice(), QuotedStringError::Unterminated),
+            (
+                br#""unterminated"#.as_slice(),
+                QuotedStringError::Unterminated,
+            ),
+            (
+                br#""with"gap""#.as_slice(),
+                QuotedStringError::UnescapedQuote { index: 5 },
+            ),
+            (
+                b"\"trailing\\\"".as_slice(),
+                QuotedStringError::DanglingEscape { index: 9 },
+            ),
+            (
+                b"\"a\0b\"".as_slice(),
+                QuotedStringError::ControlCharacter { index: 2 },
+            ),
             // An escape does not make a control character text.
-            b"\"a\\\0b\"".as_slice(),
+            (
+                b"\"a\\\0b\"".as_slice(),
+                QuotedStringError::ControlCharacter { index: 3 },
+            ),
         ] {
-            assert_eq!(unquote(malformed), None, "{malformed:?}");
+            assert_eq!(unquote(malformed), Err(expected), "{malformed:?}");
         }
     }
 

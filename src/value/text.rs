@@ -3,8 +3,7 @@
 use std::borrow::Cow;
 use std::fmt::Display;
 
-use crate::parsing::{is_text, lossy, unquote};
-use crate::value::Error;
+use crate::parsing::{QuotedStringError, is_text_char, lossy, unquote};
 
 /// A `WARC-Filename` value, which the grammar writes either bare or in quotes.
 ///
@@ -22,18 +21,44 @@ pub struct Text {
     quoted: bool,
 }
 
+/// The rule a `TEXT` or `quoted-string` value did not match.
+///
+/// Offsets are byte positions in the value as it was read, counting any opening quote.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum Error {
+    /// The value holds a control character, which `TEXT` excludes unless it is linear white
+    /// space.
+    #[error("not text: a control character is written at byte {index} of `{value}`")]
+    ControlCharacter {
+        /// The value as it was read, with any octet that is not UTF-8 replaced.
+        value: String,
+        /// Where the control character is written.
+        index: usize,
+    },
+    /// The value opens with a quote and is not a well-formed `quoted-string`.
+    #[error("not text: `{value}` is not a quoted string, since {source}")]
+    QuotedString {
+        /// The value as it was read, with any octet that is not UTF-8 replaced.
+        value: String,
+        /// The rule the quoted string broke.
+        source: QuotedStringError,
+    },
+}
+
 impl Text {
     /// Read a `TEXT` or `quoted-string` value.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Text`] when the value holds a control character other than linear white
-    /// space, or when it opens with a quote it does not close.
+    /// Returns [`Error::ControlCharacter`] when the value holds a control character other than
+    /// linear white space, and [`Error::QuotedString`] when a value opening with a quote is not a
+    /// well-formed `quoted-string`.
     pub fn parse(value: &[u8]) -> Result<Self, Error> {
-        let error = || Error::Text(lossy(value));
-
         if value.first() == Some(&b'"') {
-            let content = unquote(value).ok_or_else(error)?;
+            let content = unquote(value).map_err(|source| Error::QuotedString {
+                value: lossy(value),
+                source,
+            })?;
 
             return Ok(Self {
                 content: content.into_boxed_slice(),
@@ -41,8 +66,11 @@ impl Text {
             });
         }
 
-        if !is_text(value) {
-            return Err(error());
+        if let Some(index) = value.iter().position(|&byte| !is_text_char(byte)) {
+            return Err(Error::ControlCharacter {
+                value: lossy(value),
+                index,
+            });
         }
 
         Ok(Self {
@@ -105,7 +133,7 @@ impl Display for Text {
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, Text};
+    use super::{Error, QuotedStringError, Text};
 
     #[test]
     fn parses_text_and_quoted_strings() {
@@ -148,18 +176,45 @@ mod tests {
 
     #[test]
     fn rejects_malformed_text() {
-        for value in [
-            b"with\x01control".as_slice(),
-            b"\"with\x01control\"".as_slice(),
+        for (value, expected) in [
+            (
+                b"with\x01control".as_slice(),
+                Error::ControlCharacter {
+                    value: "with\u{1}control".to_owned(),
+                    index: 4,
+                },
+            ),
+            (
+                b"\"with\x01control\"".as_slice(),
+                Error::QuotedString {
+                    value: "\"with\u{1}control\"".to_owned(),
+                    source: QuotedStringError::ControlCharacter { index: 5 },
+                },
+            ),
             // An escape does not make a control character text.
-            b"\"with\\\x01control\"".as_slice(),
-            br#""unterminated"#.as_slice(),
-            br#""with"gap""#.as_slice(),
+            (
+                b"\"with\\\x01control\"".as_slice(),
+                Error::QuotedString {
+                    value: "\"with\\\u{1}control\"".to_owned(),
+                    source: QuotedStringError::ControlCharacter { index: 6 },
+                },
+            ),
+            (
+                br#""unterminated"#.as_slice(),
+                Error::QuotedString {
+                    value: "\"unterminated".to_owned(),
+                    source: QuotedStringError::Unterminated,
+                },
+            ),
+            (
+                br#""with"gap""#.as_slice(),
+                Error::QuotedString {
+                    value: "\"with\"gap\"".to_owned(),
+                    source: QuotedStringError::UnescapedQuote { index: 5 },
+                },
+            ),
         ] {
-            assert!(
-                matches!(Text::parse(value), Err(Error::Text(_))),
-                "{value:?}"
-            );
+            assert_eq!(Text::parse(value), Err(expected), "{value:?}");
         }
     }
 }

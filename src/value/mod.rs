@@ -6,9 +6,11 @@ mod media_type;
 mod text;
 
 pub use date::{WarcDate, WarcDatePrecision};
-pub use digest::{DigestAlgorithm, DigestEncoding, LabelledDigest};
-pub use media_type::{MediaType, ParameterValue};
-pub use text::Text;
+pub use digest::{DigestAlgorithm, DigestEncoding, Error as DigestError, LabelledDigest};
+pub use media_type::{Error as MediaTypeError, MediaType, ParameterValue};
+pub use text::{Error as TextError, Text};
+
+pub use crate::parsing::QuotedStringError;
 
 /// The rule a value did not match.
 ///
@@ -28,11 +30,11 @@ pub enum Error {
     #[error("not a URI: {0}")]
     Uri(String),
     /// A value is not a `labelled-digest` (an algorithm and a value separated by a colon).
-    #[error("not a labelled digest: {0}")]
-    Digest(String),
+    #[error(transparent)]
+    Digest(#[from] DigestError),
     /// A value is not a `media-type`.
-    #[error("not a media type: {0}")]
-    MediaType(String),
+    #[error(transparent)]
+    MediaType(#[from] MediaTypeError),
     /// A value is not an IPv4 or IPv6 address.
     #[error("not an IP address: {0}")]
     IpAddress(String),
@@ -40,8 +42,8 @@ pub enum Error {
     #[error("not a timestamp: {0}")]
     Date(String),
     /// A value is neither `TEXT` nor a `quoted-string`.
-    #[error("not text: {0}")]
-    Text(String),
+    #[error(transparent)]
+    Text(#[from] TextError),
 }
 
 /// Convert bytes already validated as ASCII into a string.
@@ -55,7 +57,8 @@ fn from_ascii(bytes: &[u8]) -> Box<str> {
 mod tests {
     use std::error::Error as _;
 
-    use super::Error;
+    use super::{DigestError, Error, MediaTypeError, TextError};
+    use crate::parsing::QuotedStringError;
 
     /// A rule is named without the field whose value failed it, since the same rule serves
     /// several fields and [`crate::parse::untyped::Error`] is what supplies the name.
@@ -69,12 +72,16 @@ mod tests {
             ),
             (Error::Uri("not a uri".to_owned()), "not a URI: not a uri"),
             (
-                Error::Digest("sha1".to_owned()),
-                "not a labelled digest: sha1",
+                Error::Digest(DigestError::MalformedValue {
+                    digest: "sha1".to_owned(),
+                }),
+                "not a labelled digest: `sha1` is not a digest value",
             ),
             (
-                Error::MediaType("text".to_owned()),
-                "not a media type: text",
+                Error::MediaType(MediaTypeError::NoSubtype {
+                    value: "text".to_owned(),
+                }),
+                "not a media type: no `/` separating type from subtype in `text`",
             ),
             (
                 Error::IpAddress("::garbage".to_owned()),
@@ -85,8 +92,11 @@ mod tests {
                 "not a timestamp: yesterday",
             ),
             (
-                Error::Text("with\u{7}bell".to_owned()),
-                "not text: with\u{7}bell",
+                Error::Text(TextError::ControlCharacter {
+                    value: "with\u{7}bell".to_owned(),
+                    index: 4,
+                }),
+                "not text: a control character is written at byte 4 of `with\u{7}bell`",
             ),
         ];
 
@@ -94,5 +104,24 @@ mod tests {
             assert_eq!(error.to_string(), message);
             assert!(error.source().is_none(), "{message}");
         }
+    }
+
+    /// A value read against a rule written in terms of another reports that rule as its source.
+    #[test]
+    fn a_nested_rule_is_reported_as_a_source() {
+        let error = Error::Text(TextError::QuotedString {
+            value: "\"unterminated".to_owned(),
+            source: QuotedStringError::Unterminated,
+        });
+
+        assert_eq!(
+            error.to_string(),
+            "not text: `\"unterminated` is not a quoted string, \
+             since it does not open and close with a quote"
+        );
+        assert_eq!(
+            error.source().map(ToString::to_string).as_deref(),
+            Some("it does not open and close with a quote")
+        );
     }
 }

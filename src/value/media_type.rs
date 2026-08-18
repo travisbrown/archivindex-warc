@@ -3,8 +3,7 @@
 use std::fmt::Display;
 
 use super::from_ascii;
-use crate::parsing::{is_lws, is_token, lossy, unquote};
-use crate::value::Error;
+use crate::parsing::{QuotedStringError, is_lws, is_token, lossy, unquote};
 
 /// A `media-type` value.
 ///
@@ -39,6 +38,59 @@ struct Parameter {
     separator: Box<str>,
     name: Box<str>,
     value: ParameterValue,
+}
+
+/// The rule a `media-type` value did not match.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum Error {
+    /// The value has no `/` separating the type from the subtype.
+    #[error("not a media type: no `/` separating type from subtype in `{value}`")]
+    NoSubtype {
+        /// The value as it was read, with any octet that is not UTF-8 replaced.
+        value: String,
+    },
+    /// The type or the subtype is not a `token`.
+    #[error("not a media type: the type or subtype of `{value}` is not a token")]
+    MalformedEssence {
+        /// The value as it was read, with any octet that is not UTF-8 replaced.
+        value: String,
+    },
+    /// A parameter is not an `attribute "=" value` the grammar admits.
+    #[error("not a media type: `{parameter}` is not a parameter, in `{value}`")]
+    MalformedParameter {
+        /// The value as it was read, with any octet that is not UTF-8 replaced.
+        value: String,
+        /// The parameter that does not match, as it was read.
+        parameter: String,
+    },
+    /// A parameter's value opens with a quote and is not a well-formed `quoted-string`.
+    #[error("not a media type: the value of `{parameter}` is not a quoted string, since {source}")]
+    MalformedQuotedValue {
+        /// The value as it was read, with any octet that is not UTF-8 replaced.
+        value: String,
+        /// The parameter whose value does not match, as it was read.
+        parameter: String,
+        /// The rule the quoted string broke.
+        source: QuotedStringError,
+    },
+    /// A parameter's quoted value is not valid UTF-8, which this representation requires.
+    #[error("not a media type: the value of `{parameter}` is not valid UTF-8")]
+    NonUtf8ParameterValue {
+        /// The value as it was read, with any octet that is not UTF-8 replaced.
+        value: String,
+        /// The parameter whose value is not text, as it was read.
+        parameter: String,
+    },
+}
+
+/// The rule a parameter broke, before the value that carried it is known.
+enum ParameterFailure {
+    /// The parameter is not an `attribute "=" value`.
+    Malformed,
+    /// The parameter's value is not a well-formed `quoted-string`.
+    Quoted(QuotedStringError),
+    /// The parameter's quoted value is not valid UTF-8.
+    NonUtf8,
 }
 
 /// A media type parameter's value, which the grammar writes either bare or in quotes.
@@ -83,12 +135,11 @@ impl MediaType {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::MediaType`] when the value does not match the grammar above, or when a
-    /// quoted parameter value is not valid UTF-8. This is stricter than the `TEXT` rule, which
-    /// admits any octet, because media types are represented as text here.
+    /// Returns the [`Error`] naming the rule the value broke against the grammar above, including
+    /// [`Error::NonUtf8ParameterValue`] when a quoted parameter value is not valid UTF-8. That is
+    /// stricter than the `TEXT` rule, which admits any octet, because media types are represented
+    /// as text here.
     pub fn parse(value: &[u8]) -> Result<Self, Error> {
-        let error = || Error::MediaType(lossy(value));
-
         let essence_end = value
             .iter()
             .position(|&byte| byte == b';')
@@ -97,10 +148,14 @@ impl MediaType {
         let slash = essence
             .iter()
             .position(|&byte| byte == b'/')
-            .ok_or_else(error)?;
+            .ok_or_else(|| Error::NoSubtype {
+                value: lossy(value),
+            })?;
         let (type_name, subtype) = (&essence[..slash], &essence[slash + 1..]);
         if !is_token(type_name) || !is_token(subtype) {
-            return Err(error());
+            return Err(Error::MalformedEssence {
+                value: lossy(value),
+            });
         }
 
         let mut parameters = Vec::new();
@@ -116,7 +171,8 @@ impl MediaType {
             let (chunk, rest) = split_parameter(&value[content_start..]);
             // Trailing `OWS` belongs to the separator that follows, not to this parameter.
             let content = trim_ows_end(chunk);
-            let (name, parameter_value) = parse_parameter(content).ok_or_else(error)?;
+            let (name, parameter_value) =
+                parse_parameter(content).map_err(|failure| failure.against(value, content))?;
 
             parameters.push(Parameter {
                 separator: from_ascii(&value[separator_start..content_start]),
@@ -209,24 +265,46 @@ fn split_parameter(input: &[u8]) -> (&[u8], &[u8]) {
     (input, &[])
 }
 
+impl ParameterFailure {
+    /// Name the rule against the value and the parameter it was read from.
+    fn against(self, value: &[u8], parameter: &[u8]) -> Error {
+        let (value, parameter) = (lossy(value), lossy(parameter));
+        match self {
+            Self::Malformed => Error::MalformedParameter { value, parameter },
+            Self::Quoted(source) => Error::MalformedQuotedValue {
+                value,
+                parameter,
+                source,
+            },
+            Self::NonUtf8 => Error::NonUtf8ParameterValue { value, parameter },
+        }
+    }
+}
+
 /// Read one `attribute "=" value`, given the content without its surrounding `OWS`.
-fn parse_parameter(input: &[u8]) -> Option<(Box<str>, ParameterValue)> {
-    let equals = input.iter().position(|&byte| byte == b'=')?;
+fn parse_parameter(input: &[u8]) -> Result<(Box<str>, ParameterValue), ParameterFailure> {
+    let equals = input
+        .iter()
+        .position(|&byte| byte == b'=')
+        .ok_or(ParameterFailure::Malformed)?;
     let (attribute, value) = (&input[..equals], &input[equals + 1..]);
     if !is_token(attribute) {
-        return None;
+        return Err(ParameterFailure::Malformed);
     }
 
     let value = if value.first() == Some(&b'"') {
-        let unquoted = String::from_utf8(unquote(value)?).ok()?.into_boxed_str();
+        let unquoted = unquote(value).map_err(ParameterFailure::Quoted)?;
+        let unquoted = String::from_utf8(unquoted)
+            .map_err(|_| ParameterFailure::NonUtf8)?
+            .into_boxed_str();
         ParameterValue::Quoted(unquoted)
     } else if is_token(value) {
         ParameterValue::Token(from_ascii(value))
     } else {
-        return None;
+        return Err(ParameterFailure::Malformed);
     };
 
-    Some((from_ascii(attribute), value))
+    Ok((from_ascii(attribute), value))
 }
 
 /// The length of the `OWS` a value opens with.
@@ -257,7 +335,7 @@ fn trim_ows_end(input: &[u8]) -> &[u8] {
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, MediaType, ParameterValue};
+    use super::{Error, MediaType, ParameterValue, QuotedStringError};
 
     #[test]
     fn parses_a_bare_media_type() {
@@ -327,19 +405,55 @@ mod tests {
 
     #[test]
     fn rejects_malformed_media_types() {
-        for value in [
-            b"application".as_slice(),
-            b"/warc-fields".as_slice(),
-            b"application/".as_slice(),
-            b"application/warc fields".as_slice(),
-            b"text/plain; noequals".as_slice(),
-            b"text/plain; =value".as_slice(),
-            br#"text/plain; x="unterminated"#.as_slice(),
+        for (value, expected) in [
+            (
+                b"application".as_slice(),
+                Error::NoSubtype {
+                    value: "application".to_owned(),
+                },
+            ),
+            (
+                b"/warc-fields".as_slice(),
+                Error::MalformedEssence {
+                    value: "/warc-fields".to_owned(),
+                },
+            ),
+            (
+                b"application/".as_slice(),
+                Error::MalformedEssence {
+                    value: "application/".to_owned(),
+                },
+            ),
+            (
+                b"application/warc fields".as_slice(),
+                Error::MalformedEssence {
+                    value: "application/warc fields".to_owned(),
+                },
+            ),
+            (
+                b"text/plain; noequals".as_slice(),
+                Error::MalformedParameter {
+                    value: "text/plain; noequals".to_owned(),
+                    parameter: "noequals".to_owned(),
+                },
+            ),
+            (
+                b"text/plain; =value".as_slice(),
+                Error::MalformedParameter {
+                    value: "text/plain; =value".to_owned(),
+                    parameter: "=value".to_owned(),
+                },
+            ),
+            (
+                br#"text/plain; x="unterminated"#.as_slice(),
+                Error::MalformedQuotedValue {
+                    value: "text/plain; x=\"unterminated".to_owned(),
+                    parameter: "x=\"unterminated".to_owned(),
+                    source: QuotedStringError::Unterminated,
+                },
+            ),
         ] {
-            assert!(
-                matches!(MediaType::parse(value), Err(Error::MediaType(_))),
-                "{value:?}"
-            );
+            assert_eq!(MediaType::parse(value), Err(expected), "{value:?}");
         }
     }
 
@@ -347,14 +461,21 @@ mod tests {
     /// neither: `quoted-pair` escapes an octet, so a backslash does not admit one.
     #[test]
     fn rejects_controls_in_a_quoted_parameter() {
-        for value in [
-            b"text/plain; x=\"a\0b\"".as_slice(),
-            b"text/plain; x=\"a\x7fb\"".as_slice(),
-            b"text/plain; x=\"a\\\0b\"".as_slice(),
-            b"text/plain; x=\"a\\\x7fb\"".as_slice(),
+        // Each offset counts from the quote opening the parameter's value.
+        for (value, offset) in [
+            (b"text/plain; x=\"a\0b\"".as_slice(), 2),
+            (b"text/plain; x=\"a\x7fb\"".as_slice(), 2),
+            (b"text/plain; x=\"a\\\0b\"".as_slice(), 3),
+            (b"text/plain; x=\"a\\\x7fb\"".as_slice(), 3),
         ] {
             assert!(
-                matches!(MediaType::parse(value), Err(Error::MediaType(_))),
+                matches!(
+                    MediaType::parse(value),
+                    Err(Error::MalformedQuotedValue {
+                        source: QuotedStringError::ControlCharacter { index },
+                        ..
+                    }) if index == offset
+                ),
                 "{value:?}"
             );
         }
