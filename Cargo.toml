@@ -1,6 +1,6 @@
 [package]
 name = "archivindex-warc"
-version = "0.4.0"
+version = "0.1.0"
 description = "A Rust library for reading and writing WARC files"
 readme = "README.md"
 repository = "https://github.com/travisbrown/archivindex-warc"
