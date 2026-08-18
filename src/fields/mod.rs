@@ -431,6 +431,21 @@ mod tests {
     }
 
     /// A name outside both vocabularies is an extension field under its lower-cased spelling.
+    /// A value is written between the colon that names its field and the line break that ends
+    /// the field, so a value holding a line break of its own spells a field the body does not
+    /// hold.
+    #[test]
+    #[ignore = "known bug (a value can spell a second field): fix incoming"]
+    fn a_value_that_would_be_written_as_another_field_is_refused() {
+        let mut body = WarcinfoBody::new();
+        body.push(WarcinfoField::Software, "one\r\ninjected: two");
+
+        assert_eq!(
+            WarcinfoBody::parse(body.to_string().as_bytes()).expect("a body"),
+            body
+        );
+    }
+
     #[test]
     fn a_name_in_neither_vocabulary_is_an_extension_field() {
         assert_eq!(
