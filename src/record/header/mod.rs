@@ -50,6 +50,11 @@ pub enum RevisitProfile {
 }
 
 impl RevisitProfile {
+    /// The WARC 1.1 `identical-payload-digest` profile.
+    pub const IDENTICAL_PAYLOAD_DIGEST: Self = Self::IdenticalPayloadDigest(WarcVersion::V1_1);
+    /// The WARC 1.1 `server-not-modified` profile.
+    pub const SERVER_NOT_MODIFIED: Self = Self::ServerNotModified(WarcVersion::V1_1);
+
     /// The profile URI.
     #[must_use]
     pub fn as_str(&self) -> &str {

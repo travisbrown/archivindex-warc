@@ -10,7 +10,6 @@ mod common;
 use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::record::fields::warcinfo::WarcinfoField;
 use archivindex_warc::record::{Record, fields};
-use archivindex_warc::value::Text;
 use chrono::Utc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,10 +18,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     body.push(WarcinfoField::Hostname, "localhost")?;
 
     // The builder is chosen by record type, so `WARC-Filename` is a method here and would not be
-    // one on any other type, and a block given as fields declares itself as `warc-fields`. The
-    // record is left to name itself, which it does with a generated `urn:uuid` identifier.
+    // one on any other type, and the record declares the `application/warc-fields` type a
+    // `warcinfo` block customarily has. The record is left to name itself, which it does with a
+    // generated `urn:uuid` identifier.
     let record: Record = Record::warcinfo(Utc::now())
-        .filename(Text::parse(b"warc_example.warc")?)
+        .filename("warc_example.warc")?
         .fields(body)?;
 
     // The record declares its own version, which is WARC 1.1 unless the builder is told

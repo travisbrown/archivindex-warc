@@ -156,6 +156,14 @@ pub enum Error {
         /// The value as it was read.
         value: String,
     },
+    /// A value given to a builder for a URI-valued field is not a URI.
+    #[error("The value given for the `{field}` field is not a URI: {source}")]
+    NotAUri {
+        /// The field the value was given for.
+        field: Field,
+        /// The RFC 3986 violation.
+        source: fluent_uri::ParseError,
+    },
     /// An unrecognized field has a value that cannot be preserved as UTF-8 text.
     #[error("The value of the `{0}` field is not valid UTF-8.")]
     NonUtf8Field(String),

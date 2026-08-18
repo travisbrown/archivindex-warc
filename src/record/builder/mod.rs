@@ -10,16 +10,13 @@
 //! use archivindex_warc::record::{Record, RecordHeader};
 //! use archivindex_warc::value::MediaType;
 //! use chrono::Utc;
-//! use fluent_uri::Uri;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let target_uri = Uri::parse("https://example.com/")?.to_owned();
-//!
-//! let record: Record = Record::response(Utc::now(), target_uri.clone())
-//!     .content_type(MediaType::parse(b"application/http")?)
+//! let record: Record = Record::response("https://example.com/", Utc::now())?
+//!     .content_type(MediaType::HTTP)
 //!     .body("HTTP/1.1 200 OK\r\n\r\nhello")?;
 //!
-//! let header: RecordHeader = Record::response(Utc::now(), target_uri).build();
+//! let header: RecordHeader = Record::response("https://example.com/", Utc::now())?.build();
 //!
 //! assert_eq!(header.type_name(), record.type_name());
 //! # Ok(())
@@ -31,9 +28,13 @@
 //!
 //! Builders restrict which fields can be set, but they do not validate every relationship between
 //! values. For example, they do not require the payload digest associated with a particular
-//! revisit profile. Those semantic checks are applied when records are read.
-//! [`Record::continuation`] is the exception: it returns a result, since a segment number below
-//! `2` would build a record that could never be read back.
+//! revisit profile. Those semantic checks are applied when records are read. A segment number
+//! below `2` is the exception, since it would build a `continuation` record that could never be
+//! read back.
+//!
+//! Record types whose block has a customary media type declare it: `application/http` with the
+//! matching `msgtype` for `request` and `response` records, and `application/warc-fields` for
+//! `warcinfo` and `metadata` records. [`content_type`](ResponseBuilder::content_type) replaces it.
 //!
 //! Attaching a body can fail if a declared `Content-Length` does not match, or if a `warcinfo` or
 //! `metadata` body declared as `application/warc-fields` cannot be parsed. Use
@@ -43,17 +44,15 @@
 //! [`sha_1_digests`](ResponseBuilder::sha_1_digests) to add SHA-1 digests when attaching the
 //! block instead.
 //!
-//! Records default to WARC 1.1. Use [`version`](ResponseBuilder::version) to select WARC 1.0.
-//! Revisit records use separate entry points because WARC 1.1 adds two fields:
-//! [`Record::revisit`] and [`Record::revisit_1_0`].
+//! Records declare WARC 1.1. The [`v1_0`] module mirrors every entry point here for an archive
+//! that has to be written as WARC 1.0.
 //!
 //! The extension defaults to [`NoExtension`]. Use `Record::<MyExtension>::response(..)` to select
 //! another extension.
 
-use std::marker::PhantomData;
 use std::net::IpAddr;
 
-use fluent_uri::Uri;
+use fluent_uri::{ParseError, Uri};
 use uuid::Uuid;
 
 use crate::parse::untyped::name::Field;
@@ -70,8 +69,8 @@ use crate::record::header::{
 use crate::record::{
     BlockError, Error, FieldsBlock, Record, RecordHeader, check_declared_length, fields,
 };
-use crate::value::{LabelledDigest, MediaType, Text, WarcDate};
-use crate::version::{WarcVersion, marker};
+use crate::value::{LabelledDigest, MediaType, Text, TextError, WarcDate};
+use crate::version::WarcVersion;
 
 /// Generate a version 4 UUID using the `urn:uuid` scheme.
 fn generated_record_id() -> Uri<String> {
@@ -84,14 +83,20 @@ fn generated_record_id() -> Uri<String> {
         .to_owned()
 }
 
-/// The fields every record carries, with only the two universally mandatory ones populated.
-fn core_headers<E: Extension>(date: WarcDate) -> CoreHeaders<E> {
+/// Read the URI a record type requires as its `WARC-Target-URI`.
+fn parse_target_uri(value: &str) -> Result<Uri<String>, ParseError> {
+    Uri::parse(value).map(|uri| uri.to_owned())
+}
+
+/// The fields every record carries, with the two universally mandatory ones and the media type
+/// customary for the record type populated.
+fn core_headers<E: Extension>(date: WarcDate, content_type: Option<MediaType>) -> CoreHeaders<E> {
     CoreHeaders {
         record_id: generated_record_id(),
         date,
         content_length: None,
         block_digest: None,
-        content_type: None,
+        content_type,
         truncated: None,
         unrecognized: Vec::new(),
     }
@@ -105,22 +110,17 @@ fn add_sha_1_digests<E: Extension>(record: &mut Record<E>, sha_1: bool) {
     }
 }
 
-/// The media type a block written as `warc-fields` declares itself with.
-fn warc_fields() -> MediaType {
-    MediaType::parse(b"application/warc-fields")
-        .expect("invariant violation: `application/warc-fields` is not a media type")
-}
-
 /// Generate setters shared by several record types.
 macro_rules! shared_setters {
     () => {};
 
     // The version the record declares, which the header block says rather than a field of it.
-    (version, $($rest:tt)*) => {
-        /// Set the WARC version this record declares and uses when written.
+    // Only the `v1_0` entry points declare anything but WARC 1.1, so this stays private.
+    (v1_0, $($rest:tt)*) => {
+        /// Declare this record as WARC 1.0.
         #[must_use]
-        pub const fn version(mut self, version: WarcVersion) -> Self {
-            self.header.version = version;
+        const fn into_v1_0(mut self) -> Self {
+            self.header.version = WarcVersion::V1_0;
             self
         }
 
@@ -167,6 +167,8 @@ macro_rules! shared_setters {
 
         /// `Content-Type`: the media type of the record's block, which for an archived HTTP
         /// message is `application/http` rather than the type that message declares.
+        ///
+        /// This replaces the type the record type is built with.
         #[must_use]
         pub fn content_type(mut self, content_type: MediaType) -> Self {
             self.header.core.content_type = Some(content_type);
@@ -320,8 +322,6 @@ macro_rules! builder_end {
             $(
                 /// Build a record with an already parsed `warc-fields` body.
                 ///
-                /// Sets `Content-Type` to `application/warc-fields` unless one was already set.
-                ///
                 /// # Errors
                 ///
                 /// Returns [`BlockError::ContentLengthMismatch`] if the rendered fields do not
@@ -335,10 +335,6 @@ macro_rules! builder_end {
                     let rendered_len = fields.rendered_len() as u64;
                     check_declared_length(self.header.core.content_length, rendered_len)?;
                     self.header.core.content_length = Some(rendered_len);
-
-                    if self.header.core.content_type.is_none() {
-                        self.header.core.content_type = Some(warc_fields());
-                    }
 
                     let mut record = Record::$variant {
                         header: self.header,
@@ -355,21 +351,24 @@ macro_rules! builder_end {
 
 /// Generate builders for `response`, `resource`, and `request` records.
 macro_rules! capture_builder {
-    ($builder:ident, $header:ident, $fields:ident, $type_name:literal) => {
+    ($builder:ident, $header:ident, $fields:ident, $type_name:literal, $content_type:expr) => {
         impl<E: Extension> $builder<E> {
             #[doc = concat!("A builder for a `", $type_name, "` record, given the fields the \
                              standard makes mandatory for one.")]
-            #[must_use]
-            pub fn new(date: impl Into<WarcDate>, target_uri: Uri<String>) -> Self
+            ///
+            /// # Errors
+            ///
+            /// Returns [`ParseError`] if the target URI is not a URI.
+            pub fn new(target_uri: &str, date: impl Into<WarcDate>) -> Result<Self, ParseError>
             where
                 E::$fields: Default,
             {
-                Self {
+                Ok(Self {
                     header: $header {
                         version: WarcVersion::V1_1,
-                        core: core_headers(date.into()),
+                        core: core_headers(date.into(), $content_type),
                         payload: PayloadHeaders::default(),
-                        target_uri,
+                        target_uri: parse_target_uri(target_uri)?,
                         warcinfo_id: None,
                         ip_address: None,
                         concurrent_to: Vec::new(),
@@ -377,11 +376,11 @@ macro_rules! capture_builder {
                         other: Default::default(),
                     },
                     sha_1: false,
-                }
+                })
             }
 
             shared_setters!(
-                version,
+                v1_0,
                 core,
                 payload,
                 warcinfo_id,
@@ -411,7 +410,7 @@ impl<E: Extension> WarcinfoBuilder<E> {
         Self {
             header: WarcinfoHeader {
                 version: WarcVersion::V1_1,
-                core: core_headers(date.into()),
+                core: core_headers(date.into(), Some(MediaType::WARC_FIELDS)),
                 filename: None,
                 segment_origin: false,
                 other: Default::default(),
@@ -422,14 +421,19 @@ impl<E: Extension> WarcinfoBuilder<E> {
 }
 
 impl<E: Extension> WarcinfoBuilder<E> {
-    shared_setters!(version, core, segment_origin, extension(WarcinfoFields),);
+    shared_setters!(v1_0, core, segment_origin, extension(WarcinfoFields),);
 
     /// `WARC-Filename`: the name of the file holding this record, which no other record type
     /// may carry.
-    #[must_use]
-    pub fn filename(mut self, filename: Text) -> Self {
-        self.header.filename = Some(filename);
-        self
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TextError`] if the name holds a control character, which the `TEXT` rule the
+    /// field is written under does not admit.
+    pub fn filename(mut self, filename: &str) -> Result<Self, TextError> {
+        self.header.filename = Some(Text::parse(filename.as_bytes())?);
+
+        Ok(self)
     }
 }
 
@@ -442,7 +446,13 @@ pub struct ResponseBuilder<E: Extension = NoExtension> {
     sha_1: bool,
 }
 
-capture_builder!(ResponseBuilder, ResponseHeader, ResponseFields, "response");
+capture_builder!(
+    ResponseBuilder,
+    ResponseHeader,
+    ResponseFields,
+    "response",
+    Some(MediaType::HTTP_RESPONSE)
+);
 builder_end!(ResponseBuilder as Response);
 
 /// A builder for a `resource` record, which holds a resource without protocol information.
@@ -452,7 +462,13 @@ pub struct ResourceBuilder<E: Extension = NoExtension> {
     sha_1: bool,
 }
 
-capture_builder!(ResourceBuilder, ResourceHeader, ResourceFields, "resource");
+capture_builder!(
+    ResourceBuilder,
+    ResourceHeader,
+    ResourceFields,
+    "resource",
+    None
+);
 builder_end!(ResourceBuilder as Resource);
 
 /// A builder for a `request` record, which holds a complete scheme-specific request.
@@ -462,7 +478,13 @@ pub struct RequestBuilder<E: Extension = NoExtension> {
     sha_1: bool,
 }
 
-capture_builder!(RequestBuilder, RequestHeader, RequestFields, "request");
+capture_builder!(
+    RequestBuilder,
+    RequestHeader,
+    RequestFields,
+    "request",
+    Some(MediaType::HTTP_REQUEST)
+);
 builder_end!(RequestBuilder as Request);
 
 /// A builder for a `metadata` record, which describes another record.
@@ -482,7 +504,7 @@ impl<E: Extension> MetadataBuilder<E> {
         Self {
             header: MetadataHeader {
                 version: WarcVersion::V1_1,
-                core: core_headers(date.into()),
+                core: core_headers(date.into(), Some(MediaType::WARC_FIELDS)),
                 target_uri: None,
                 warcinfo_id: None,
                 ip_address: None,
@@ -498,7 +520,7 @@ impl<E: Extension> MetadataBuilder<E> {
 
 impl<E: Extension> MetadataBuilder<E> {
     shared_setters!(
-        version,
+        v1_0,
         core,
         target_uri,
         warcinfo_id,
@@ -512,20 +534,70 @@ impl<E: Extension> MetadataBuilder<E> {
 
 builder_end!(MetadataBuilder as Metadata, fields MetadataField);
 
+/// Generate a `revisit` builder for one WARC version.
+macro_rules! revisit_builder {
+    ($builder:ident, $version:expr, $version_name:literal) => {
+        impl<E: Extension> $builder<E> {
+            #[doc = concat!("Create a WARC ", $version_name, " `revisit` builder with its \
+                             required fields.")]
+            ///
+            /// The profile describes how the record should be interpreted. The version its URI
+            /// names may differ from the version declared by the record.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`ParseError`] if the target URI is not a URI.
+            pub fn new(
+                target_uri: &str,
+                date: impl Into<WarcDate>,
+                profile: RevisitProfile,
+            ) -> Result<Self, ParseError>
+            where
+                E::RevisitFields: Default,
+            {
+                Ok(Self {
+                    header: RevisitHeader {
+                        version: $version,
+                        core: core_headers(date.into(), None),
+                        payload: PayloadHeaders::default(),
+                        target_uri: parse_target_uri(target_uri)?,
+                        warcinfo_id: None,
+                        profile,
+                        ip_address: None,
+                        concurrent_to: Vec::new(),
+                        refers_to: None,
+                        refers_to_target_uri: None,
+                        refers_to_date: None,
+                        segment_origin: false,
+                        other: Default::default(),
+                    },
+                    sha_1: false,
+                })
+            }
+
+            shared_setters!(
+                core,
+                payload,
+                warcinfo_id,
+                ip_address,
+                concurrent_to,
+                refers_to,
+                segment_origin,
+                extension(RevisitFields),
+            );
+        }
+    };
+}
+
 /// A builder for a `revisit` record, which stands in for content already archived.
 ///
-/// The type parameter selects the WARC version. Only a [`marker::V1_1`] builder exposes the two
-/// fields introduced in WARC 1.1.
-///
 /// ```
-/// # use archivindex_warc::record::{Record, extension::NoExtension};
+/// # use archivindex_warc::record::{Record, extension::NoExtension, header::RevisitProfile};
 /// # use chrono::Utc;
-/// # use fluent_uri::Uri;
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let target_uri = Uri::parse("https://example.com/")?.to_owned();
-/// let profile = "http://netpreserve.org/warc/1.1/revisit/server-not-modified";
+/// let profile = RevisitProfile::SERVER_NOT_MODIFIED;
 ///
-/// let builder = Record::<NoExtension>::revisit(Utc::now(), target_uri, profile)
+/// let builder = Record::<NoExtension>::revisit("https://example.com/", Utc::now(), profile)?
 ///     .refers_to_date(Utc::now());
 ///
 /// assert_eq!(builder.build().type_name(), "revisit");
@@ -533,112 +605,16 @@ builder_end!(MetadataBuilder as Metadata, fields MetadataField);
 /// # }
 /// ```
 ///
-/// The same call does not compile on the WARC 1.0 builder:
-///
-/// ```compile_fail
-/// # use archivindex_warc::record::{Record, extension::NoExtension};
-/// # use chrono::Utc;
-/// # use fluent_uri::Uri;
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let target_uri = Uri::parse("https://example.com/")?.to_owned();
-/// let profile = "http://netpreserve.org/warc/1.0/revisit/server-not-modified";
-///
-/// let builder = Record::<NoExtension>::revisit_1_0(Utc::now(), target_uri, profile)
-///     .refers_to_date(Utc::now());
-///
-/// assert_eq!(builder.build().type_name(), "revisit");
-/// # Ok(())
-/// # }
-/// ```
-///
-/// The type parameter also determines the version declared by the record.
+/// [`v1_0::RevisitBuilder`] is the same builder for a WARC 1.0 record.
 #[derive(Clone, Debug)]
-pub struct RevisitBuilder<E: Extension = NoExtension, V: marker::WarcVersion = marker::V1_1> {
+pub struct RevisitBuilder<E: Extension = NoExtension> {
     header: RevisitHeader<E>,
     sha_1: bool,
-    version: PhantomData<fn() -> V>,
 }
 
-impl<E: Extension, V: marker::WarcVersion> RevisitBuilder<E, V> {
-    /// Create a `revisit` builder for the version named by `V`.
-    fn start(
-        date: impl Into<WarcDate>,
-        target_uri: Uri<String>,
-        profile: impl Into<RevisitProfile>,
-    ) -> Self
-    where
-        E::RevisitFields: Default,
-    {
-        Self {
-            header: RevisitHeader {
-                version: V::VALUE,
-                core: core_headers(date.into()),
-                payload: PayloadHeaders::default(),
-                target_uri,
-                warcinfo_id: None,
-                profile: profile.into(),
-                ip_address: None,
-                concurrent_to: Vec::new(),
-                refers_to: None,
-                refers_to_target_uri: None,
-                refers_to_date: None,
-                segment_origin: false,
-                other: Default::default(),
-            },
-            sha_1: false,
-            version: PhantomData,
-        }
-    }
+revisit_builder!(RevisitBuilder, WarcVersion::V1_1, "1.1");
 
-    /// Build the record header without a content block.
-    #[must_use]
-    pub fn build(self) -> RecordHeader<E> {
-        RecordHeader::Revisit(self.header)
-    }
-
-    /// Build a record with the given content block.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BlockError::ContentLengthMismatch`] if the block does not match the declared
-    /// `Content-Length`.
-    pub fn body(self, body: impl Into<Vec<u8>>) -> Result<Record<E>, BlockError> {
-        let sha_1 = self.sha_1;
-        let mut record = self.build().with_body(body.into())?;
-        add_sha_1_digests(&mut record, sha_1);
-
-        Ok(record)
-    }
-
-    shared_setters!(
-        core,
-        payload,
-        warcinfo_id,
-        ip_address,
-        concurrent_to,
-        refers_to,
-        segment_origin,
-        extension(RevisitFields),
-    );
-}
-
-impl<E: Extension> RevisitBuilder<E, marker::V1_1> {
-    /// Create a WARC 1.1 `revisit` builder with its required fields.
-    ///
-    /// The profile URI describes how the record should be interpreted. Its embedded version may
-    /// differ from the version declared by the record.
-    #[must_use]
-    pub fn new(
-        date: impl Into<WarcDate>,
-        target_uri: Uri<String>,
-        profile: impl Into<RevisitProfile>,
-    ) -> Self
-    where
-        E::RevisitFields: Default,
-    {
-        Self::start(date, target_uri, profile)
-    }
-
+impl<E: Extension> RevisitBuilder<E> {
     /// `WARC-Refers-To-Target-URI`: the target URI of the record this one revisits, which need
     /// not be this record's own. Named by WARC 1.1.
     #[must_use]
@@ -655,20 +631,7 @@ impl<E: Extension> RevisitBuilder<E, marker::V1_1> {
     }
 }
 
-impl<E: Extension> RevisitBuilder<E, marker::V1_0> {
-    /// Create a WARC 1.0 `revisit` builder.
-    #[must_use]
-    pub fn new_1_0(
-        date: impl Into<WarcDate>,
-        target_uri: Uri<String>,
-        profile: impl Into<RevisitProfile>,
-    ) -> Self
-    where
-        E::RevisitFields: Default,
-    {
-        Self::start(date, target_uri, profile)
-    }
-}
+builder_end!(RevisitBuilder as Revisit);
 
 /// A builder for a `conversion` record, which holds another record's content converted.
 #[derive(Clone, Debug)]
@@ -679,30 +642,33 @@ pub struct ConversionBuilder<E: Extension = NoExtension> {
 
 impl<E: Extension> ConversionBuilder<E> {
     /// Create a `conversion` builder with its required fields.
-    #[must_use]
-    pub fn new(date: impl Into<WarcDate>, target_uri: Uri<String>) -> Self
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] if the target URI is not a URI.
+    pub fn new(target_uri: &str, date: impl Into<WarcDate>) -> Result<Self, ParseError>
     where
         E::ConversionFields: Default,
     {
-        Self {
+        Ok(Self {
             header: ConversionHeader {
                 version: WarcVersion::V1_1,
-                core: core_headers(date.into()),
+                core: core_headers(date.into(), None),
                 payload: PayloadHeaders::default(),
-                target_uri,
+                target_uri: parse_target_uri(target_uri)?,
                 warcinfo_id: None,
                 refers_to: None,
                 segment_origin: false,
                 other: Default::default(),
             },
             sha_1: false,
-        }
+        })
     }
 }
 
 impl<E: Extension> ConversionBuilder<E> {
     shared_setters!(
-        version,
+        v1_0,
         core,
         payload,
         warcinfo_id,
@@ -728,16 +694,21 @@ impl<E: Extension> ContinuationBuilder<E> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::MalformedField`] when the segment number is below `2`.
+    /// Returns [`Error::NotAUri`] if the target URI is not a URI, and
+    /// [`Error::MalformedField`] when the segment number is below `2`.
     pub fn new(
+        target_uri: &str,
         date: impl Into<WarcDate>,
-        target_uri: Uri<String>,
         segment_number: u64,
         segment_origin_id: Uri<String>,
     ) -> Result<Self, Error>
     where
         E::ContinuationFields: Default,
     {
+        let target_uri = parse_target_uri(target_uri).map_err(|source| Error::NotAUri {
+            field: Field::TargetURI,
+            source,
+        })?;
         let segment_number =
             SegmentNumber::new(segment_number).ok_or_else(|| Error::MalformedField {
                 field: Field::SegmentNumber,
@@ -747,7 +718,7 @@ impl<E: Extension> ContinuationBuilder<E> {
         Ok(Self {
             header: ContinuationHeader {
                 version: WarcVersion::V1_1,
-                core: core_headers(date.into()),
+                core: core_headers(date.into(), None),
                 payload: PayloadHeaders::default(),
                 target_uri,
                 warcinfo_id: None,
@@ -763,7 +734,7 @@ impl<E: Extension> ContinuationBuilder<E> {
 
 impl<E: Extension> ContinuationBuilder<E> {
     shared_setters!(
-        version,
+        v1_0,
         core,
         payload,
         warcinfo_id,
@@ -797,7 +768,7 @@ impl<E: Extension> OtherBuilder<E> {
         Self {
             header: OtherHeader {
                 version: WarcVersion::V1_1,
-                core: core_headers(date.into()),
+                core: core_headers(date.into(), None),
                 segment_origin: false,
                 extension,
             },
@@ -807,7 +778,7 @@ impl<E: Extension> OtherBuilder<E> {
 }
 
 impl<E: Extension> OtherBuilder<E> {
-    shared_setters!(version, core, segment_origin,);
+    shared_setters!(v1_0, core, segment_origin,);
 }
 
 builder_end!(OtherBuilder as Other);
@@ -824,30 +795,48 @@ impl<E: Extension> Record<E> {
     }
 
     /// A builder for a `response` record, which holds a complete scheme-specific response.
-    #[must_use]
-    pub fn response(date: impl Into<WarcDate>, target_uri: Uri<String>) -> ResponseBuilder<E>
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] if the target URI is not a URI.
+    pub fn response(
+        target_uri: &str,
+        date: impl Into<WarcDate>,
+    ) -> Result<ResponseBuilder<E>, ParseError>
     where
         E::ResponseFields: Default,
     {
-        ResponseBuilder::new(date, target_uri)
+        ResponseBuilder::new(target_uri, date)
     }
 
     /// A builder for a `resource` record, which holds a resource without protocol information.
-    #[must_use]
-    pub fn resource(date: impl Into<WarcDate>, target_uri: Uri<String>) -> ResourceBuilder<E>
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] if the target URI is not a URI.
+    pub fn resource(
+        target_uri: &str,
+        date: impl Into<WarcDate>,
+    ) -> Result<ResourceBuilder<E>, ParseError>
     where
         E::ResourceFields: Default,
     {
-        ResourceBuilder::new(date, target_uri)
+        ResourceBuilder::new(target_uri, date)
     }
 
     /// A builder for a `request` record, which holds a complete scheme-specific request.
-    #[must_use]
-    pub fn request(date: impl Into<WarcDate>, target_uri: Uri<String>) -> RequestBuilder<E>
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] if the target URI is not a URI.
+    pub fn request(
+        target_uri: &str,
+        date: impl Into<WarcDate>,
+    ) -> Result<RequestBuilder<E>, ParseError>
     where
         E::RequestFields: Default,
     {
-        RequestBuilder::new(date, target_uri)
+        RequestBuilder::new(target_uri, date)
     }
 
     /// A builder for a `metadata` record, which describes another record.
@@ -859,56 +848,53 @@ impl<E: Extension> Record<E> {
         MetadataBuilder::new(date)
     }
 
-    /// A builder for a WARC 1.1 `revisit` record, which stands in for content already archived.
-    #[must_use]
+    /// A builder for a `revisit` record, which stands in for content already archived.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] if the target URI is not a URI.
     pub fn revisit(
+        target_uri: &str,
         date: impl Into<WarcDate>,
-        target_uri: Uri<String>,
-        profile: impl Into<RevisitProfile>,
-    ) -> RevisitBuilder<E>
+        profile: RevisitProfile,
+    ) -> Result<RevisitBuilder<E>, ParseError>
     where
         E::RevisitFields: Default,
     {
-        RevisitBuilder::new(date, target_uri, profile)
-    }
-
-    /// A builder for a WARC 1.0 `revisit` record.
-    #[must_use]
-    pub fn revisit_1_0(
-        date: impl Into<WarcDate>,
-        target_uri: Uri<String>,
-        profile: impl Into<RevisitProfile>,
-    ) -> RevisitBuilder<E, marker::V1_0>
-    where
-        E::RevisitFields: Default,
-    {
-        RevisitBuilder::new_1_0(date, target_uri, profile)
+        RevisitBuilder::new(target_uri, date, profile)
     }
 
     /// A builder for a `conversion` record, which holds another record's content converted.
-    #[must_use]
-    pub fn conversion(date: impl Into<WarcDate>, target_uri: Uri<String>) -> ConversionBuilder<E>
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] if the target URI is not a URI.
+    pub fn conversion(
+        target_uri: &str,
+        date: impl Into<WarcDate>,
+    ) -> Result<ConversionBuilder<E>, ParseError>
     where
         E::ConversionFields: Default,
     {
-        ConversionBuilder::new(date, target_uri)
+        ConversionBuilder::new(target_uri, date)
     }
 
     /// A builder for a `continuation` record, which holds a later segment of a block.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::MalformedField`] when the segment number is below `2`.
+    /// Returns [`Error::NotAUri`] if the target URI is not a URI, and
+    /// [`Error::MalformedField`] when the segment number is below `2`.
     pub fn continuation(
+        target_uri: &str,
         date: impl Into<WarcDate>,
-        target_uri: Uri<String>,
         segment_number: u64,
         segment_origin_id: Uri<String>,
     ) -> Result<ContinuationBuilder<E>, Error>
     where
         E::ContinuationFields: Default,
     {
-        ContinuationBuilder::new(date, target_uri, segment_number, segment_origin_id)
+        ContinuationBuilder::new(target_uri, date, segment_number, segment_origin_id)
     }
 
     /// A builder for a record type defined by the extension.
@@ -921,6 +907,9 @@ impl<E: Extension> Record<E> {
     }
 }
 
+// Declared here because it uses the macros defined above.
+pub mod v1_0;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -930,15 +919,15 @@ mod tests {
     use crate::record::tests::as_rendered;
 
     const RECORD_ID: &str = "urn:uuid:00000000-0000-0000-0000-000000000001";
-    const OTHER_ID: &str = "urn:uuid:00000000-0000-0000-0000-000000000002";
-    const TARGET_URI: &str = "https://example.com/index.html";
+    pub(super) const OTHER_ID: &str = "urn:uuid:00000000-0000-0000-0000-000000000002";
+    pub(super) const TARGET_URI: &str = "https://example.com/index.html";
     const DATE: &str = "2020-07-08T02:52:55Z";
 
-    fn uri(value: &str) -> Uri<String> {
+    pub(super) fn uri(value: &str) -> Uri<String> {
         Uri::parse(value).expect("well-formed URI").to_owned()
     }
 
-    fn date() -> WarcDate {
+    pub(super) fn date() -> WarcDate {
         WarcDate::parse(DATE, WarcVersion::V1_1).expect("a date at the second precision")
     }
 
@@ -953,7 +942,7 @@ mod tests {
     }
 
     /// The value a written record carries for the named field, as text.
-    fn written(record: &raw::Record, name: &str) -> Option<String> {
+    pub(super) fn written(record: &raw::Record, name: &str) -> Option<String> {
         record
             .header
             .get(name)
@@ -963,7 +952,7 @@ mod tests {
     /// Write a built record and read it back, which is the check that every field the builder
     /// set is a field the standard permits the record type and that the record says the same
     /// thing at either end.
-    fn round_trip(record: &Record) -> Record {
+    pub(super) fn round_trip(record: &Record) -> Record {
         let raw = record
             .clone()
             .into_raw()
@@ -977,40 +966,42 @@ mod tests {
     fn records() -> Result<Vec<Record>, Error> {
         Ok(vec![
             Record::warcinfo(date())
-                .filename(Text::parse(b"example.warc").expect("a file name"))
+                .filename("example.warc")
+                .expect("a file name")
                 .segment_origin()
                 .body("software: archivindex-warc\r\n")?,
-            Record::response(date(), uri(TARGET_URI))
+            Record::response(TARGET_URI, date())
+                .expect("a well-formed target URI")
                 .block_digest(added_digest(RESPONSE_BLOCK.as_bytes()))
                 .payload_digest(sha_1_digest(RESPONSE_PAYLOAD.as_bytes()))
                 .ip_address("192.0.2.1".parse().expect("an address"))
                 .concurrent_to(uri(OTHER_ID))
                 .warcinfo_id(uri(OTHER_ID))
                 .body(RESPONSE_BLOCK)?,
-            Record::resource(date(), uri(TARGET_URI))
+            Record::resource(TARGET_URI, date())
+                .expect("a well-formed target URI")
                 .truncated(TruncatedType::Length)
                 .body("hello")?,
-            Record::request(date(), uri(TARGET_URI))
-                .identified_payload_type(MediaType::parse(b"text/html").expect("a media type"))
+            Record::request(TARGET_URI, date())
+                .expect("a well-formed target URI")
+                .identified_payload_type(MediaType::TEXT_PLAIN)
                 .body("GET / HTTP/1.1\r\n\r\n")?,
             Record::metadata(date())
                 .target_uri(uri(TARGET_URI))
                 .refers_to(uri(OTHER_ID))
                 .body("via: https://example.com/\r\n")?,
-            Record::revisit(
-                date(),
-                uri(TARGET_URI),
-                RevisitProfile::IdenticalPayloadDigest(WarcVersion::V1_1),
-            )
-            .payload_digest(digest())
-            .refers_to(uri(OTHER_ID))
-            .refers_to_target_uri(uri(TARGET_URI))
-            .refers_to_date(date())
-            .body("")?,
-            Record::conversion(date(), uri(TARGET_URI))
+            Record::revisit(TARGET_URI, date(), RevisitProfile::IDENTICAL_PAYLOAD_DIGEST)
+                .expect("a well-formed target URI")
+                .payload_digest(digest())
+                .refers_to(uri(OTHER_ID))
+                .refers_to_target_uri(uri(TARGET_URI))
+                .refers_to_date(date())
+                .body("")?,
+            Record::conversion(TARGET_URI, date())
+                .expect("a well-formed target URI")
                 .refers_to(uri(OTHER_ID))
                 .body("converted")?,
-            Record::continuation(date(), uri(TARGET_URI), 2, uri(OTHER_ID))?
+            Record::continuation(TARGET_URI, date(), 2, uri(OTHER_ID))?
                 .segment_total_length(14)
                 .body("second segment")?,
         ])
@@ -1032,8 +1023,8 @@ mod tests {
     fn a_continuation_is_numbered_from_two() {
         for segment_number in [0, 1] {
             let refused = Record::<NoExtension>::continuation(
+                TARGET_URI,
                 date(),
-                uri(TARGET_URI),
                 segment_number,
                 uri(OTHER_ID),
             );
@@ -1052,8 +1043,12 @@ mod tests {
     /// each record built without one is built under a fresh `urn:uuid` name.
     #[test]
     fn a_builder_not_told_an_identifier_names_the_record_itself() -> Result<(), BlockError> {
-        let record: Record = Record::response(date(), uri(TARGET_URI)).body("")?;
-        let another: Record = Record::response(date(), uri(TARGET_URI)).body("")?;
+        let record: Record = Record::response(TARGET_URI, date())
+            .expect("a well-formed target URI")
+            .body("")?;
+        let another: Record = Record::response(TARGET_URI, date())
+            .expect("a well-formed target URI")
+            .body("")?;
 
         assert!(record.core().record_id.as_str().starts_with("urn:uuid:"));
         assert_ne!(record.core().record_id, another.core().record_id);
@@ -1066,7 +1061,8 @@ mod tests {
     /// the record is written under.
     #[test]
     fn an_identifier_the_caller_gave_is_the_one_written() -> Result<(), BlockError> {
-        let record: Record = Record::response(date(), uri(TARGET_URI))
+        let record: Record = Record::response(TARGET_URI, date())
+            .expect("a well-formed target URI")
             .record_id(uri(RECORD_ID))
             .body("")?;
 
@@ -1085,7 +1081,8 @@ mod tests {
     /// The SHA-1 option adds both block and payload digests when possible.
     #[test]
     fn a_builder_told_to_use_sha_1_writes_sha_1_digests() -> Result<(), BlockError> {
-        let record: Record = Record::response(date(), uri(TARGET_URI))
+        let record: Record = Record::response(TARGET_URI, date())
+            .expect("a well-formed target URI")
             .sha_1_digests()
             .body(RESPONSE_BLOCK)?;
         let block_digest = record.core().block_digest.as_ref().map(ToString::to_string);
@@ -1126,7 +1123,8 @@ mod tests {
     /// A caller-provided digest takes precedence over the SHA-1 option.
     #[test]
     fn a_digest_the_caller_gave_outranks_the_sha_1_option() -> Result<(), BlockError> {
-        let record: Record = Record::response(date(), uri(TARGET_URI))
+        let record: Record = Record::response(TARGET_URI, date())
+            .expect("a well-formed target URI")
             .sha_1_digests()
             .block_digest(added_digest(b"hello"))
             .body("hello")?;
@@ -1141,12 +1139,14 @@ mod tests {
     fn a_builder_ended_with_build_builds_the_header_block_alone() -> Result<(), BlockError> {
         let block_digest = sha_1_digest(b"hello");
         // Set body-dependent fields explicitly so the header and record are comparable.
-        let header: RecordHeader = Record::response(date(), uri(TARGET_URI))
+        let header: RecordHeader = Record::response(TARGET_URI, date())
+            .expect("a well-formed target URI")
             .record_id(uri(RECORD_ID))
             .block_digest(block_digest.clone())
             .content_length(5)
             .build();
-        let record: Record = Record::response(date(), uri(TARGET_URI))
+        let record: Record = Record::response(TARGET_URI, date())
+            .expect("a well-formed target URI")
             .record_id(uri(RECORD_ID))
             .block_digest(block_digest)
             .body("hello")?;
@@ -1187,12 +1187,129 @@ mod tests {
         ));
     }
 
+    /// A record type whose block has a customary media type is built declaring it, and the
+    /// declaration is written as the standard spells it.
+    #[test]
+    fn a_record_type_with_a_customary_media_type_declares_it() -> Result<(), Error> {
+        let declared = |header: RecordHeader| header.core().content_type.clone();
+
+        assert_eq!(
+            declared(Record::warcinfo(date()).build()),
+            Some(MediaType::WARC_FIELDS)
+        );
+        assert_eq!(
+            declared(Record::metadata(date()).build()),
+            Some(MediaType::WARC_FIELDS)
+        );
+        assert_eq!(
+            declared(
+                Record::request(TARGET_URI, date())
+                    .expect("a well-formed target URI")
+                    .build()
+            ),
+            Some(MediaType::HTTP_REQUEST)
+        );
+        assert_eq!(
+            declared(
+                Record::response(TARGET_URI, date())
+                    .expect("a well-formed target URI")
+                    .build()
+            ),
+            Some(MediaType::HTTP_RESPONSE)
+        );
+
+        // Every other type holds whatever the record it was made from held, so its builder
+        // declares nothing.
+        assert_eq!(
+            declared(
+                Record::resource(TARGET_URI, date())
+                    .expect("a well-formed target URI")
+                    .build()
+            ),
+            None
+        );
+        assert_eq!(
+            declared(
+                Record::conversion(TARGET_URI, date())
+                    .expect("a well-formed target URI")
+                    .build()
+            ),
+            None
+        );
+        assert_eq!(
+            declared(
+                Record::revisit(TARGET_URI, date(), RevisitProfile::IDENTICAL_PAYLOAD_DIGEST)
+                    .expect("a well-formed target URI")
+                    .build()
+            ),
+            None
+        );
+        assert_eq!(
+            declared(Record::continuation(TARGET_URI, date(), 2, uri(OTHER_ID))?.build()),
+            None
+        );
+
+        let record: Record = Record::response(TARGET_URI, date())
+            .expect("a well-formed target URI")
+            .body(RESPONSE_BLOCK)?;
+        let raw = record.into_raw().expect("a record built here is writable");
+
+        assert_eq!(
+            written(&raw, "Content-Type").as_deref(),
+            Some("application/http;msgtype=response")
+        );
+
+        Ok(())
+    }
+
+    /// A file name is written under the `TEXT` rule, so a name that is not text is refused where
+    /// it is given rather than where the record is written.
+    #[test]
+    fn a_file_name_that_is_not_text_is_refused() {
+        let refused = Record::<NoExtension>::warcinfo(date()).filename("example\n.warc");
+
+        assert_eq!(
+            refused.err(),
+            Some(TextError::ControlCharacter {
+                value: "example\n.warc".to_owned(),
+                index: 7,
+            })
+        );
+    }
+
+    /// A target URI is read where it is given, so a value that is not a URI is refused there
+    /// rather than where the record is written.
+    #[test]
+    fn a_target_uri_that_is_not_a_uri_is_refused() {
+        let refused = Record::<NoExtension>::response("not a URI", date());
+
+        assert_eq!(
+            refused.err(),
+            Some(Uri::parse("not a URI").expect_err("not a URI"))
+        );
+    }
+
+    /// A `continuation` builder reports both of the values it can be given that no record could
+    /// carry, so the target URI it refuses names the field it was given for.
+    #[test]
+    fn a_continuation_target_uri_that_is_not_a_uri_is_refused() {
+        let refused = Record::<NoExtension>::continuation("not a URI", date(), 2, uri(OTHER_ID));
+
+        assert_eq!(
+            refused.err(),
+            Some(Error::NotAUri {
+                field: Field::TargetURI,
+                source: Uri::parse("not a URI").expect_err("not a URI"),
+            })
+        );
+    }
+
     /// A content type the caller set stands, since the standard recommends the format for these
     /// blocks rather than requiring it and a caller naming another one means it.
     #[test]
     fn a_content_type_the_caller_set_stands() {
         let record: Record = Record::metadata(date())
-            .content_type(MediaType::parse(b"text/plain").expect("a media type"))
+            .content_type(MediaType::TEXT_PLAIN)
             .fields(fields::Body::new())
             .expect("a block of the declared length");
 
@@ -1209,9 +1326,8 @@ mod tests {
     /// them are what ending a builder with a block can fail on.
     #[test]
     fn a_block_that_is_not_the_fields_it_is_declared_to_be_is_an_error() {
-        let record: Result<Record, BlockError> = Record::warcinfo(date())
-            .content_type(warc_fields())
-            .body("this line names no field\r\n");
+        let record: Result<Record, BlockError> =
+            Record::warcinfo(date()).body("this line names no field\r\n");
 
         assert!(matches!(
             record,
@@ -1222,7 +1338,7 @@ mod tests {
 
         // The same octets under any other content type are the record's as they stand.
         let record: Record = Record::warcinfo(date())
-            .content_type(MediaType::parse(b"text/plain").expect("a media type"))
+            .content_type(MediaType::TEXT_PLAIN)
             .body("this line names no field\r\n")
             .expect("a block that is not read as fields cannot fail to be read as them");
 
@@ -1237,7 +1353,8 @@ mod tests {
     /// describes.
     #[test]
     fn a_builder_told_a_content_length_refuses_a_block_of_another_length() {
-        let mismatched: Result<Record, BlockError> = Record::response(date(), uri(TARGET_URI))
+        let mismatched: Result<Record, BlockError> = Record::response(TARGET_URI, date())
+            .expect("a well-formed target URI")
             .content_length(5)
             .body("good day");
 
@@ -1249,7 +1366,8 @@ mod tests {
             })
         );
 
-        let record: Record = Record::response(date(), uri(TARGET_URI))
+        let record: Record = Record::response(TARGET_URI, date())
+            .expect("a well-formed target URI")
             .content_length(5)
             .body("hello")
             .expect("a block of the declared length");
@@ -1286,57 +1404,6 @@ mod tests {
 
         assert_eq!(record.core().content_length, Some(rendered_len));
         assert_eq!(record.content_length(), rendered_len);
-    }
-
-    /// A `revisit` record built for WARC 1.0 carries no field WARC 1.0 does not define, so it
-    /// is written as a WARC 1.0 record without anything being refused.
-    #[test]
-    fn a_revisit_built_for_warc_1_0_is_written_as_warc_1_0() -> Result<(), BlockError> {
-        let record: Record = Record::revisit_1_0(
-            date(),
-            uri(TARGET_URI),
-            RevisitProfile::ServerNotModified(WarcVersion::V1_0),
-        )
-        .body("")?;
-
-        // The version the builder was built for is the version the record declares, so the
-        // record is written as WARC 1.0 without anything else being said.
-        assert_eq!(record.version(), WarcVersion::V1_0);
-
-        let raw = record
-            .into_raw()
-            .expect("a record built for WARC 1.0 is writable as one");
-
-        assert_eq!(raw.header.version, WarcVersion::V1_0);
-        assert_eq!(
-            written(&raw, "WARC-Profile").as_deref(),
-            Some("<http://netpreserve.org/warc/1.0/revisit/server-not-modified>")
-        );
-
-        Ok(())
-    }
-
-    /// Every other builder is told its version rather than built for one, and the record it
-    /// builds is written as the version it declares: WARC 1.0 brackets every URI-valued field
-    /// where WARC 1.1 brackets only the five naming a record.
-    #[test]
-    fn a_record_is_written_as_the_version_its_builder_declared() -> Result<(), BlockError> {
-        let record: Record = Record::response(date(), uri(TARGET_URI))
-            .version(WarcVersion::V1_0)
-            .body("HTTP/1.1 200 OK\r\n\r\n")?;
-
-        assert_eq!(record.version(), WarcVersion::V1_0);
-        assert_eq!(round_trip(&record), as_rendered(record.clone()));
-
-        let raw = record.into_raw().expect("a record built here is writable");
-
-        assert_eq!(raw.header.version, WarcVersion::V1_0);
-        assert_eq!(
-            written(&raw, "WARC-Target-URI"),
-            Some(format!("<{TARGET_URI}>"))
-        );
-
-        Ok(())
     }
 
     /// A vocabulary standing in for a small archiving extension, which defines one record type
@@ -1393,7 +1460,8 @@ mod tests {
             as_rendered(record)
         );
 
-        let response = Record::<Sitemaps>::response(date(), uri(TARGET_URI))
+        let response = Record::<Sitemaps>::response(TARGET_URI, date())
+            .expect("a well-formed target URI")
             .body("HTTP/1.1 200 OK\r\n\r\n")?;
 
         assert_eq!(response.type_name(), "response");
