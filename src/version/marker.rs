@@ -1,8 +1,7 @@
 //! The type-level WARC version.
 //!
 //! Most code uses [`WarcVersion`](super::WarcVersion) as a value. A marker lets a type signature
-//! select a version at compile time, so that a value only one version defines can be asked for
-//! only where that version is the one declared.
+//! select a version at compile time, as the [revisit builder] does.
 //!
 //! A marker names a version without holding one. [`WarcVersion::VALUE`] is how code generic
 //! over a marker gets the value back:
@@ -18,6 +17,8 @@
 //! assert_eq!(declared::<marker::V1_0>(), version::WarcVersion::V1_0);
 //! assert_eq!(declared::<marker::V1_1>(), version::WarcVersion::V1_1);
 //! ```
+//!
+//! [revisit builder]: crate::record::builder::RevisitBuilder
 
 /// A WARC version selected at compile time.
 ///
