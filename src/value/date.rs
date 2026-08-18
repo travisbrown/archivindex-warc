@@ -337,6 +337,27 @@ mod tests {
         }
     }
 
+    /// `w3c-iso8601` is a UTC timestamp, so a zone designator other than `Z` is outside the field's
+    /// grammar even though [W3CDTF] admits one.
+    ///
+    /// [W3CDTF]: https://www.w3.org/TR/NOTE-datetime
+    #[test]
+    #[ignore = "known bug (WARC 1.1 accepts a zone offset): fix incoming"]
+    fn warc_1_1_requires_utc() {
+        for invalid in [
+            "2020-07-08T02:52+01:00",
+            "2020-07-08T02:52:55+01:00",
+            "2020-07-08T02:52:55.100-05:00",
+            "2020-07-08T02:52:55",
+        ] {
+            assert_eq!(
+                WarcDate::parse(invalid, WarcVersion::V1_1),
+                None,
+                "{invalid}"
+            );
+        }
+    }
+
     #[test]
     fn warc_1_0_formatting_uses_seconds() {
         let date = WarcDate::parse("2020-07-08T02:52:55.123456Z", WarcVersion::V1_1).unwrap();
