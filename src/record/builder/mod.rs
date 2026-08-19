@@ -41,9 +41,9 @@
 //!
 //! The `warcinfo` and `metadata` builders write the `warc-fields` body their record type carries
 //! rather than being given a block, so [`build`](WarcinfoBuilder::build) finishes a record and
-//! cannot fail. A `warcinfo` body opens naming this software and the version of the standard the
-//! record declares; a `metadata` body opens empty. Neither builder offers what the others declare
-//! about a block they are given: `Content-Length`, `WARC-Block-Digest`, `Content-Type`,
+//! cannot fail. A `warcinfo` body starts with fields identifying the declared WARC version; a
+//! `metadata` body starts empty. Neither builder offers the fields used to describe an attached
+//! block: `Content-Length`, `WARC-Block-Digest`, `Content-Type`,
 //! `WARC-Truncated`, and `WARC-Segment-Number`. A record carrying any other block is written by
 //! constructing it directly.
 //!
@@ -116,9 +116,6 @@ fn add_sha_1_digests<E: Extension>(record: &mut Record<E>, sha_1: bool) {
         add_sha_1_payload_digest(record);
     }
 }
-
-/// The `software` a `warcinfo` record built here names, which is this crate.
-const SOFTWARE: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
 /// Where the specification a WARC file of the given version conforms to is published.
 const fn specification_uri(version: WarcVersion) -> &'static str {
@@ -499,8 +496,8 @@ macro_rules! capture_builder {
 
 /// A builder for a `warcinfo` record, which describes the records that follow it.
 ///
-/// The setters here write the record's `warc-fields` body, which opens naming this software and
-/// the version of the standard the file is written under:
+/// The setters write the record's `warc-fields` body, which starts by identifying the WARC
+/// version of the file:
 ///
 /// ```
 /// # use archivindex_warc::record::{Record, extension::NoExtension};
@@ -524,15 +521,14 @@ pub struct WarcinfoBuilder<E: Extension = NoExtension> {
 impl<E: Extension> WarcinfoBuilder<E> {
     /// Create a `warcinfo` builder with its required fields.
     ///
-    /// The body opens naming this software as its `software` and the standard the record
-    /// declares as its `format` and `conformsTo`. Each is replaced by the setter for it.
+    /// The body starts with `format` and `conformsTo` fields for the declared WARC version.
+    /// Their setters replace these defaults.
     #[must_use]
     pub fn new(date: impl Into<WarcDate>) -> Self
     where
         E::WarcinfoFields: Default,
     {
         let mut body = WarcinfoBody::new();
-        set_rendered(&mut body, WarcinfoField::Software, SOFTWARE);
         describe_version(&mut body, WarcVersion::V1_1);
 
         Self {
@@ -565,10 +561,6 @@ impl<E: Extension> WarcinfoBuilder<E> {
 
     body_setters!(
         WarcinfoField;
-        operator: WarcinfoField::Operator, "operator",
-            "contact information for the operator who created this WARC resource.";
-        software: WarcinfoField::Software, "software",
-            "the software and software version used to create this WARC resource.";
         robots: WarcinfoField::Robots, "robots",
             "the robots policy followed by the harvester creating this WARC resource.";
         hostname: WarcinfoField::Hostname, "hostname",
@@ -586,6 +578,40 @@ impl<E: Extension> WarcinfoBuilder<E> {
         conforms_to: WarcinfoField::Dcmi(DcmiTerm::ConformsTo), "conformsTo",
             "the specification this file conforms to, named by its URI.";
     );
+
+    /// Set `operator` to the creator's `name` or, when given, `name <email>`.
+    ///
+    /// Replaces any existing value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`fields::Error::UnwritableField`] if `name` or `email` contains a control
+    /// character, which the field-value grammar forbids.
+    pub fn operator(mut self, name: &str, email: Option<&str>) -> Result<Self, fields::Error> {
+        match email {
+            Some(email) => self
+                .body
+                .set(WarcinfoField::Operator, format!("{name} <{email}>"))?,
+            None => self.body.set(WarcinfoField::Operator, name)?,
+        }
+
+        Ok(self)
+    }
+
+    /// Set `software` to the creating software's `name/version`.
+    ///
+    /// Replaces any existing value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`fields::Error::UnwritableField`] if `name` or `version` contains a control
+    /// character, which the field-value grammar forbids.
+    pub fn software(mut self, name: &str, version: &str) -> Result<Self, fields::Error> {
+        self.body
+            .set(WarcinfoField::Software, format!("{name}/{version}"))?;
+
+        Ok(self)
+    }
 
     /// `ip`: the IP address of the machine that created this WARC resource.
     ///
@@ -1183,7 +1209,7 @@ mod tests {
             Record::warcinfo(date())
                 .filename("example.warc")
                 .expect("a file name")
-                .software("archivindex-warc")
+                .software("archivindex-warc", "0.1.0")
                 .expect("a writable field")
                 .build(),
             Record::response(TARGET_URI, date())
@@ -1383,7 +1409,7 @@ mod tests {
     #[test]
     fn a_block_written_as_fields_declares_itself_as_them() {
         let record: Record = Record::warcinfo(date())
-            .software("archivindex-warc")
+            .software("archivindex-warc", "0.1.0")
             .expect("a writable field")
             .build();
 
@@ -1404,17 +1430,16 @@ mod tests {
         ));
     }
 
-    /// A `warcinfo` body opens naming this software and the version of the standard the record
-    /// declares, and building the builder writes those fields as the record's block.
+    /// A `warcinfo` body starts by identifying its WARC version, and `build` writes those fields
+    /// as the record block.
     #[test]
-    fn a_warcinfo_body_opens_describing_this_software_and_the_standard() {
+    fn a_warcinfo_body_opens_describing_the_standard() {
         let record: Record = Record::warcinfo(date()).build();
 
         assert_eq!(
             String::from_utf8_lossy(&record.body_bytes()),
             format!(
-                "software: {SOFTWARE}\r\n\
-                 format: WARC file version 1.1\r\n\
+                "format: WARC file version 1.1\r\n\
                  conformsTo: {}\r\n",
                 specification_uri(WarcVersion::V1_1)
             )
@@ -1422,13 +1447,36 @@ mod tests {
         assert_eq!(round_trip(&record), as_rendered(record.clone()));
     }
 
-    /// A setter writes the field's only value at the position the body already held it in, so
-    /// the fields the builder opens with are replaced rather than repeated.
+    /// An `operator` includes the email address only when provided.
     #[test]
-    fn a_warcinfo_setter_replaces_the_value_the_builder_opened_with() -> Result<(), fields::Error> {
+    fn an_operator_is_written_with_its_optional_email_address() -> Result<(), fields::Error> {
+        let with_email: Record = Record::warcinfo(date())
+            .operator("A. N. Operator", Some("operator@example.com"))?
+            .build();
+        let without_email: Record = Record::warcinfo(date())
+            .operator("A. N. Operator", None)?
+            .build();
+
+        assert!(
+            String::from_utf8_lossy(&with_email.body_bytes())
+                .contains("operator: A. N. Operator <operator@example.com>\r\n")
+        );
+        assert!(
+            String::from_utf8_lossy(&without_email.body_bytes())
+                .contains("operator: A. N. Operator\r\n")
+        );
+
+        Ok(())
+    }
+
+    /// Setting a field again replaces its value without moving it or creating a duplicate.
+    #[test]
+    fn a_warcinfo_setter_replaces_the_value_the_body_already_carries() -> Result<(), fields::Error>
+    {
         let record: Record = Record::warcinfo(date())
-            .software("heritrix/3.4.0")?
+            .software("wget", "1.21")?
             .hostname("crawling017.archive.org")?
+            .software("heritrix", "3.4.0")?
             .ip("207.241.227.234".parse().expect("an address"))
             .is_part_of("testcrawl-20050708")?
             .build();
@@ -1436,9 +1484,9 @@ mod tests {
         assert_eq!(
             String::from_utf8_lossy(&record.body_bytes()),
             format!(
-                "software: heritrix/3.4.0\r\n\
-                 format: WARC file version 1.1\r\n\
+                "format: WARC file version 1.1\r\n\
                  conformsTo: {}\r\n\
+                 software: heritrix/3.4.0\r\n\
                  hostname: crawling017.archive.org\r\n\
                  ip: 207.241.227.234\r\n\
                  isPartOf: testcrawl-20050708\r\n",
@@ -1621,7 +1669,7 @@ mod tests {
     #[test]
     fn a_fields_body_declares_the_length_it_renders_as() {
         let record: Record = Record::warcinfo(date())
-            .software("archivindex-warc")
+            .software("archivindex-warc", "0.1.0")
             .expect("a writable field")
             .build();
 

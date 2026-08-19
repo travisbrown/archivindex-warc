@@ -190,7 +190,7 @@ pub fn other<E: Extension>(date: impl Into<WarcDate>, extension: E::Types) -> Ot
 mod tests {
     use super::*;
     use crate::record::builder::tests::{OTHER_ID, TARGET_URI, date, round_trip, uri, written};
-    use crate::record::builder::{SOFTWARE, specification_uri, v1_0};
+    use crate::record::builder::{specification_uri, v1_0};
     use crate::record::tests::as_rendered;
 
     /// Every entry point in [`v1_0`] declares WARC 1.0, which is the whole of what the module
@@ -240,8 +240,7 @@ mod tests {
         assert_eq!(
             String::from_utf8_lossy(&record.body_bytes()),
             format!(
-                "software: {SOFTWARE}\r\n\
-                 format: WARC file version 1.0\r\n\
+                "format: WARC file version 1.0\r\n\
                  conformsTo: {}\r\n",
                 specification_uri(WarcVersion::V1_0)
             )
