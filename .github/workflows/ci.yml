@@ -28,6 +28,8 @@ jobs:
         run: cargo +nightly fmt --all -- --check
       - name: Check validator formatting
         run: cargo +nightly fmt --manifest-path validator/Cargo.toml --all -- --check
+      - name: Check CLI formatting
+        run: cargo +nightly fmt --manifest-path cli/Cargo.toml --all -- --check
 
   build:
     name: Build, test, lint, and document
@@ -42,11 +44,16 @@ jobs:
           workspaces: |
             . -> target
             validator -> target
+            cli -> target
       - name: Lint library
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Lint validator
         run: >-
           cargo clippy --locked --manifest-path validator/Cargo.toml
+          --all-targets --all-features -- -D warnings
+      - name: Lint CLI
+        run: >-
+          cargo clippy --locked --manifest-path cli/Cargo.toml
           --all-targets --all-features -- -D warnings
       - name: Check documentation
         run: cargo doc --all-features --no-deps
@@ -58,6 +65,10 @@ jobs:
         run: >-
           cargo build --locked --manifest-path validator/Cargo.toml
           --all-targets --all-features
+      - name: Build CLI
+        run: >-
+          cargo build --locked --manifest-path cli/Cargo.toml
+          --all-targets --all-features
       - name: Test library with all features
         run: cargo test --all-features
       - name: Test library without default features
@@ -65,6 +76,10 @@ jobs:
       - name: Test validator
         run: >-
           cargo test --locked --manifest-path validator/Cargo.toml
+          --all-features
+      - name: Test CLI
+        run: >-
+          cargo test --locked --manifest-path cli/Cargo.toml
           --all-features
       - name: Run examples
         run: ./examples/run.sh
@@ -98,11 +113,16 @@ jobs:
           workspaces: |
             . -> target
             validator -> target
+            cli -> target
       - name: Test library
         run: cargo test --all-features
       - name: Test validator
         run: >-
           cargo test --locked --manifest-path validator/Cargo.toml
+          --all-features
+      - name: Test CLI
+        run: >-
+          cargo test --locked --manifest-path cli/Cargo.toml
           --all-features
 
   coverage:
