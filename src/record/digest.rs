@@ -88,10 +88,10 @@ fn compare_digest(declared: &LabelledDigest, content: &[u8]) -> Option<Fault> {
 pub fn verify_block_digest(declared: &LabelledDigest, block: &[u8]) -> Result<(), BlockError> {
     match compare_digest(declared, block) {
         None => Ok(()),
-        Some(Fault::Malformed) => Err(BlockError::MalformedBlockDigest(declared.clone())),
+        Some(Fault::Malformed) => Err(BlockError::MalformedBlockDigest(Box::new(declared.clone()))),
         Some(Fault::Mismatch(actual)) => Err(BlockError::BlockDigestMismatch {
-            declared: declared.clone(),
-            actual,
+            declared: Box::new(declared.clone()),
+            actual: Box::new(actual),
         }),
     }
 }
@@ -116,10 +116,12 @@ pub fn check_block_digest(
 pub fn verify_payload_digest(declared: &LabelledDigest, payload: &[u8]) -> Result<(), BlockError> {
     match compare_digest(declared, payload) {
         None => Ok(()),
-        Some(Fault::Malformed) => Err(BlockError::MalformedPayloadDigest(declared.clone())),
+        Some(Fault::Malformed) => Err(BlockError::MalformedPayloadDigest(Box::new(
+            declared.clone(),
+        ))),
         Some(Fault::Mismatch(actual)) => Err(BlockError::PayloadDigestMismatch {
-            declared: declared.clone(),
-            actual,
+            declared: Box::new(declared.clone()),
+            actual: Box::new(actual),
         }),
     }
 }

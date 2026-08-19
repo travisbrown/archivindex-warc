@@ -76,20 +76,20 @@ pub enum BlockError {
     },
     /// The block digest is invalid for its declared algorithm, which this crate computes.
     #[error("The block digest `{0}` is not a digest the algorithm it names can have produced.")]
-    MalformedBlockDigest(LabelledDigest),
+    MalformedBlockDigest(Box<LabelledDigest>),
     /// The record's block digest does not match the block it carries.
     #[error(
         "The record declares the block digest `{declared}`, but its block digests as `{actual}`."
     )]
     BlockDigestMismatch {
         /// The digest the record declares.
-        declared: LabelledDigest,
+        declared: Box<LabelledDigest>,
         /// The digest of the block it carries.
-        actual: LabelledDigest,
+        actual: Box<LabelledDigest>,
     },
     /// The payload digest is invalid for its declared algorithm, which this crate computes.
     #[error("The payload digest `{0}` is not a digest the algorithm it names can have produced.")]
-    MalformedPayloadDigest(LabelledDigest),
+    MalformedPayloadDigest(Box<LabelledDigest>),
     /// The record's payload digest does not match the payload its block carries.
     #[error(
         "The record declares the payload digest `{declared}`, but its payload digests as \
@@ -97,9 +97,9 @@ pub enum BlockError {
     )]
     PayloadDigestMismatch {
         /// The digest the record declares.
-        declared: LabelledDigest,
+        declared: Box<LabelledDigest>,
         /// The digest of the payload it carries.
-        actual: LabelledDigest,
+        actual: Box<LabelledDigest>,
     },
     /// The declared payload digest cannot be checked because the HTTP message is malformed.
     #[error("The record's payload cannot be read from its block: {0}")]
@@ -2313,7 +2313,7 @@ mod tests {
 
             assert_eq!(
                 record.incorrect_block_digest(),
-                Some(BlockError::MalformedBlockDigest(digest(value))),
+                Some(BlockError::MalformedBlockDigest(Box::new(digest(value)))),
                 "{value}"
             );
         }
@@ -2337,8 +2337,8 @@ mod tests {
             assert_eq!(
                 record.incorrect_block_digest(),
                 Some(BlockError::BlockDigestMismatch {
-                    declared: digest(value),
-                    actual: digest(actual),
+                    declared: Box::new(digest(value)),
+                    actual: Box::new(digest(actual)),
                 }),
                 "{value}"
             );
@@ -2356,8 +2356,8 @@ mod tests {
         assert_eq!(
             record.into_raw(),
             Err(RenderError::Block(BlockError::BlockDigestMismatch {
-                declared: digest(of_nothing),
-                actual: digest("sha1:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N"),
+                declared: Box::new(digest(of_nothing)),
+                actual: Box::new(digest("sha1:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N")),
             }))
         );
 
@@ -2483,13 +2483,13 @@ mod tests {
         for (value, expected) in [
             (
                 malformed,
-                BlockError::MalformedPayloadDigest(digest(malformed)),
+                BlockError::MalformedPayloadDigest(Box::new(digest(malformed))),
             ),
             (
                 of_another_payload,
                 BlockError::PayloadDigestMismatch {
-                    declared: digest(of_another_payload),
-                    actual: digest(of_the_payload),
+                    declared: Box::new(digest(of_another_payload)),
+                    actual: Box::new(digest(of_the_payload)),
                 },
             ),
         ] {
