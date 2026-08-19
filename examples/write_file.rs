@@ -9,10 +9,7 @@ use archivindex_warc::record::Record;
 use chrono::Utc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // The builder is chosen by record type, so `WARC-Filename` is a method here and would not be
-    // one on any other type, as are the fields a `warcinfo` block is written from. The record is
-    // left to name itself, which it does with a generated `urn:uuid` identifier, and its body
-    // opens naming this software and the version of the standard the record declares.
+    // The builder generates a `urn:uuid` record identifier and a body describing WARC 1.1.
     let record: Record = Record::warcinfo(Utc::now())
         .filename("warc_example.warc")?
         .hostname("localhost")?
