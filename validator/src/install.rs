@@ -102,7 +102,7 @@ impl ToolResolver {
             bail!("warc is not on PATH (automatic installation disabled)");
         }
 
-        eprintln!("Warchaeology is missing; installing it in the local tools cache...");
+        log::warn!("Warchaeology is missing; installing it in the local tools cache...");
         self.install_warchaeology()
             .map(ResolvedCommand::direct)
             .context("local Warchaeology installation failed")
@@ -131,7 +131,7 @@ impl ToolResolver {
             bail!("jwattools is not on PATH and Java is unavailable for a local installation");
         }
 
-        eprintln!("JWAT-Tools is missing; installing it in the local tools cache...");
+        log::warn!("JWAT-Tools is missing; installing it in the local tools cache...");
         self.install_jwat_tools()
             .map(ResolvedCommand::script)
             .context("local JWAT-Tools installation failed")
@@ -153,7 +153,7 @@ impl ToolResolver {
             bail!("warcio is not on PATH (automatic installation disabled)");
         }
 
-        eprintln!("warcio is missing; installing it in a local Python environment...");
+        log::warn!("warcio is missing; installing it in a local Python environment...");
         self.install_warcio()
             .map(ResolvedCommand::direct)
             .context("local warcio installation failed")

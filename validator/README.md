@@ -50,8 +50,9 @@ An explicit executable can be supplied with these environment variables:
 
 Use `--validator` more than once to select a subset (`archivindex-raw`, `archivindex-untyped`,
 `archivindex-record`, `warc`, `warcat-rs`, `warchaeology`, `jwat-tools`, or `warcio`), and
-`--verbose` to print the errors each `archivindex-warc` layer found, captured subprocess output,
-and `warcat-rs` problem data.
+`-v` to print the errors each `archivindex-warc` layer found, captured subprocess output, and
+`warcat-rs` problem data. `-q` logs errors only, the default adds warnings and the summary, and
+`-v`, `-vv`, and `-vvv` raise the diagnostic level to informational, debug, and trace.
 
 The process exits with status 1 if a validator rejects the file or cannot run, and with status 0
 only when every selected validator completes successfully.
