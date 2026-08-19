@@ -31,6 +31,9 @@ mod digest;
 pub mod extension;
 pub mod fields;
 pub mod header;
+#[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
+pub mod http;
 pub mod payload;
 pub mod record_type;
 

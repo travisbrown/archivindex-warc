@@ -21,12 +21,14 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = ["gzip"]
 gzip = ["dep:flate2"]
+http = ["dep:http"]
 serde = ["dep:serde"]
 
 [dependencies]
 chrono = "0.4"
 flate2 = { version = "1", optional = true }
 fluent-uri = "0.4"
+http = { version = "1", optional = true }
 # The record layer computes a `WARC-Block-Digest` with `md-5`, `sha1`, or `sha2`.
 md-5 = "0.11"
 serde = { version = "1", optional = true, features = ["derive"] }
@@ -38,6 +40,8 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 data-encoding = "2"
+# The request-reconstruction test compares against bytes sent by a real loopback client.
+reqwest = { version = "0.13", default-features = false, features = ["blocking"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tempfile = "3"
 # Only the `read_filtered` example parses URLs.
@@ -45,6 +49,10 @@ url = "2"
 # The upstream crate this one is derived from, compared against by `warc_crate_roundtrip`.
 # Pinned exactly, since that test asserts the behavior of one specific implementation.
 warc = "=0.4.0"
+
+[[test]]
+name = "reconstruct_request_echo"
+required-features = ["http"]
 
 # These examples demonstrate gzip-compressed WARC files, so they are only built when the
 # feature they require is enabled; the remaining examples are still auto-discovered.
