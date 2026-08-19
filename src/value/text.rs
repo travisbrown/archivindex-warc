@@ -91,6 +91,14 @@ impl Text {
         std::str::from_utf8(&self.content).ok()
     }
 
+    /// The content as text, replacing any octet that is not valid UTF-8.
+    ///
+    /// Where [`Display`] spells the whole value, quoting included, this is the content alone.
+    #[must_use]
+    pub fn to_str_lossy(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.content)
+    }
+
     /// Whether the value was written as a quoted string.
     #[must_use]
     pub const fn is_quoted(&self) -> bool {
@@ -140,11 +148,13 @@ mod tests {
         let plain = Text::parse(b"example.warc.gz").unwrap();
         assert_eq!(plain.as_bytes(), b"example.warc.gz");
         assert_eq!(plain.to_str(), Some("example.warc.gz"));
+        assert_eq!(plain.to_str_lossy(), "example.warc.gz");
         assert!(!plain.is_quoted());
         assert_eq!(plain.to_string(), "example.warc.gz");
 
         let quoted = Text::parse(br#""with \"quotes\" and ; punctuation""#).unwrap();
         assert_eq!(quoted.as_bytes(), br#"with "quotes" and ; punctuation"#);
+        assert_eq!(quoted.to_str_lossy(), r#"with "quotes" and ; punctuation"#);
         assert!(quoted.is_quoted());
         assert_eq!(quoted.to_string(), r#""with \"quotes\" and ; punctuation""#);
         assert_eq!(
@@ -157,6 +167,7 @@ mod tests {
         let bytes = Text::parse(b"caf\xe9.warc").unwrap();
         assert_eq!(bytes.as_bytes(), b"caf\xe9.warc");
         assert_eq!(bytes.to_str(), None);
+        assert_eq!(bytes.to_str_lossy(), "caf\u{fffd}.warc");
         assert_eq!(bytes.to_bytes().as_ref(), b"caf\xe9.warc");
         assert_eq!(bytes.to_string(), "caf\u{fffd}.warc");
     }
