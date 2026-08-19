@@ -38,9 +38,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let record = header.with_body(body);
 
     let mut file = WarcWriter::from_path(common::tmp_path("warc_example.warc")?)?;
-    let bytes_written = file.write(&record)?;
+    let written = file.write(&record)?;
 
-    println!("{bytes_written} bytes written.");
+    println!("{} bytes written.", written.length);
 
     Ok(())
 }

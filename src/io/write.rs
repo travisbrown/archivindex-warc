@@ -6,9 +6,11 @@ use std::{fs, io};
 
 #[cfg(feature = "gzip")]
 use flate2::write::GzEncoder as GzipWriter;
+use sha2::Digest as _;
 
 use crate::io::MB;
 use crate::parse::raw;
+use crate::value::{DigestAlgorithm, LabelledDigest};
 
 /// The ways writing a record can fail.
 ///
@@ -50,12 +52,44 @@ mod error_tests {
     }
 }
 
+/// The location, length, and optional digest of a written record.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Written {
+    /// The offset of the record's first stored byte.
+    pub offset: u64,
+    /// The number of bytes stored.
+    pub length: u64,
+    /// The SHA-256 digest of the stored bytes, present when the writer computes digests.
+    pub digest: Option<LabelledDigest>,
+}
+
 /// A writer for WARC records.
+///
+/// Offsets count only bytes emitted by this writer's record-writing methods. Writing directly
+/// to the inner writer does not advance the tracked position.
 pub struct WarcWriter<W> {
     writer: W,
+    position: u64,
+    digests: bool,
 }
 
 impl<W> WarcWriter<W> {
+    /// Compute a SHA-256 digest of each record's stored bytes.
+    ///
+    /// Each record-writing method returns the digest in [`Written`]. For an independent gzip
+    /// member, the digest covers the compressed bytes.
+    #[must_use]
+    pub const fn with_digests(mut self) -> Self {
+        self.digests = true;
+        self
+    }
+
+    /// Return the offset at which the next record will be written.
+    #[must_use]
+    pub const fn position(&self) -> u64 {
+        self.position
+    }
+
     /// Return a shared reference to the inner writer.
     pub const fn get_ref(&self) -> &W {
         &self.writer
@@ -85,7 +119,11 @@ impl<W> WarcWriter<W> {
 impl<W: Write> WarcWriter<W> {
     /// Create a writer for an output stream.
     pub const fn new(w: W) -> Self {
-        Self { writer: w }
+        Self {
+            writer: w,
+            position: 0,
+            digests: false,
+        }
     }
 
     /// Flush the inner writer.
@@ -95,16 +133,34 @@ impl<W: Write> WarcWriter<W> {
 
     /// Write a single record.
     ///
-    /// The record is validated before anything is emitted, so a record that could not be read
-    /// back leaves no partial bytes in the output. The number of bytes written is returned
-    /// upon success.
+    /// Validation happens before writing, so an invalid record leaves the output unchanged. A
+    /// sink error can leave a partial record; the tracked position includes any bytes the sink
+    /// accepted.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Sink`] when the output stream refuses the bytes, or [`Error::Raw`]
     /// carrying the reason the record cannot be written.
-    pub fn write(&mut self, record: &raw::Record) -> Result<usize, Error> {
-        record.write_to(&mut self.writer)
+    pub fn write(&mut self, record: &raw::Record) -> Result<Written, Error> {
+        let mut tap = TapWriter::new(&mut self.writer, self.digests);
+        let result = record.write_to(&mut tap);
+        let finished = tap.finish();
+        let written = self.frame(finished);
+        result?;
+
+        Ok(written)
+    }
+
+    /// Advance the position and describe the completed frame.
+    fn frame(&mut self, (length, digest): (u64, Option<LabelledDigest>)) -> Written {
+        let offset = self.position;
+        self.position += length;
+
+        Written {
+            offset,
+            length,
+            digest,
+        }
     }
 }
 
@@ -146,6 +202,8 @@ impl WarcWriter<BufWriter<fs::File>> {
     /// are defined to be concatenable. To overwrite an existing file with a fresh archive
     /// instead, create the file with [`std::fs::File::create`] and pass it to
     /// [`WarcWriter::new`].
+    ///
+    /// The initial position is the file's existing length.
     pub fn from_path<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = fs::OpenOptions::new()
             .read(true)
@@ -153,9 +211,11 @@ impl WarcWriter<BufWriter<fs::File>> {
             .truncate(false)
             .append(true)
             .open(&path)?;
-        let writer = BufWriter::with_capacity(MB, file);
+        let position = file.metadata()?.len();
+        let mut writer = Self::new(BufWriter::with_capacity(MB, file));
+        writer.position = position;
 
-        Ok(Self::new(writer))
+        Ok(writer)
     }
 }
 
@@ -163,53 +223,79 @@ impl WarcWriter<BufWriter<fs::File>> {
 impl<W: Write> WarcWriter<W> {
     /// Write a single record as an independent gzip member.
     ///
-    /// This follows the record-at-a-time compression convention for gzip WARC files: each
-    /// record is compressed as its own complete gzip member, so the returned length frames a
-    /// range that can be located by an index and decompressed on its own, and consecutive
-    /// calls produce a valid multi-member stream (as read by
-    /// [`WarcReader::from_path_gzip`](crate::io::read::WarcReader::from_path_gzip)). The member is
-    /// finished before this method returns, so no separate finishing step is needed.
-    ///
-    /// The number of compressed bytes written is returned upon success.
+    /// This follows the record-at-a-time compression convention for gzip WARC files. Each
+    /// record becomes a complete member that can be indexed and decompressed independently;
+    /// consecutive calls produce a valid multi-member stream (as read by
+    /// [`WarcReader::from_path_gzip`](crate::io::read::WarcReader::from_path_gzip)). The returned
+    /// [`Written`] frames the compressed member. The member is finished before this method
+    /// returns, so no separate finishing step is needed.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Sink`] when the output stream refuses the bytes, or [`Error::Raw`]
     /// carrying the reason the record cannot be written.
-    pub fn write_gzip(&mut self, record: &raw::Record) -> Result<usize, Error> {
+    pub fn write_gzip(&mut self, record: &raw::Record) -> Result<Written, Error> {
         // Validate before constructing the encoder: an encoder emits a gzip header even for
         // an empty stream when it is finished or dropped, and a rejected record must leave no
         // bytes in the output.
         record.validate()?;
 
-        // The compressed length is what frames the member for indexing, so the encoder's
-        // output is counted rather than its input.
-        let mut counter = CountingWriter {
-            writer: &mut self.writer,
-            bytes_written: 0,
-        };
-        let mut encoder = GzipWriter::new(&mut counter, flate2::Compression::default());
-        WarcWriter::new(&mut encoder).write(record)?;
-        // Finishing flushes the compressed data and writes the gzip trailer, completing the
-        // member; it also releases the encoder's borrow of the counter.
-        encoder.finish()?;
+        // Indexes frame the compressed member, so measure the encoder's output.
+        let mut tap = TapWriter::new(&mut self.writer, self.digests);
+        let result = write_member(&mut tap, record);
+        let finished = tap.finish();
+        let written = self.frame(finished);
+        result?;
 
-        Ok(counter.bytes_written)
+        Ok(written)
     }
 }
 
-/// A writer which counts the bytes passing through it.
+/// Compress one record as a complete gzip member.
 #[cfg(feature = "gzip")]
-struct CountingWriter<W> {
-    writer: W,
-    bytes_written: usize,
+fn write_member<W: Write>(writer: W, record: &raw::Record) -> Result<(), Error> {
+    let mut encoder = GzipWriter::new(writer, flate2::Compression::default());
+    WarcWriter::new(&mut encoder).write(record)?;
+    // `finish` flushes the data and writes the gzip trailer.
+    encoder.finish()?;
+
+    Ok(())
 }
 
-#[cfg(feature = "gzip")]
-impl<W: Write> Write for CountingWriter<W> {
+/// A writer that counts and optionally hashes the bytes passing through it.
+struct TapWriter<W> {
+    writer: W,
+    length: u64,
+    hasher: Option<sha2::Sha256>,
+}
+
+impl<W> TapWriter<W> {
+    fn new(writer: W, digest: bool) -> Self {
+        Self {
+            writer,
+            length: 0,
+            hasher: digest.then(sha2::Sha256::new),
+        }
+    }
+
+    /// Return the byte count and requested digest.
+    fn finish(self) -> (u64, Option<LabelledDigest>) {
+        let digest = self
+            .hasher
+            .map(|hasher| LabelledDigest::from_digest(DigestAlgorithm::Sha256, &hasher.finalize()));
+
+        (self.length, digest)
+    }
+}
+
+impl<W: Write> Write for TapWriter<W> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         let written = self.writer.write(buffer)?;
-        self.bytes_written += written;
+        self.length += written as u64;
+
+        if let Some(hasher) = &mut self.hasher {
+            hasher.update(&buffer[..written]);
+        }
 
         Ok(written)
     }
@@ -358,12 +444,50 @@ mod write_tests {
         let record = test_record(WarcVersion::V1_0, &[("WARC-Type", "dunno")], b"12345");
 
         let mut writer = WarcWriter::new(TrickleWriter(Vec::new()));
-        let bytes_written = writer.write(&record).unwrap();
+        let written = writer.write(&record).unwrap();
 
         let expected: &[u8] =
             b"WARC/1.0\r\nWARC-Type: dunno\r\nContent-Length: 5\r\n\r\n12345\r\n\r\n";
         assert_eq!(writer.get_ref().0.as_slice(), expected);
-        assert_eq!(bytes_written, expected.len());
+        assert_eq!(written.length, expected.len() as u64);
+    }
+
+    /// Consecutive writes report contiguous frames; digests remain absent unless enabled.
+    #[test]
+    fn write_reports_the_frame_of_each_record() {
+        let first = test_record(WarcVersion::V1_1, &[("WARC-Type", "resource")], b"one");
+        let second = test_record(WarcVersion::V1_1, &[("WARC-Type", "resource")], b"two-two");
+
+        let mut writer = WarcWriter::new(Vec::new());
+        let first_written = writer.write(&first).unwrap();
+        let second_written = writer.write(&second).unwrap();
+
+        assert_eq!(first_written.offset, 0);
+        assert_eq!(second_written.offset, first_written.length);
+        assert_eq!(
+            writer.position(),
+            first_written.length + second_written.length
+        );
+        assert_eq!(writer.position(), writer.get_ref().len() as u64);
+        assert_eq!(first_written.digest, None);
+        assert_eq!(second_written.digest, None);
+    }
+
+    /// Digesting covers each record's stored bytes.
+    #[test]
+    fn write_digests_the_stored_bytes() {
+        use sha2::Digest as _;
+
+        let record = test_record(WarcVersion::V1_1, &[("WARC-Type", "resource")], b"body!");
+
+        let mut writer = WarcWriter::new(Vec::new()).with_digests();
+        let written = writer.write(&record).unwrap();
+
+        let expected = crate::value::LabelledDigest::from_digest(
+            crate::value::DigestAlgorithm::Sha256,
+            &sha2::Sha256::digest(writer.get_ref()),
+        );
+        assert_eq!(written.digest, Some(expected));
     }
 
     #[test]
@@ -388,6 +512,10 @@ impl WarcWriter<BufWriter<GzipWriter<std::fs::File>>> {
     /// reads. To overwrite an existing file with a fresh archive instead, create the file
     /// with [`std::fs::File::create`], wrap it in a gzip encoder, and pass it to
     /// [`WarcWriter::new`].
+    ///
+    /// Records written through this writer share one compression stream. Reported offsets count
+    /// uncompressed input and therefore do not locate records in the compressed file. To frame
+    /// records individually, use [`Self::write_gzip`] with a plain sink.
     pub fn from_path_gzip<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = fs::OpenOptions::new()
             .read(true)
@@ -432,6 +560,27 @@ mod from_path_tests {
         expected_writer.write(&second).unwrap();
 
         assert_eq!(std::fs::read(&path).unwrap(), expected_writer.into_inner());
+    }
+
+    /// A reopened writer reports offsets from the end of the existing file.
+    #[test]
+    fn reopened_file_reports_file_offsets() {
+        let record = record_with_body(b"the-first-record-written");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("append.warc");
+
+        let mut writer = WarcWriter::from_path(&path).unwrap();
+        let first_written = writer.write(&record).unwrap();
+        writer.finish().unwrap();
+
+        assert_eq!(first_written.offset, 0);
+
+        let mut writer = WarcWriter::from_path(&path).unwrap();
+        assert_eq!(writer.position(), first_written.length);
+
+        let second_written = writer.write(&record).unwrap();
+        assert_eq!(second_written.offset, first_written.length);
     }
 
     #[cfg(feature = "gzip")]
@@ -497,16 +646,22 @@ mod write_gzip_tests {
         );
 
         let mut writer = WarcWriter::new(Vec::new());
-        let first_length = writer.write_gzip(&first).unwrap();
-        let second_length = writer.write_gzip(&second).unwrap();
+        let first_written = writer.write_gzip(&first).unwrap();
+        let second_written = writer.write_gzip(&second).unwrap();
         let bytes = writer.into_inner();
 
-        // The returned lengths tile the output exactly, as index offsets require.
-        assert_eq!(first_length + second_length, bytes.len());
+        // The frames tile the output exactly, as an index requires.
+        assert_eq!(first_written.offset, 0);
+        assert_eq!(second_written.offset, first_written.length);
+        assert_eq!(
+            first_written.length + second_written.length,
+            bytes.len() as u64
+        );
 
         // Each framed range is a complete gzip member on its own; a single-member decoder
         // must be able to decode it in isolation.
-        let (first_member, second_member) = bytes.split_at(first_length);
+        let (first_member, second_member) =
+            bytes.split_at(usize::try_from(first_written.length).unwrap());
         for (member, record) in [(first_member, &first), (second_member, &second)] {
             let mut decoded = Vec::new();
             flate2::read::GzDecoder::new(member)
@@ -521,6 +676,32 @@ mod write_gzip_tests {
         ));
         let read_back: Vec<_> = reader.iter_raw_records().collect::<Result<_, _>>().unwrap();
         assert_eq!(read_back, vec![first, second]);
+    }
+
+    /// A gzip member's digest covers the compressed bytes in its reported frame.
+    #[test]
+    fn write_gzip_digests_the_compressed_member() {
+        use sha2::Digest as _;
+
+        let first = test_record(WarcVersion::V1_1, &[("WARC-Type", "resource")], b"one");
+        let second = test_record(WarcVersion::V1_1, &[("WARC-Type", "resource")], b"two");
+
+        let mut writer = WarcWriter::new(Vec::new()).with_digests();
+        let frames = [
+            writer.write_gzip(&first).unwrap(),
+            writer.write_gzip(&second).unwrap(),
+        ];
+        let bytes = writer.into_inner();
+
+        for written in frames {
+            let start = usize::try_from(written.offset).unwrap();
+            let end = start + usize::try_from(written.length).unwrap();
+            let expected = crate::value::LabelledDigest::from_digest(
+                crate::value::DigestAlgorithm::Sha256,
+                &sha2::Sha256::digest(&bytes[start..end]),
+            );
+            assert_eq!(written.digest, Some(expected));
+        }
     }
 
     /// A rejected record leaves no bytes in the output, not even a gzip header.

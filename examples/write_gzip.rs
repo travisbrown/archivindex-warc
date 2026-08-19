@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let mut file = WarcWriter::from_path_gzip(common::tmp_path("warc_example.warc.gz")?)?;
-    let bytes_written = file.write(&warcinfo)? + file.write(&resource)?;
+    let bytes_written = file.write(&warcinfo)?.length + file.write(&resource)?.length;
 
     // NB: the compression stream must be finish()ed, or the file will be truncated
     let gzip_stream = file.finish()?;
