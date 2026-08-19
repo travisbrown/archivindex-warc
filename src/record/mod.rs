@@ -26,6 +26,7 @@
 //! Use [`builder`] to create new records.
 
 pub mod builder;
+pub mod capture;
 mod digest;
 pub mod extension;
 pub mod fields;
