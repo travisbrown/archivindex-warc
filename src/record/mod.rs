@@ -2009,7 +2009,7 @@ mod tests {
             panic!("not a warcinfo");
         };
         assert_eq!(
-            header.filename.as_ref().and_then(Text::to_str),
+            header.filename.as_ref().map(Text::to_str_lossy).as_deref(),
             Some("example.warc")
         );
         let FieldsBlock::Fields(fields) = body else {
