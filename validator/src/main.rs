@@ -39,9 +39,53 @@ struct Cli {
     #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
     tools_dir: Option<PathBuf>,
 
-    /// Show captured validator output and warcat-rs problem details.
-    #[arg(short, long)]
-    verbose: bool,
+    #[command(flatten)]
+    verbosity: Verbosity,
+}
+
+/// Logging detail: errors only with `--quiet`, warnings by default, and informational, debug,
+/// and trace diagnostics with each repetition of `-v`. Informational and above also shows
+/// captured validator output and warcat-rs problem details.
+#[derive(Debug, clap::Args)]
+struct Verbosity {
+    /// Log errors only.
+    #[arg(short, long, conflicts_with = "verbose")]
+    quiet: bool,
+
+    /// Log informational diagnostics; repeat for debug and trace.
+    #[arg(short, action = clap::ArgAction::Count)]
+    verbose: u8,
+}
+
+impl Verbosity {
+    /// The most detailed level to log.
+    fn level(&self) -> log::LevelFilter {
+        if self.quiet {
+            log::LevelFilter::Error
+        } else {
+            match self.verbose {
+                0 => log::LevelFilter::Warn,
+                1 => log::LevelFilter::Info,
+                2 => log::LevelFilter::Debug,
+                _ => log::LevelFilter::Trace,
+            }
+        }
+    }
+
+    /// Start logging to standard error at the selected level.
+    fn init_logging(&self) {
+        let config = simplelog::ConfigBuilder::new()
+            .set_time_level(log::LevelFilter::Off)
+            .build();
+
+        simplelog::TermLogger::init(
+            self.level(),
+            config,
+            simplelog::TerminalMode::Stderr,
+            simplelog::ColorChoice::Auto,
+        )
+        .expect("invariant violation: the logger is initialized once");
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum)]
@@ -72,11 +116,14 @@ const ALL_VALIDATORS: [ValidatorName; 8] = [
 ];
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    let cli = Cli::parse();
+    cli.verbosity.init_logging();
+
+    match run(cli) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(error) => {
-            eprintln!("error: {error:#}");
+            log::error!("{error:#}");
             ExitCode::FAILURE
         }
     }
@@ -106,6 +153,7 @@ fn run(cli: Cli) -> Result<bool> {
             continue;
         }
 
+        log::info!("running the {validator:?} validator");
         let result = match validator {
             ValidatorName::ArchivindexRaw => run_archivindex(&file, Layer::Raw),
             ValidatorName::ArchivindexUntyped => run_archivindex(&file, Layer::Untyped),
@@ -119,7 +167,9 @@ fn run(cli: Cli) -> Result<bool> {
         results.push(result);
     }
 
-    print_summary(&file, &results, cli.verbose);
+    if !cli.verbosity.quiet {
+        print_summary(&file, &results, cli.verbosity.verbose > 0);
+    }
     Ok(results.iter().all(ValidationResult::is_success))
 }
 
@@ -195,5 +245,23 @@ mod tests {
         let cli = Cli::try_parse_from(["warc-validator", "--validator", "warcheology", "x.warc"])
             .unwrap();
         assert_eq!(cli.validator, vec![ValidatorName::Warchaeology]);
+    }
+
+    #[test]
+    fn verbosity_selects_the_documented_levels() {
+        let level = |flags: &[&str]| {
+            let mut args = vec!["warc-validator", "x.warc"];
+            args.extend_from_slice(flags);
+
+            Cli::try_parse_from(args).unwrap().verbosity.level()
+        };
+
+        assert_eq!(level(&[]), log::LevelFilter::Warn);
+        assert_eq!(level(&["--quiet"]), log::LevelFilter::Error);
+        assert_eq!(level(&["-v"]), log::LevelFilter::Info);
+        assert_eq!(level(&["-vv"]), log::LevelFilter::Debug);
+        assert_eq!(level(&["-vvv"]), log::LevelFilter::Trace);
+        assert_eq!(level(&["-vvvv"]), log::LevelFilter::Trace);
+        assert!(Cli::try_parse_from(["warc-validator", "x.warc", "-q", "-v"]).is_err());
     }
 }
