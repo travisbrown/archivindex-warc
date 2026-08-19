@@ -1,3 +1,4 @@
+mod graph;
 mod merge;
 
 use std::path::PathBuf;
@@ -62,6 +63,17 @@ impl Verbosity {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Draw the records and their relationships as an SVG graph.
+    Graph {
+        /// The WARC file to graph; a .gz extension selects gzip decompression.
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+        input: PathBuf,
+
+        /// The SVG file to write; without this option, open the graph in a window.
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+        output: Option<PathBuf>,
+    },
+
     /// Merge the records of two WARC files, dropping duplicate warcinfo records.
     Merge {
         /// The WARC file whose records come first.
@@ -95,6 +107,21 @@ fn run(cli: Cli) -> Result<()> {
     let quiet = cli.verbosity.quiet;
 
     match cli.command {
+        Command::Graph { input, output } => {
+            let summary = graph::graph(&input, output.as_deref())?;
+            if !quiet {
+                let description = format!(
+                    "a graph of {}, including {}",
+                    plural(summary.records, "record"),
+                    plural(summary.references, "reference")
+                );
+                if let Some(output) = output {
+                    println!("Wrote {description} to {}.", output.display());
+                } else {
+                    println!("Opened {description}.");
+                }
+            }
+        }
         Command::Merge {
             first,
             second,
@@ -154,6 +181,34 @@ mod tests {
         assert_eq!(level(&["-vv"]), log::LevelFilter::Debug);
         assert_eq!(level(&["-vvv"]), log::LevelFilter::Trace);
         assert_eq!(level(&["-vvvv"]), log::LevelFilter::Trace);
+    }
+
+    #[test]
+    fn graph_accepts_an_optional_output() {
+        let with_output = Cli::try_parse_from([
+            "archivindex-warc-cli",
+            "graph",
+            "--input",
+            "a.warc.gz",
+            "--output",
+            "a.svg",
+        ])
+        .unwrap();
+        let without_output =
+            Cli::try_parse_from(["archivindex-warc-cli", "graph", "-i", "a.warc"]).unwrap();
+
+        assert!(matches!(
+            with_output.command,
+            Command::Graph {
+                input,
+                output: Some(output)
+            } if input.as_path() == std::path::Path::new("a.warc.gz")
+                && output.as_path() == std::path::Path::new("a.svg")
+        ));
+        assert!(matches!(
+            without_output.command,
+            Command::Graph { output: None, .. }
+        ));
     }
 
     #[test]

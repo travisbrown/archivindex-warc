@@ -9,6 +9,31 @@ compressed output holds one gzip member per record.
 `-q` logs errors only, the default adds warnings and normal program output, and `-v`, `-vv`,
 and `-vvv` raise the diagnostic level to informational, debug, and trace.
 
+## graph
+
+```console
+cargo run --manifest-path cli/Cargo.toml -- graph --input archive.warc.gz --output archive.svg
+```
+
+Draws every record as a color-coded node and record-ID relationships as directed arrows. The graph
+includes a key for the record-type colors. `WARC-Concurrent-To`, `WARC-Warcinfo-ID`,
+`WARC-Refers-To`, and `WARC-Segment-Origin-ID` are drawn when they point to a record in the input.
+UUID record IDs are labeled with a short, distinguishing prefix from the part after `urn:uuid:`.
+Other long IDs retain shortened forms of both ends.
+
+Without `--output`, the command writes the SVG to a temporary file and opens it in a separate
+Firefox window when Firefox is available, falling back to the platform's default SVG viewer.
+
+## lint
+
+```console
+cargo run --manifest-path cli/Cargo.toml -- lint archive.warc.gz
+```
+
+Checks conventions stricter than the WARC standard, including header order, capture-record
+relationships, digests, and record-at-a-time gzip framing. Use `--format json` for JSON Lines
+output. The command exits with status 1 when it finds problems.
+
 ## merge
 
 ```console
