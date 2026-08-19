@@ -28,6 +28,8 @@ pub struct CaptureEvent<E: Extension = NoExtension> {
     payload_digest: Option<LabelledDigest>,
     truncated: Option<TruncatedType<E::TruncatedReasons>>,
     fetch_time: Option<Duration>,
+    #[cfg(feature = "payload-identification")]
+    identify_payload_type: bool,
     extension: PhantomData<E>,
 }
 
@@ -43,6 +45,8 @@ impl<E: Extension> CaptureEvent<E> {
             payload_digest: None,
             truncated: None,
             fetch_time: None,
+            #[cfg(feature = "payload-identification")]
+            identify_payload_type: false,
             extension: PhantomData,
         }
     }
@@ -93,6 +97,19 @@ impl<E: Extension> CaptureEvent<E> {
         self
     }
 
+    /// Identify the response payload and set `WARC-Identified-Payload-Type`.
+    ///
+    /// Uses [`identify::http_payload_type`](crate::record::identify::http_payload_type), which
+    /// examines the payload instead of copying the response's `Content-Type`. The field is omitted
+    /// when no type can be determined.
+    #[cfg(feature = "payload-identification")]
+    #[must_use]
+    pub const fn identify_payload_type(mut self) -> Self {
+        self.identify_payload_type = true;
+
+        self
+    }
+
     /// Build the capture records in write order from the captured messages.
     ///
     /// # Errors
@@ -118,9 +135,16 @@ impl<E: Extension> CaptureEvent<E> {
         }
         let request = request_builder.body(request)?;
 
+        let response = response.into();
         let mut response_builder = Record::response(self.target_uri.as_str(), self.date)
             .expect("invariant violation: a parsed URI failed to reparse")
             .concurrent_to(request.core().record_id.clone());
+        #[cfg(feature = "payload-identification")]
+        if self.identify_payload_type {
+            if let Some(media_type) = crate::record::identify::http_payload_type(&response) {
+                response_builder = response_builder.identified_payload_type(media_type);
+            }
+        }
         if let Some(digest) = self.payload_digest {
             response_builder = response_builder.payload_digest(digest);
         }
@@ -264,6 +288,60 @@ mod tests {
 
         records.request.into_raw().expect("a renderable request");
         records.response.into_raw().expect("a renderable response");
+    }
+
+    /// Identification is opt-in and applies only to the response record.
+    #[cfg(feature = "payload-identification")]
+    #[test]
+    fn a_capture_identifies_the_response_payload_only_when_told_to() {
+        use crate::value::MediaType;
+
+        let response_block: &[u8] = b"HTTP/1.1 200 OK\r\n\
+            content-type: application/json\r\n\
+            content-length: 15\r\n\
+            \r\n\
+            {\"key\": [1, 2]}";
+        let identified_type = |record: &Record| {
+            record
+                .payload()
+                .and_then(|headers| headers.identified_payload_type.clone())
+        };
+
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+            .identify_payload_type()
+            .exchange(REQUEST_BLOCK, response_block)
+            .expect("a capture");
+
+        assert_eq!(identified_type(&records.response), Some(MediaType::JSON));
+        assert_eq!(identified_type(&records.request), None);
+        records.response.into_raw().expect("a renderable response");
+
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+            .exchange(REQUEST_BLOCK, response_block)
+            .expect("a capture");
+
+        assert_eq!(identified_type(&records.response), None);
+    }
+
+    /// An unidentified payload leaves the field off rather than failing the capture.
+    #[cfg(feature = "payload-identification")]
+    #[test]
+    fn a_capture_told_to_identify_omits_the_field_it_cannot_fill() {
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+            .identify_payload_type()
+            .exchange(
+                REQUEST_BLOCK,
+                b"HTTP/1.1 200 OK\r\ncontent-length: 4\r\n\r\n\0\0\0\0".to_vec(),
+            )
+            .expect("a capture");
+
+        assert_eq!(
+            records
+                .response
+                .payload()
+                .and_then(|headers| headers.identified_payload_type.clone()),
+            None
+        );
     }
 
     #[test]

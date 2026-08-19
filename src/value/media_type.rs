@@ -147,6 +147,8 @@ impl MediaType {
     pub const WARC_FIELDS: Self = Self::constant("application", "warc-fields", &[]);
     /// `application/octet-stream`: octets the archive does not type further.
     pub const OCTET_STREAM: Self = Self::constant("application", "octet-stream", &[]);
+    /// `application/json`: a JSON document.
+    pub const JSON: Self = Self::constant("application", "json", &[]);
     /// `text/plain`: a block of text.
     pub const TEXT_PLAIN: Self = Self::constant("text", "plain", &[]);
     /// `text/dns`: a DNS lookup, which archives record as a `resource` record.
@@ -325,6 +327,7 @@ fn constant_for(value: &[u8]) -> Option<MediaType> {
         b"application/http;msgtype=response" => Some(MediaType::HTTP_RESPONSE),
         b"application/warc-fields" => Some(MediaType::WARC_FIELDS),
         b"application/octet-stream" => Some(MediaType::OCTET_STREAM),
+        b"application/json" => Some(MediaType::JSON),
         b"application/http; msgtype=request" => Some(MediaType::HTTP_REQUEST_SPACE),
         b"application/http; msgtype=response" => Some(MediaType::HTTP_RESPONSE_SPACE),
         b"application/http" => Some(MediaType::HTTP),
@@ -516,6 +519,7 @@ mod tests {
             ),
             (MediaType::WARC_FIELDS, "application/warc-fields"),
             (MediaType::OCTET_STREAM, "application/octet-stream"),
+            (MediaType::JSON, "application/json"),
             (MediaType::TEXT_PLAIN, "text/plain"),
             (MediaType::TEXT_DNS, "text/dns"),
         ] {
