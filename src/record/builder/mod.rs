@@ -58,6 +58,7 @@
 //! another extension.
 
 use std::net::IpAddr;
+use std::time::Duration;
 
 use fluent_uri::{ParseError, Uri};
 use uuid::Uuid;
@@ -731,16 +732,15 @@ impl<E: Extension> MetadataBuilder<E> {
         self
     }
 
-    /// `fetchTimeMs`: how long collecting the archived URI took, in milliseconds, starting from
-    /// the initiation of network traffic.
+    /// `fetchTimeMs`: the time from initiating network traffic to completing the capture.
     ///
-    /// This replaces any value the field already carries.
+    /// The duration is written in whole milliseconds. This replaces any existing value.
     #[must_use]
-    pub fn fetch_time_ms(mut self, milliseconds: u64) -> Self {
+    pub fn fetch_time_ms(mut self, fetch_time: Duration) -> Self {
         set_rendered(
             &mut self.body,
             MetadataField::FetchTimeMs,
-            milliseconds.to_string(),
+            fetch_time.as_millis().to_string(),
         );
 
         self
@@ -1461,7 +1461,7 @@ mod tests {
         let record: Record = Record::metadata(date())
             .via("http://www.archive.org/")?
             .hops_from_seed(&"E".parse().expect("a path"))
-            .fetch_time_ms(565)
+            .fetch_time_ms(Duration::from_millis(565))
             .build();
 
         assert_eq!(
