@@ -11,6 +11,7 @@ use std::time::Duration;
 use fluent_uri::Uri;
 
 use crate::record::extension::{Extension, NoExtension};
+use crate::record::header::truncated_type::TruncatedType;
 use crate::record::{BlockError, Record};
 use crate::value::{LabelledDigest, WarcDate};
 
@@ -25,6 +26,7 @@ pub struct CaptureEvent<E: Extension = NoExtension> {
     warcinfo_id: Option<Uri<String>>,
     ip_address: Option<IpAddr>,
     payload_digest: Option<LabelledDigest>,
+    truncated: Option<TruncatedType<E::TruncatedReasons>>,
     fetch_time: Option<Duration>,
     extension: PhantomData<E>,
 }
@@ -39,6 +41,7 @@ impl<E: Extension> CaptureEvent<E> {
             warcinfo_id: None,
             ip_address: None,
             payload_digest: None,
+            truncated: None,
             fetch_time: None,
             extension: PhantomData,
         }
@@ -66,6 +69,16 @@ impl<E: Extension> CaptureEvent<E> {
     #[must_use]
     pub fn payload_digest(mut self, digest: LabelledDigest) -> Self {
         self.payload_digest = Some(digest);
+
+        self
+    }
+
+    /// Set the response record's `WARC-Truncated` reason.
+    ///
+    /// A truncated record's payload digest is not checked when the record is rendered.
+    #[must_use]
+    pub fn truncated(mut self, reason: TruncatedType<E::TruncatedReasons>) -> Self {
+        self.truncated = Some(reason);
 
         self
     }
@@ -116,6 +129,9 @@ impl<E: Extension> CaptureEvent<E> {
         }
         if let Some(ip_address) = self.ip_address {
             response_builder = response_builder.ip_address(ip_address);
+        }
+        if let Some(reason) = self.truncated {
+            response_builder = response_builder.truncated(reason);
         }
         let response = response_builder.body(response)?;
 
@@ -257,6 +273,26 @@ mod tests {
             .expect("a capture");
 
         assert!(records.metadata.is_none());
+    }
+
+    #[test]
+    fn a_truncation_reason_lands_on_the_response_record_alone() {
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+            .payload_digest(entity_body_digest(b"other"))
+            .truncated(TruncatedType::Length)
+            .exchange(REQUEST_BLOCK, RESPONSE_BLOCK)
+            .expect("a capture");
+
+        assert_eq!(records.request.core().truncated, None);
+        assert_eq!(
+            records.response.core().truncated,
+            Some(TruncatedType::Length)
+        );
+
+        records
+            .response
+            .into_raw()
+            .expect("a renderable truncated response despite the mismatched digest");
     }
 
     #[test]
