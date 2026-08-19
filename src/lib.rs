@@ -40,5 +40,7 @@ mod parsing;
 pub mod io;
 pub mod parse;
 pub mod record;
+#[cfg(feature = "recorder")]
+pub mod recorder;
 pub mod value;
 pub mod version;
