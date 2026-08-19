@@ -34,6 +34,9 @@ pub mod header;
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub mod http;
+#[cfg(feature = "payload-identification")]
+#[cfg_attr(docsrs, doc(cfg(feature = "payload-identification")))]
+pub mod identify;
 pub mod payload;
 pub mod record_type;
 
