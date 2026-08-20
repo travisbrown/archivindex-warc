@@ -32,7 +32,9 @@ serde = ["dep:serde"]
 chrono = "0.4"
 # `reader` adds content-based checks for formats that signatures alone cannot identify.
 file-format = { version = "0.29", optional = true, features = ["reader"] }
-flate2 = { version = "1", optional = true }
+flate2 = { version = "1", optional = true, default-features = false, features = [
+  "miniz_oxide",
+] }
 fluent-uri = "0.4"
 http = { version = "1", optional = true }
 # The record layer computes a `WARC-Block-Digest` with `md-5`, `sha1`, or `sha2`.
