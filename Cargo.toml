@@ -12,7 +12,7 @@ authors = [
 ]
 keywords = ["warc", "web", "archive"]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [package.metadata.docs.rs]
 all-features = true
