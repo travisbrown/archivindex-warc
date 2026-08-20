@@ -458,6 +458,7 @@ fn read_response(
                     break;
                 }
                 if reached_cap(&buffer, max_length) {
+                    truncated = Some(TruncatedType::Length);
                     break;
                 }
                 match fill(source, &mut buffer)? {
@@ -481,6 +482,7 @@ fn read_response(
                     break;
                 }
                 if reached_cap(&buffer, max_length) {
+                    truncated = truncation_at_cap(source, Some(TruncatedType::Disconnect))?;
                     break;
                 }
                 match fill(source, &mut buffer)? {
@@ -498,6 +500,7 @@ fn read_response(
         }
         BodyFraming::Close => loop {
             if reached_cap(&buffer, max_length) {
+                truncated = truncation_at_cap(source, None)?;
                 break;
             }
             match fill(source, &mut buffer)? {
@@ -519,6 +522,33 @@ fn read_response(
     }
 
     Ok((buffer, truncated))
+}
+
+fn truncation_at_cap(
+    source: &mut impl Read,
+    on_close: Option<TruncatedType>,
+) -> Result<Option<TruncatedType>, std::io::Error> {
+    Ok(match probe(source)? {
+        ReadEvent::Data => Some(TruncatedType::Length),
+        ReadEvent::Closed => on_close,
+        ReadEvent::TimedOut => Some(TruncatedType::Time),
+    })
+}
+
+fn probe(source: &mut impl Read) -> Result<ReadEvent, std::io::Error> {
+    let mut byte = [0];
+    loop {
+        return match source.read(&mut byte) {
+            Ok(0) => Ok(ReadEvent::Closed),
+            Ok(_) => Ok(ReadEvent::Data),
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == ErrorKind::UnexpectedEof => Ok(ReadEvent::Closed),
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                Ok(ReadEvent::TimedOut)
+            }
+            Err(error) => Err(error),
+        };
+    }
 }
 
 fn reached_cap(buffer: &[u8], max_length: Option<u64>) -> bool {
@@ -711,7 +741,7 @@ fn parse_chunk_size(text: &[u8]) -> Result<u64, ResponseError> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, Read};
 
     use super::*;
 
@@ -721,6 +751,43 @@ mod tests {
         max_length: Option<u64>,
     ) -> (Vec<u8>, Option<TruncatedType>) {
         read_response(&mut Cursor::new(response), head_request, max_length).expect("a response")
+    }
+
+    struct YieldAt<'a> {
+        bytes: &'a [u8],
+        first: usize,
+        offset: usize,
+    }
+
+    impl Read for YieldAt<'_> {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let remaining = &self.bytes[self.offset..];
+            if remaining.is_empty() {
+                return Ok(0);
+            }
+            let bound = if self.offset == 0 {
+                self.first
+            } else {
+                remaining.len()
+            };
+            let length = output.len().min(remaining.len()).min(bound);
+            output[..length].copy_from_slice(&remaining[..length]);
+            self.offset += length;
+            Ok(length)
+        }
+    }
+
+    fn read_at_cap(response: &[u8], cap: usize) -> (Vec<u8>, Option<TruncatedType>) {
+        read_response(
+            &mut YieldAt {
+                bytes: response,
+                first: cap,
+                offset: 0,
+            },
+            false,
+            Some(cap as u64),
+        )
+        .expect("a response")
     }
 
     #[test]
@@ -796,6 +863,33 @@ mod tests {
 
         assert_eq!(recorded, &response[..40]);
         assert_eq!(truncated, Some(TruncatedType::Length));
+    }
+
+    #[test]
+    fn an_exact_length_bound_marks_each_incomplete_framing() {
+        let length = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabcdefghij";
+        let chunked =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\na\r\nabcdefghij\r\n0\r\n\r\n";
+        let close = b"HTTP/1.1 200 OK\r\n\r\nabcdefghij";
+
+        for (response, cap) in [
+            (length.as_slice(), length.len() - 5),
+            (chunked.as_slice(), chunked.len() - 10),
+            (close.as_slice(), close.len() - 5),
+        ] {
+            let (recorded, truncated) = read_at_cap(response, cap);
+            assert_eq!(recorded, &response[..cap]);
+            assert_eq!(truncated, Some(TruncatedType::Length));
+        }
+    }
+
+    #[test]
+    fn close_delimited_eof_exactly_at_the_bound_is_complete() {
+        let response = b"HTTP/1.1 200 OK\r\n\r\ncomplete";
+        let (recorded, truncated) = read_all(response, false, Some(response.len() as u64));
+
+        assert_eq!(recorded, response);
+        assert_eq!(truncated, None);
     }
 
     #[test]
