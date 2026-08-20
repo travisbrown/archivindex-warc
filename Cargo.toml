@@ -7,8 +7,8 @@ repository = "https://github.com/travisbrown/archivindex-warc"
 documentation = "https://docs.rs/crate/archivindex-warc/"
 license = "MIT"
 authors = [
-    "Reza Akhavan <reza@akhavan.me>",
-    "Travis Brown <travisrobertbrown@gmail.com>",
+  "Reza Akhavan <reza@akhavan.me>",
+  "Travis Brown <travisrobertbrown@gmail.com>",
 ]
 keywords = ["warc", "web", "archive"]
 edition = "2024"
@@ -54,7 +54,9 @@ data-encoding = "2"
 # The recorder's TLS test serves a self-signed certificate.
 rcgen = "0.14"
 # The request-reconstruction test compares against bytes sent by a real loopback client.
-reqwest = { version = "0.13", default-features = false, features = ["blocking"] }
+reqwest = { version = "0.13", default-features = false, features = [
+  "blocking",
+] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tempfile = "3"
 # Only the `read_filtered` example parses URLs.
