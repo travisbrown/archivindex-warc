@@ -5,12 +5,20 @@ use std::path::Path;
 use std::{fs, io};
 
 #[cfg(feature = "gzip")]
-use flate2::write::GzEncoder as GzipWriter;
+use flate2::{GzBuilder, write::GzEncoder as GzipWriter};
 use sha2::Digest as _;
 
 use crate::io::MB;
 use crate::parse::raw;
 use crate::value::{DigestAlgorithm, LabelledDigest};
+
+/// The default gzip compression level used by [`WarcWriter::write_gzip`].
+#[cfg(feature = "gzip")]
+pub const DEFAULT_GZIP_COMPRESSION_LEVEL: u32 = 6;
+
+/// The greatest gzip compression level accepted by [`WarcWriter::write_gzip_with_level`].
+#[cfg(feature = "gzip")]
+pub const MAX_GZIP_COMPRESSION_LEVEL: u32 = 9;
 
 /// The ways writing a record can fail.
 ///
@@ -25,6 +33,10 @@ pub enum Error {
     /// The record cannot be written, because an archive holding it could not be read back.
     #[error(transparent)]
     Raw(#[from] raw::Error),
+    /// A gzip compression level was outside the supported range from 0 through 9.
+    #[cfg(feature = "gzip")]
+    #[error("gzip compression level must be between 0 and 9, got {0}")]
+    InvalidGzipCompressionLevel(u32),
 }
 
 #[cfg(test)]
@@ -235,6 +247,29 @@ impl<W: Write> WarcWriter<W> {
     /// Returns [`Error::Sink`] when the output stream refuses the bytes, or [`Error::Raw`]
     /// carrying the reason the record cannot be written.
     pub fn write_gzip(&mut self, record: &raw::Record) -> Result<Written, Error> {
+        self.write_gzip_with_level(record, DEFAULT_GZIP_COMPRESSION_LEVEL)
+    }
+
+    /// Write a single record as an independent gzip member at `level`.
+    ///
+    /// Levels range from 0 (no compression) through 9 (best compression). The gzip header is
+    /// reproducible across platforms: `MTIME` is zero, `OS` is 255, and no optional header fields
+    /// are present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidGzipCompressionLevel`] when `level` is greater than 9,
+    /// [`Error::Sink`] when the output stream refuses the bytes, or [`Error::Raw`] carrying the
+    /// reason the record cannot be written.
+    pub fn write_gzip_with_level(
+        &mut self,
+        record: &raw::Record,
+        level: u32,
+    ) -> Result<Written, Error> {
+        if level > MAX_GZIP_COMPRESSION_LEVEL {
+            return Err(Error::InvalidGzipCompressionLevel(level));
+        }
+
         // Validate before constructing the encoder: an encoder emits a gzip header even for
         // an empty stream when it is finished or dropped, and a rejected record must leave no
         // bytes in the output.
@@ -242,7 +277,7 @@ impl<W: Write> WarcWriter<W> {
 
         // Indexes frame the compressed member, so measure the encoder's output.
         let mut tap = TapWriter::new(&mut self.writer, self.digests);
-        let result = write_member(&mut tap, record);
+        let result = write_member(&mut tap, record, level);
         let finished = tap.finish();
         let written = self.frame(finished);
         result?;
@@ -253,8 +288,11 @@ impl<W: Write> WarcWriter<W> {
 
 /// Compress one record as a complete gzip member.
 #[cfg(feature = "gzip")]
-fn write_member<W: Write>(writer: W, record: &raw::Record) -> Result<(), Error> {
-    let mut encoder = GzipWriter::new(writer, flate2::Compression::default());
+fn write_member<W: Write>(writer: W, record: &raw::Record, level: u32) -> Result<(), Error> {
+    let mut encoder = GzBuilder::new()
+        .mtime(0)
+        .operating_system(255)
+        .write(writer, flate2::Compression::new(level));
     WarcWriter::new(&mut encoder).write(record)?;
     // `finish` flushes the data and writes the gzip trailer.
     encoder.finish()?;
@@ -616,7 +654,7 @@ mod from_path_tests {
 mod write_gzip_tests {
     use std::io::{BufReader, Read};
 
-    use super::{Error, WarcWriter};
+    use super::{DEFAULT_GZIP_COMPRESSION_LEVEL, Error, WarcWriter};
     use crate::io::test_record;
     use crate::parse::raw;
     use crate::version::WarcVersion;
@@ -629,11 +667,11 @@ mod write_gzip_tests {
             .unwrap()
     }
 
-    /// Each record becomes its own complete gzip member: the returned lengths frame ranges
-    /// that decompress independently, and the concatenation reads back as a multi-member
-    /// stream.
+    /// A generated multi-record gzip WARC stores every record in an independent member with the
+    /// reproducible header: `MTIME = 0`, `OS = 255`, and no `FHCRC`, `FEXTRA`, `FNAME`, or
+    /// `FCOMMENT` fields.
     #[test]
-    fn each_record_is_an_independently_framed_gzip_member() {
+    fn multi_record_gzip_warc_has_independent_reproducible_members() {
         let first = test_record(
             WarcVersion::V1_1,
             &[("WARC-Type", "resource")],
@@ -658,11 +696,12 @@ mod write_gzip_tests {
             bytes.len() as u64
         );
 
-        // Each framed range is a complete gzip member on its own; a single-member decoder
-        // must be able to decode it in isolation.
+        // Each framed range has the required header and is a complete gzip member on its own; a
+        // single-member decoder must be able to decode it in isolation.
         let (first_member, second_member) =
             bytes.split_at(usize::try_from(first_written.length).unwrap());
         for (member, record) in [(first_member, &first), (second_member, &second)] {
+            assert_reproducible_header(member, 0);
             let mut decoded = Vec::new();
             flate2::read::GzDecoder::new(member)
                 .read_to_end(&mut decoded)
@@ -676,6 +715,53 @@ mod write_gzip_tests {
         ));
         let read_back: Vec<_> = reader.iter_raw_records().collect::<Result<_, _>>().unwrap();
         assert_eq!(read_back, vec![first, second]);
+    }
+
+    /// Check every fixed gzip header field. `FLG = 0` confirms `FHCRC`, `FEXTRA`, `FNAME`, and
+    /// `FCOMMENT` are all absent (along with `FTEXT` and the reserved flags).
+    fn assert_reproducible_header(member: &[u8], xfl: u8) {
+        assert_eq!(
+            &member[..10],
+            &[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, xfl, 255],
+            "ID1 ID2 CM FLG MTIME[4] XFL OS"
+        );
+    }
+
+    /// The default and configured compression levels preserve deterministic headers and set the
+    /// level-dependent `XFL` byte as specified by the encoder.
+    #[test]
+    fn gzip_headers_are_reproducible_at_all_distinct_xfl_levels() {
+        let record = test_record(
+            WarcVersion::V1_1,
+            &[("WARC-Type", "resource")],
+            &[b'a'; 4096],
+        );
+
+        for (level, xfl) in [(0, 4), (1, 4), (DEFAULT_GZIP_COMPRESSION_LEVEL, 0), (9, 2)] {
+            let mut writer = WarcWriter::new(Vec::new());
+            writer.write_gzip_with_level(&record, level).unwrap();
+            let member = writer.into_inner();
+            assert_reproducible_header(&member, xfl);
+
+            let mut decoded = Vec::new();
+            flate2::read::GzDecoder::new(member.as_slice())
+                .read_to_end(&mut decoded)
+                .unwrap();
+            assert_eq!(read_records(&decoded), std::slice::from_ref(&record));
+        }
+    }
+
+    /// An invalid compression level is rejected before a header or any other bytes are emitted.
+    #[test]
+    fn invalid_gzip_compression_level_writes_no_bytes() {
+        let record = test_record(WarcVersion::V1_1, &[("WARC-Type", "resource")], b"body");
+        let mut writer = WarcWriter::new(Vec::new());
+
+        assert!(matches!(
+            writer.write_gzip_with_level(&record, 10),
+            Err(Error::InvalidGzipCompressionLevel(10))
+        ));
+        assert!(writer.get_ref().is_empty());
     }
 
     /// A gzip member's digest covers the compressed bytes in its reported frame.
