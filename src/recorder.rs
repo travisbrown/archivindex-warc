@@ -31,7 +31,7 @@ use rustls::pki_types::ServerName;
 
 use crate::record::capture::CaptureEvent;
 use crate::record::header::truncated_type::TruncatedType;
-use crate::record::http::reconstruct_request;
+use crate::record::http::{ResponseMetadata, reconstruct_request};
 
 const MAX_HEADER_LENGTH: usize = 64 * 1024;
 
@@ -241,11 +241,14 @@ impl Recorder {
             *method == Method::HEAD,
             self.max_response_length,
         )?;
+        let response_metadata =
+            ResponseMetadata::parse(&response).ok_or(ResponseError::MalformedStatusLine)?;
         let fetch_time = clock.elapsed();
 
         Ok(CapturedExchange {
             request,
             response,
+            response_metadata,
             target_uri,
             ip_address,
             date,
@@ -291,6 +294,8 @@ pub struct CapturedExchange {
     pub request: Vec<u8>,
     /// Response bytes exactly as read, from the final status line through the recorded end.
     pub response: Vec<u8>,
+    /// Parsed fields and boundaries of the recorded response.
+    pub response_metadata: ResponseMetadata,
     /// The requested URI.
     pub target_uri: Uri<String>,
     /// The peer IP address.
@@ -315,6 +320,17 @@ impl CapturedExchange {
             Some(reason) => event.truncated(reason),
             None => event,
         }
+    }
+
+    /// Return the decoded response entity body.
+    pub fn entity_body(&self) -> Result<std::borrow::Cow<'_, [u8]>, crate::record::payload::Error> {
+        crate::record::payload::entity_body(&self.response)
+    }
+
+    /// Return the recorded bytes after the response header section without transfer decoding.
+    #[must_use]
+    pub fn stored_body(&self) -> &[u8] {
+        &self.response[self.response_metadata.body_offset..]
     }
 }
 

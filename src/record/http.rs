@@ -10,6 +10,77 @@
 
 use http::{HeaderMap, Method, StatusCode, Uri, Version};
 
+/// Parsed fields and boundaries of a recorded HTTP response message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResponseMetadata {
+    /// Final HTTP response status.
+    pub status: u16,
+    /// Offset at which the recorded message body begins.
+    pub body_offset: usize,
+    headers: Vec<(String, Vec<u8>)>,
+}
+
+impl ResponseMetadata {
+    /// Parse a complete HTTP response header section.
+    #[must_use]
+    pub fn parse(response: &[u8]) -> Option<Self> {
+        let body_offset = response.windows(4).position(|bytes| bytes == b"\r\n\r\n")? + 4;
+        let line_end = response.windows(2).position(|bytes| bytes == b"\r\n")?;
+        let mut parts = response[..line_end].splitn(3, |&byte| byte == b' ');
+        let version = parts.next()?;
+        let code = parts.next()?;
+        if !version.starts_with(b"HTTP/") || code.len() != 3 || !code.iter().all(u8::is_ascii_digit)
+        {
+            return None;
+        }
+        let status = code
+            .iter()
+            .fold(0, |value, &byte| value * 10 + u16::from(byte - b'0'));
+        let mut headers: Vec<(String, Vec<u8>)> = Vec::new();
+        for line in response[line_end + 2..body_offset - 2].split(|&byte| byte == b'\n') {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            if line.is_empty() {
+                continue;
+            }
+            if line.first().is_some_and(u8::is_ascii_whitespace) {
+                let (_, value) = headers.last_mut()?;
+                value.push(b' ');
+                value.extend_from_slice(trim_ascii(line));
+                continue;
+            }
+            let colon = line.iter().position(|&byte| byte == b':')?;
+            let name = std::str::from_utf8(&line[..colon]).ok()?.to_owned();
+            headers.push((name, trim_ascii(&line[colon + 1..]).to_vec()));
+        }
+        Some(Self {
+            status,
+            body_offset,
+            headers,
+        })
+    }
+
+    /// Return the first response header value, matched case-insensitively.
+    #[must_use]
+    pub fn header(&self, name: &str) -> Option<&[u8]> {
+        self.headers
+            .iter()
+            .find(|(field, _)| field.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_slice())
+    }
+}
+
+fn trim_ascii(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map_or(start, |index| index + 1);
+    &bytes[start..end]
+}
+
 /// Errors returned while reconstructing an HTTP message.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Error {
@@ -168,7 +239,33 @@ mod tests {
     use http::header::{HeaderName, HeaderValue};
     use http::{HeaderMap, Method, StatusCode, Uri, Version};
 
-    use super::{Error, reconstruct_request, reconstruct_response};
+    use super::{Error, ResponseMetadata, reconstruct_request, reconstruct_response};
+
+    #[test]
+    fn response_metadata_preserves_boundaries_and_header_values() {
+        let response = b"HTTP/1.1 206 Partial Content\r\nX-Test: first\r\nx-test: second\r\nX-Binary: \xff\r\n\r\nbody";
+        let metadata = ResponseMetadata::parse(response).unwrap();
+
+        assert_eq!(metadata.status, 206);
+        assert_eq!(&response[metadata.body_offset..], b"body");
+        assert_eq!(metadata.header("X-TEST"), Some(b"first".as_slice()));
+        assert_eq!(metadata.header("x-binary"), Some(b"\xff".as_slice()));
+    }
+
+    #[test]
+    fn response_metadata_unfolds_continuation_lines() {
+        let response = b"HTTP/1.0 200 OK\r\nX-Test: one\r\n\ttwo\r\n three\r\n\r\n";
+        let metadata = ResponseMetadata::parse(response).unwrap();
+
+        assert_eq!(metadata.header("x-test"), Some(b"one two three".as_slice()));
+    }
+
+    #[test]
+    fn response_metadata_rejects_incomplete_or_malformed_messages() {
+        assert!(ResponseMetadata::parse(b"HTTP/1.1 200 OK\r\nX: y\r\n").is_none());
+        assert!(ResponseMetadata::parse(b"not HTTP\r\n\r\n").is_none());
+        assert!(ResponseMetadata::parse(b"HTTP/1.1 20 OK\r\n\r\n").is_none());
+    }
 
     fn headers(lines: &[(&'static str, &'static str)]) -> HeaderMap {
         lines
