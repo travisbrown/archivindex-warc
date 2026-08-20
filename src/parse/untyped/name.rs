@@ -137,7 +137,8 @@ impl Field {
     /// This field's position in the conventional ordering of a header block.
     ///
     /// The variants are declared in that order, so a field's discriminant is its position.
-    pub(crate) const fn canonical_rank(self) -> usize {
+    #[must_use]
+    pub const fn canonical_rank(self) -> usize {
         self as usize
     }
 }

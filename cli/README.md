@@ -9,6 +9,17 @@ compressed output holds one gzip member per record.
 `-q` logs errors only, the default adds warnings and normal program output, and `-v`, `-vv`,
 and `-vvv` raise the diagnostic level to informational, debug, and trace.
 
+## canonicalize
+
+```console
+cargo run --manifest-path cli/Cargo.toml -- canonicalize input.warc.gz -o output.warc.gz
+```
+
+Respells standard header fields as the WARC standard prints them and puts them in conventional
+order in every record. Extension fields follow the standard fields and keep their spelling and
+relative order. Field values, bodies, record order, and the relative order of repeated fields are
+preserved.
+
 ## graph
 
 ```console
