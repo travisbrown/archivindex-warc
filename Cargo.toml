@@ -21,6 +21,7 @@ http = ["dep:http"]
 # `serde` supplies `IgnoredAny` for validating JSON without building a document.
 payload-identification = ["dep:file-format", "dep:serde", "dep:serde_json"]
 recorder = ["http", "dep:rustls", "dep:webpki-roots"]
+# Enables Serde derives and conversion between types and `application/warc-fields` bodies.
 serde = ["dep:serde"]
 
 [dependencies]

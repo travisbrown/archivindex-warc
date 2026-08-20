@@ -2,7 +2,8 @@
 //!
 //! [`warcinfo`] describes a WARC file or crawl, while [`metadata`] describes another record. Both
 //! use optional, repeatable named fields drawn from the [DCMI Metadata Terms], fields defined by
-//! the record type, and extension fields. [`Body`] provides their shared representation.
+//! the record type, and extension fields. [`Body`] provides their shared representation. With the
+//! `serde` feature, the `serde` module converts between bodies and caller-defined types.
 //!
 //! [DCMI Metadata Terms]: https://www.dublincore.org/specifications/dublin-core/dcmi-terms/
 
@@ -10,6 +11,8 @@ mod parser;
 
 pub mod dcmi;
 pub mod metadata;
+#[cfg(feature = "serde")]
+pub mod serde;
 pub mod warcinfo;
 
 use std::fmt::Display;
