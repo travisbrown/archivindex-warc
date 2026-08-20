@@ -965,7 +965,7 @@ mod iter_raw_tests {
 
         let record = first!(raw).unwrap();
 
-        assert!(record.body.is_empty());
+        assert_eq!(record.body, [] as [u8; 0]);
         assert_eq!(
             record.header.get("unfolded-test").unwrap(),
             b" this value\r\n\tspans lines"

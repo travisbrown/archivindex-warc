@@ -127,13 +127,13 @@ impl<F> Body<F> {
 
     /// The number of field lines in the body, counting a repeated name once per appearance.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.fields.len()
     }
 
     /// Whether the body has no fields.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.fields.is_empty()
     }
 }

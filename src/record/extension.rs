@@ -230,7 +230,7 @@ mod unclaimed_tests {
         let mut unclaimed = Unclaimed::new(&mut lines);
 
         assert_eq!(unclaimed.claim("X-CRAWL-ID"), ["crawl-7", "crawl-8"]);
-        assert!(unclaimed.claim("x-crawl-id").is_empty());
+        assert_eq!(unclaimed.claim("x-crawl-id"), Vec::<String>::new());
 
         assert_eq!(lines, [("X-Other".to_owned(), "kept".to_owned())]);
     }
@@ -241,7 +241,7 @@ mod unclaimed_tests {
         let unclaimed = Unclaimed::new(&mut lines);
 
         assert_eq!(unclaimed.get("x-crawl-id"), ["crawl-7", "crawl-8"]);
-        assert!(unclaimed.get("x-absent").is_empty());
+        assert_eq!(unclaimed.get("x-absent"), Vec::<&str>::new());
 
         assert_eq!(lines.len(), 3);
     }

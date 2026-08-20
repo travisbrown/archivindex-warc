@@ -493,7 +493,7 @@ mod write_tests {
     #[test]
     fn inner_writer_is_accessible_and_recoverable() {
         let mut writer = WarcWriter::new(Vec::new());
-        assert!(writer.get_ref().is_empty());
+        assert_eq!(writer.get_ref().as_slice(), [] as [u8; 0]);
 
         writer.get_mut().extend_from_slice(b"prefix");
         writer.flush().unwrap();

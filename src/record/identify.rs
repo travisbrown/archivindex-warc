@@ -86,23 +86,20 @@ fn declared_content_type(message: &[u8]) -> Option<MediaType> {
 
         if content.first().copied().is_some_and(is_lws) {
             // A fold represents whitespace; media-type parsing decides whether it is valid here.
-            if folding {
-                if let Some(value) = &mut value {
-                    value.push(b' ');
-                    value.extend_from_slice(content.trim_ascii());
-                }
+            if folding && let Some(value) = &mut value {
+                value.push(b' ');
+                value.extend_from_slice(content.trim_ascii());
             }
             continue;
         }
 
         folding = false;
-        if value.is_none() {
-            if let Some((name, colon)) = split_field_line(content) {
-                if name.eq_ignore_ascii_case(CONTENT_TYPE) {
-                    value = Some(content[colon + 1..].trim_ascii().to_vec());
-                    folding = true;
-                }
-            }
+        if value.is_none()
+            && let Some((name, colon)) = split_field_line(content)
+            && name.eq_ignore_ascii_case(CONTENT_TYPE)
+        {
+            value = Some(content[colon + 1..].trim_ascii().to_vec());
+            folding = true;
         }
     }
 
