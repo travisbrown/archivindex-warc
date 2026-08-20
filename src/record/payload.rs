@@ -80,14 +80,14 @@ fn split_message(message: &[u8]) -> Result<(&[u8], Vec<u8>), Error> {
         }
 
         folding = false;
-        if let Some((name, colon)) = split_field_line(content) {
-            if name.eq_ignore_ascii_case(TRANSFER_ENCODING) {
-                if !transfer_encoding.is_empty() {
-                    transfer_encoding.push(b',');
-                }
-                transfer_encoding.extend_from_slice(&content[colon + 1..]);
-                folding = true;
+        if let Some((name, colon)) = split_field_line(content)
+            && name.eq_ignore_ascii_case(TRANSFER_ENCODING)
+        {
+            if !transfer_encoding.is_empty() {
+                transfer_encoding.push(b',');
             }
+            transfer_encoding.extend_from_slice(&content[colon + 1..]);
+            folding = true;
         }
     }
 }

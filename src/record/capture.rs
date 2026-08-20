@@ -141,10 +141,10 @@ impl<E: Extension> CaptureEvent<E> {
             .expect("invariant violation: a parsed URI failed to reparse")
             .concurrent_to(request.core().record_id.clone());
         #[cfg(feature = "payload-identification")]
-        if self.identify_payload_type {
-            if let Some(media_type) = crate::record::identify::http_payload_type(&response) {
-                response_builder = response_builder.identified_payload_type(media_type);
-            }
+        if self.identify_payload_type
+            && let Some(media_type) = crate::record::identify::http_payload_type(&response)
+        {
+            response_builder = response_builder.identified_payload_type(media_type);
         }
         if let Some(digest) = self.payload_digest {
             response_builder = response_builder.payload_digest(digest);
@@ -265,7 +265,7 @@ mod tests {
         assert_eq!(response.target_uri, target_uri());
         assert_eq!(metadata.target_uri, Some(target_uri()));
 
-        assert!(request.concurrent_to.is_empty());
+        assert_eq!(request.concurrent_to, [] as [fluent_uri::Uri<String>; 0]);
         assert_eq!(
             response.concurrent_to,
             std::slice::from_ref(&request.core.record_id)

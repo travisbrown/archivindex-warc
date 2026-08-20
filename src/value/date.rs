@@ -250,7 +250,7 @@ impl From<DateTime<Utc>> for WarcDate {
         } else {
             let mut fraction = nanoseconds;
             let mut digits = 9;
-            while fraction % 10 == 0 {
+            while fraction.is_multiple_of(10) {
                 fraction /= 10;
                 digits -= 1;
             }

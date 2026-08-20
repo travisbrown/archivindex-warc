@@ -860,10 +860,10 @@ impl<E: Extension> Record<E> {
     /// [`BlockError::Payload`] where the payload digest fails as the block digest does.
     pub fn into_raw(mut self) -> Result<raw::Record, RenderError> {
         // Resolve the payload digest before rendering the header fields.
-        if let Some(added) = check_payload_digest(&self)? {
-            if let Some(headers) = self.payload_mut() {
-                headers.payload_digest = Some(added);
-            }
+        if let Some(added) = check_payload_digest(&self)?
+            && let Some(headers) = self.payload_mut()
+        {
+            headers.payload_digest = Some(added);
         }
 
         // Read before the record is consumed, since the version and the record type come from
@@ -1786,10 +1786,10 @@ mod tests {
             record.core_mut().block_digest = Some(digest);
         }
 
-        if let Ok(Some(digest)) = check_payload_digest(&record) {
-            if let Some(headers) = record.payload_mut() {
-                headers.payload_digest = Some(digest);
-            }
+        if let Ok(Some(digest)) = check_payload_digest(&record)
+            && let Some(headers) = record.payload_mut()
+        {
+            headers.payload_digest = Some(digest);
         }
 
         record
@@ -1990,7 +1990,7 @@ mod tests {
         );
         assert_eq!(header.concurrent_to, ["urn:uuid:request"]);
         assert_eq!(header.core.record_id, RECORD_ID);
-        assert!(header.core.unrecognized.is_empty());
+        assert_eq!(header.core.unrecognized, []);
         assert_eq!(body, RESPONSE_BLOCK);
     }
 
@@ -3745,7 +3745,7 @@ mod tests {
         let warcinfo = warcinfo();
         assert!(warcinfo.target_uri().is_none());
         assert!(warcinfo.ip_address().is_none());
-        assert!(warcinfo.concurrent_to().is_empty());
+        assert_eq!(warcinfo.concurrent_to(), [] as [fluent_uri::Uri<String>; 0]);
         assert!(warcinfo.payload().is_none());
     }
 

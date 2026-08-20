@@ -121,10 +121,10 @@ fn as_rendered(mut lifted: Record<NoExtension>) -> Record<NoExtension> {
         Ok(None) | Err(_) => None,
     };
 
-    if let Some(headers) = lifted.payload_mut() {
-        if headers.payload_digest.is_none() {
-            headers.payload_digest = digest;
-        }
+    if let Some(headers) = lifted.payload_mut()
+        && headers.payload_digest.is_none()
+    {
+        headers.payload_digest = digest;
     }
 
     lifted
