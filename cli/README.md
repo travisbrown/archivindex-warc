@@ -9,6 +9,36 @@ compressed output holds one gzip member per record.
 `-q` logs errors only, the default adds warnings and normal program output, and `-v`, `-vv`,
 and `-vvv` raise the diagnostic level to informational, debug, and trace.
 
+## canonicalize
+
+```console
+cargo run --manifest-path cli/Cargo.toml -- canonicalize input.warc.gz -o output.warc.gz
+```
+
+Respells standard header fields as the WARC standard prints them and puts them in conventional
+order in every record. Extension fields follow the standard fields and keep their spelling and
+relative order. Field values, bodies, record order, and the relative order of repeated fields are
+preserved.
+
+## compress
+
+```console
+cargo run --manifest-path cli/Cargo.toml -- compress input.warc -o output.warc.gz
+```
+
+Compresses each record as a separate gzip member. The output name must end in `.gz`; use
+`--level` to choose a compression level from 0 through 9.
+
+## export
+
+```console
+cargo run --manifest-path cli/Cargo.toml -- export archive.warc.gz csv
+cargo run --manifest-path cli/Cargo.toml -- export archive.warc.gz json
+```
+
+`csv` writes the type, date, record identifier, and target URI of each record. `json` writes each
+payload identified as JSON, one value per line.
+
 ## graph
 
 ```console

@@ -1,5 +1,4 @@
 mod graph;
-mod merge;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -63,6 +62,17 @@ impl Verbosity {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Canonicalize standard header spelling and order across a WARC file.
+    Canonicalize {
+        /// The WARC file to canonicalize; a .gz extension selects gzip decompression.
+        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        input: PathBuf,
+
+        /// The file to write; a .gz extension selects record-at-a-time gzip compression.
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+        output: PathBuf,
+    },
+
     /// Draw the records and their relationships as an SVG graph.
     Graph {
         /// The WARC file to graph; a .gz extension selects gzip decompression.
@@ -107,6 +117,16 @@ fn run(cli: Cli) -> Result<()> {
     let quiet = cli.verbosity.quiet;
 
     match cli.command {
+        Command::Canonicalize { input, output } => {
+            let summary = archivindex_warc_ops::canonicalize::canonicalize(&input, &output)?;
+            if !quiet {
+                println!(
+                    "Wrote {} with canonical headers to {}.",
+                    plural(summary.records, "record"),
+                    output.display(),
+                );
+            }
+        }
         Command::Graph { input, output } => {
             let summary = graph::graph(&input, output.as_deref())?;
             if !quiet {
@@ -127,7 +147,7 @@ fn run(cli: Cli) -> Result<()> {
             second,
             output,
         } => {
-            let summary = merge::merge(&first, &second, &output)?;
+            let summary = archivindex_warc_ops::merge::merge(&first, &second, &output)?;
             if !quiet {
                 println!(
                     "Wrote {} to {}, merging {}.",
@@ -208,6 +228,25 @@ mod tests {
         assert!(matches!(
             without_output.command,
             Command::Graph { output: None, .. }
+        ));
+    }
+
+    #[test]
+    fn canonicalize_accepts_an_input_and_output() {
+        let cli = Cli::try_parse_from([
+            "archivindex-warc-cli",
+            "canonicalize",
+            "input.warc.gz",
+            "--output",
+            "output.warc",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Canonicalize { input, output }
+                if input.as_path() == std::path::Path::new("input.warc.gz")
+                    && output.as_path() == std::path::Path::new("output.warc")
         ));
     }
 
