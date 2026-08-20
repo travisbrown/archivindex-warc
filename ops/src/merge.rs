@@ -1,4 +1,4 @@
-//! The `merge` command.
+//! Merge two WARC files.
 //!
 //! Two WARC files are merged into one, with every record of the first file preceding every
 //! record of the second. Warcinfo records that match up to incidental fields are merged: the
@@ -15,13 +15,14 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter};
 use std::path::Path;
 
-use anyhow::{Context, Result};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::parse::raw;
 use archivindex_warc::value::WarcDate;
 use archivindex_warc::version::WarcVersion;
 use flate2::bufread::MultiGzDecoder;
+
+use crate::{Error, Result};
 
 /// Fields whose values are record identifiers that may point at a warcinfo record.
 const REFERENCE_FIELDS: [&str; 4] = [
@@ -87,7 +88,10 @@ impl MergePlan {
         let mut records = Vec::new();
         for path in [first, second] {
             for result in open(path)?.filter_raw_records(is_warcinfo) {
-                records.push(result.with_context(|| format!("cannot read {}", path.display()))?);
+                records.push(result.map_err(|source| Error::Read {
+                    path: path.to_owned(),
+                    source,
+                })?);
             }
         }
 
@@ -125,10 +129,7 @@ impl MergePlan {
                     continue;
                 };
                 let Some(kept_id) = kept_id else {
-                    anyhow::bail!(
-                        "cannot redirect references: a merged warcinfo record has no \
-                         WARC-Record-ID"
-                    );
+                    return Err(Error::MissingWarcinfoRecordId);
                 };
                 if normalize_id(dropped_id) != normalize_id(kept_id) {
                     log::debug!(
@@ -153,8 +154,10 @@ impl MergePlan {
     fn write(self, first: &Path, second: &Path, output: &Path) -> Result<MergeSummary> {
         let Self { actions, redirects } = self;
         let gzip = is_gzip(output);
-        let file =
-            File::create(output).with_context(|| format!("cannot create {}", output.display()))?;
+        let file = File::create(output).map_err(|source| Error::Create {
+            path: output.to_owned(),
+            source,
+        })?;
         let mut writer = WarcWriter::new(BufWriter::new(file));
         let mut actions = actions.into_iter();
         let mut summary = MergeSummary {
@@ -165,14 +168,13 @@ impl MergePlan {
         for path in [first, second] {
             log::info!("copying records from {}", path.display());
             for result in open(path)?.iter_raw_records() {
-                let mut record =
-                    result.with_context(|| format!("cannot read {}", path.display()))?;
+                let mut record = result.map_err(|source| Error::Read {
+                    path: path.to_owned(),
+                    source,
+                })?;
 
                 if is_warcinfo(&record.header) {
-                    record = match actions
-                        .next()
-                        .context("warcinfo records changed between reads")?
-                    {
+                    record = match actions.next().ok_or(Error::WarcinfoRecordsChanged)? {
                         WarcinfoAction::Emit(kept) => kept,
                         WarcinfoAction::Skip => {
                             log::debug!(
@@ -192,7 +194,10 @@ impl MergePlan {
                 } else {
                     writer.write(&record)
                 }
-                .with_context(|| format!("cannot write to {}", output.display()))?;
+                .map_err(|source| Error::Write {
+                    path: output.to_owned(),
+                    source,
+                })?;
                 log::trace!(
                     "wrote {} bytes at offset {}",
                     written.length,
@@ -202,9 +207,10 @@ impl MergePlan {
             }
         }
 
-        writer
-            .flush()
-            .with_context(|| format!("cannot write to {}", output.display()))?;
+        writer.flush().map_err(|source| Error::Flush {
+            path: output.to_owned(),
+            source,
+        })?;
 
         Ok(summary)
     }
@@ -285,7 +291,10 @@ fn record_date(record: &raw::Record) -> Option<WarcDate> {
 
 /// Open a WARC file for reading, decompressing when the path names a gzip file.
 fn open(path: &Path) -> Result<WarcReader<Box<dyn BufRead>>> {
-    let file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
+    let file = File::open(path).map_err(|source| Error::Open {
+        path: path.to_owned(),
+        source,
+    })?;
     let file = BufReader::new(file);
     let reader: Box<dyn BufRead> = if is_gzip(path) {
         Box::new(BufReader::new(MultiGzDecoder::new(file)))

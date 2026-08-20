@@ -1,18 +1,44 @@
-[package]
-name = "archivindex-warc"
+[workspace]
+members = [".", "cli", "ops", "validator"]
+default-members = [".", "ops"]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
-description = "A Rust library for reading and writing WARC files"
-readme = "README.md"
-repository = "https://github.com/travisbrown/archivindex-warc"
-documentation = "https://docs.rs/crate/archivindex-warc/"
-license = "MIT"
 authors = [
   "Reza Akhavan <reza@akhavan.me>",
   "Travis Brown <travisrobertbrown@gmail.com>",
 ]
-keywords = ["warc", "web", "archive"]
 edition = "2024"
 rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/travisbrown/archivindex-warc"
+
+[workspace.dependencies]
+anyhow = "1"
+archivindex-warc = { path = "." }
+clap = { version = "4.5", features = ["derive"] }
+flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+simplelog = "0.12"
+tempfile = "3"
+thiserror = "2"
+warc = "=0.4.0"
+
+[package]
+name = "archivindex-warc"
+version.workspace = true
+description = "A Rust library for reading and writing WARC files"
+readme = "README.md"
+repository.workspace = true
+documentation = "https://docs.rs/crate/archivindex-warc/"
+license.workspace = true
+authors.workspace = true
+keywords = ["warc", "web", "archive"]
+edition.workspace = true
+rust-version.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
@@ -32,19 +58,17 @@ serde = ["dep:serde"]
 chrono = "0.4"
 # `reader` adds content-based checks for formats that signatures alone cannot identify.
 file-format = { version = "0.29", optional = true, features = ["reader"] }
-flate2 = { version = "1", optional = true, default-features = false, features = [
-  "miniz_oxide",
-] }
+flate2 = { workspace = true, optional = true }
 fluent-uri = "0.4"
 http = { version = "1", optional = true }
 # The record layer computes a `WARC-Block-Digest` with `md-5`, `sha1`, or `sha2`.
 md-5 = "0.11"
 rustls = { version = "0.23", optional = true }
-serde = { version = "1", optional = true, features = ["derive"] }
-serde_json = { version = "1", optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 sha1 = "0.11"
 sha2 = "0.11"
-thiserror = "2"
+thiserror.workspace = true
 # A builder not told a record identifier generates one, which is a version 4 UUID.
 uuid = { version = "1", features = ["v4"] }
 webpki-roots = { version = "1", optional = true }
@@ -57,13 +81,13 @@ rcgen = "0.14"
 reqwest = { version = "0.13", default-features = false, features = [
   "blocking",
 ] }
-serde_json = { version = "1", features = ["preserve_order"] }
-tempfile = "3"
+serde_json = { workspace = true, features = ["preserve_order"] }
+tempfile.workspace = true
 # Only the `read_filtered` example parses URLs.
 url = "2"
 # The upstream crate this one is derived from, compared against by `warc_crate_roundtrip`.
 # Pinned exactly, since that test asserts the behavior of one specific implementation.
-warc = "=0.4.0"
+warc.workspace = true
 
 [[test]]
 name = "reconstruct_request_echo"
