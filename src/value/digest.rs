@@ -193,7 +193,7 @@ impl DigestEncoding {
         let mut digest = Vec::with_capacity(self.decoded_length(value)?);
         match self {
             Self::Base16 => {
-                for pair in value.as_bytes().chunks_exact(2) {
+                for pair in value.as_bytes().as_chunks::<2>().0 {
                     digest.push((base16_digit(pair[0])? << 4) | base16_digit(pair[1])?);
                 }
             }
@@ -208,8 +208,9 @@ impl DigestEncoding {
     fn decoded_length(self, value: &str) -> Option<usize> {
         let value = value.as_bytes();
         match self {
-            Self::Base16 => (value.len() % 2 == 0 && value.iter().all(u8::is_ascii_hexdigit))
-                .then_some(value.len() / 2),
+            Self::Base16 => (value.len().is_multiple_of(2)
+                && value.iter().all(u8::is_ascii_hexdigit))
+            .then_some(value.len() / 2),
             Self::Base32 => {
                 let digits = unpadded(value, 8)?;
 

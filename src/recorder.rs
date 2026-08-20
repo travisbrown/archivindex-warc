@@ -495,11 +495,11 @@ fn read_response(
         },
     }
 
-    if let Some(cap) = max_length {
-        if buffer.len() as u64 > cap {
-            cut(&mut buffer, cap);
-            truncated = Some(TruncatedType::Length);
-        }
+    if let Some(cap) = max_length
+        && buffer.len() as u64 > cap
+    {
+        cut(&mut buffer, cap);
+        truncated = Some(TruncatedType::Length);
     }
 
     Ok((buffer, truncated))

@@ -321,7 +321,7 @@ impl Display for MediaType {
 }
 
 /// The constant these bytes are the rendering of, if they are one.
-fn constant_for(value: &[u8]) -> Option<MediaType> {
+const fn constant_for(value: &[u8]) -> Option<MediaType> {
     match value {
         b"application/http;msgtype=request" => Some(MediaType::HTTP_REQUEST),
         b"application/http;msgtype=response" => Some(MediaType::HTTP_RESPONSE),

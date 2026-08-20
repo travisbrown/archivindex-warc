@@ -67,7 +67,7 @@ impl<N, V> Record<N, V> {
     /// This measures the block itself. [`raw::Record::validate`] compares it with the declared
     /// `Content-Length`.
     #[must_use]
-    pub fn content_length(&self) -> u64 {
+    pub const fn content_length(&self) -> u64 {
         self.body.len() as u64
     }
 }
