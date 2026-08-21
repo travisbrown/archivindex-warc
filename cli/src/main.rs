@@ -1,10 +1,16 @@
 mod graph;
 
-use std::path::PathBuf;
+use std::fmt::Display;
+use std::fs::File;
+use std::io::{BufRead, BufReader, BufWriter};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
+use archivindex_warc::io::write::{DEFAULT_GZIP_COMPRESSION_LEVEL, MAX_GZIP_COMPRESSION_LEVEL};
+use archivindex_warc_ops::lint::Linter;
 use clap::{Parser, Subcommand};
+use flate2::bufread::MultiGzDecoder;
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
@@ -73,6 +79,27 @@ enum Command {
         output: PathBuf,
     },
 
+    /// Compress a WARC file record by record, one gzip member per record.
+    Compress {
+        /// The uncompressed WARC file to compress.
+        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        input: PathBuf,
+
+        /// The gzip compression level, from 0 (none) through 9 (best).
+        #[arg(
+            short,
+            long,
+            value_name = "LEVEL",
+            default_value_t = DEFAULT_GZIP_COMPRESSION_LEVEL,
+            value_parser = clap::value_parser!(u32).range(..=i64::from(MAX_GZIP_COMPRESSION_LEVEL)),
+        )]
+        level: u32,
+
+        /// The file to write.
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+        output: PathBuf,
+    },
+
     /// Draw the records and their relationships as an SVG graph.
     Graph {
         /// The WARC file to graph; a .gz extension selects gzip decompression.
@@ -82,6 +109,13 @@ enum Command {
         /// The SVG file to write; without this option, open the graph in a window.
         #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         output: Option<PathBuf>,
+    },
+
+    /// Check a WARC file against rules stricter than the standard, printing each finding.
+    Lint {
+        /// The WARC file to lint; a .gz extension selects gzip decompression.
+        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        input: PathBuf,
     },
 
     /// Merge the records of two WARC files, dropping duplicate warcinfo records.
@@ -127,6 +161,35 @@ fn run(cli: Cli) -> Result<()> {
                 );
             }
         }
+        Command::Compress {
+            input,
+            level,
+            output,
+        } => {
+            if input == output {
+                bail!(
+                    "input and output must be different files: {}",
+                    input.display()
+                );
+            }
+            let reader = BufReader::new(
+                File::open(&input).with_context(|| format!("cannot open {}", input.display()))?,
+            );
+            let writer = BufWriter::new(
+                File::create(&output)
+                    .with_context(|| format!("cannot create {}", output.display()))?,
+            );
+            let summary = archivindex_warc_ops::compress::compress(reader, level, writer)
+                .with_context(|| format!("cannot compress {}", input.display()))?;
+            if !quiet {
+                println!(
+                    "Wrote {} ({} compressed) to {}.",
+                    plural(summary.records, "record"),
+                    plural(summary.bytes, "byte"),
+                    output.display(),
+                );
+            }
+        }
         Command::Graph { input, output } => {
             let summary = graph::graph(&input, output.as_deref())?;
             if !quiet {
@@ -140,6 +203,36 @@ fn run(cli: Cli) -> Result<()> {
                 } else {
                     println!("Opened {description}.");
                 }
+            }
+        }
+        Command::Lint { input } => {
+            let mut linter = Linter::new(open_input(&input)?);
+            let mut problems = 0;
+            while let Some(item) = linter.next() {
+                match item {
+                    Ok(Ok(_)) => continue,
+                    Ok(Err(finding)) => println!("{finding}"),
+                    Err(error) => println!(
+                        "record {}: {:#}",
+                        linter.position() - 1,
+                        anyhow::Error::from(error)
+                    ),
+                }
+                problems += 1;
+            }
+            if problems > 0 {
+                bail!(
+                    "found {} in {}",
+                    plural(problems, "problem"),
+                    input.display()
+                );
+            }
+            if !quiet {
+                println!(
+                    "Found no problems in {} of {}.",
+                    plural(linter.position(), "record"),
+                    input.display()
+                );
             }
         }
         Command::Merge {
@@ -162,9 +255,29 @@ fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
+/// Open a WARC file for reading, decompressing a path ending in `.gz`.
+fn open_input(path: &Path) -> Result<Box<dyn BufRead>> {
+    let file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
+    let file = BufReader::new(file);
+    let reader: Box<dyn BufRead> = if is_gzip(path) {
+        Box::new(BufReader::new(MultiGzDecoder::new(file)))
+    } else {
+        Box::new(file)
+    };
+
+    Ok(reader)
+}
+
+/// Whether a path names a gzip-compressed WARC file.
+fn is_gzip(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
+}
+
 /// A count and its noun, pluralized by the count.
-fn plural(count: usize, noun: &str) -> String {
-    let suffix = if count == 1 { "" } else { "s" };
+fn plural<N: Display + From<u8> + PartialEq>(count: N, noun: &str) -> String {
+    let suffix = if count == N::from(1) { "" } else { "s" };
     format!("{count} {noun}{suffix}")
 }
 
@@ -247,6 +360,56 @@ mod tests {
             Command::Canonicalize { input, output }
                 if input.as_path() == std::path::Path::new("input.warc.gz")
                     && output.as_path() == std::path::Path::new("output.warc")
+        ));
+    }
+
+    #[test]
+    fn compress_defaults_its_level_and_bounds_it() {
+        let default = Cli::try_parse_from([
+            "archivindex-warc-cli",
+            "compress",
+            "input.warc",
+            "-o",
+            "output.warc.gz",
+        ])
+        .unwrap();
+        let chosen = Cli::try_parse_from([
+            "archivindex-warc-cli",
+            "compress",
+            "input.warc",
+            "--level",
+            "0",
+            "-o",
+            "output.warc.gz",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            default.command,
+            Command::Compress { level: 6, .. }
+        ));
+        assert!(matches!(chosen.command, Command::Compress { level: 0, .. }));
+        assert!(
+            Cli::try_parse_from([
+                "archivindex-warc-cli",
+                "compress",
+                "input.warc",
+                "-l",
+                "10",
+                "-o",
+                "output.warc.gz",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn lint_accepts_an_input() {
+        let cli = Cli::try_parse_from(["archivindex-warc-cli", "lint", "input.warc.gz"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Lint { input } if input.as_path() == Path::new("input.warc.gz")
         ));
     }
 
