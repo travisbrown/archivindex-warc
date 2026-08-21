@@ -231,6 +231,14 @@ impl<R: BufRead> Linter<R> {
         }
     }
 
+    /// The number of records consumed so far, counting unreadable ones.
+    ///
+    /// After a read error is yielded, the unreadable record's index is one less than this.
+    #[must_use]
+    pub const fn position(&self) -> usize {
+        self.index
+    }
+
     /// Check one record against every rule and queue what it yields.
     fn check(&mut self, record: &Record) {
         let index = self.index;

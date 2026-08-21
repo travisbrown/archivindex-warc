@@ -1,15 +1,14 @@
 //! The `graph` command.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
+use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::parse::raw;
-use flate2::bufread::MultiGzDecoder;
 
 /// Header fields whose values identify another WARC record.
 const REFERENCE_FIELDS: [(&str, &str); 4] = [
@@ -109,7 +108,7 @@ fn render(source: &str) -> Result<Vec<u8>> {
 fn read_records(path: &Path) -> Result<Vec<Record>> {
     let mut records = Vec::new();
 
-    for result in open_warc(path)?.iter_raw_records() {
+    for result in WarcReader::new(crate::open_input(path)?).iter_raw_records() {
         let record = result.with_context(|| format!("cannot read {}", path.display()))?;
         let header = record.header;
         let record_type = value(&header, "WARC-Type")
@@ -335,26 +334,6 @@ fn shorten(id: &str) -> String {
 /// Escape a D2 double-quoted label.
 fn escape(label: &str) -> String {
     label.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-/// Open a WARC file, decompressing a path ending in `.gz`.
-fn open_warc(path: &Path) -> Result<WarcReader<Box<dyn BufRead>>> {
-    let file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
-    let file = BufReader::new(file);
-    let reader: Box<dyn BufRead> = if is_gzip(path) {
-        Box::new(BufReader::new(MultiGzDecoder::new(file)))
-    } else {
-        Box::new(file)
-    };
-
-    Ok(WarcReader::new(reader))
-}
-
-/// Whether a path names a gzip-compressed WARC file.
-fn is_gzip(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
 }
 
 /// Open a file in the platform's default graphical viewer.
