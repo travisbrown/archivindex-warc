@@ -150,6 +150,7 @@ version = "0.1.0"
 dependencies = [
  "archivindex-warc",
  "flate2",
+ "fluent-uri",
  "log",
  "tempfile",
  "thiserror",

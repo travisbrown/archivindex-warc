@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 archivindex-warc.workspace = true
 flate2.workspace = true
+fluent-uri.workspace = true
 log.workspace = true
 thiserror.workspace = true
 
