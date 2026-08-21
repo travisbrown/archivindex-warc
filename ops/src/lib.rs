@@ -6,6 +6,7 @@
 
 pub mod canonicalize;
 mod error;
+pub mod lint;
 pub mod merge;
 
 pub use error::{Error, Result};
