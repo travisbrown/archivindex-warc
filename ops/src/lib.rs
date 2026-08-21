@@ -5,6 +5,7 @@
 //! Higher-level operations for WARC files.
 
 pub mod canonicalize;
+pub mod compress;
 mod error;
 pub mod lint;
 pub mod merge;
