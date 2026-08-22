@@ -9,7 +9,9 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 use archivindex_warc::io::write::{DEFAULT_GZIP_COMPRESSION_LEVEL, MAX_GZIP_COMPRESSION_LEVEL};
+use archivindex_warc::value::{Text, TextError};
 use archivindex_warc_ops::lint::Linter;
+use archivindex_warc_ops::rewrite::WarcinfoValues;
 use clap::{Parser, Subcommand};
 use flate2::bufread::MultiGzDecoder;
 
@@ -142,6 +144,57 @@ enum Command {
         /// The file to write; a .gz extension selects record-at-a-time gzip compression.
         #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         output: PathBuf,
+    },
+
+    /// Rewrite part of a WARC file, copying every other record as read.
+    Rewrite {
+        /// The WARC file to rewrite; a .gz extension selects gzip decompression.
+        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        input: PathBuf,
+
+        /// The file to write; a .gz extension selects record-at-a-time gzip compression.
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+        output: PathBuf,
+
+        #[command(subcommand)]
+        target: RewriteTarget,
+    },
+}
+
+/// What the `rewrite` command rewrites.
+#[derive(Debug, Subcommand)]
+enum RewriteTarget {
+    /// Set fields of every warcinfo record, keeping what is not given here.
+    ///
+    /// The software field is written as NAME/VERSION and the operator field as NAME <EMAIL>.
+    /// A name given alone keeps the version or email address the record has; a version or
+    /// email address given alone replaces the one the record has, and fails when there is
+    /// none.
+    #[command(group = clap::ArgGroup::new("values").required(true).multiple(true))]
+    Warcinfo {
+        /// The WARC-Filename header field: the name of the file holding the record.
+        #[arg(long, value_name = "NAME", group = "values", value_parser = parse_text)]
+        filename: Option<Text>,
+
+        /// The software name.
+        #[arg(long, value_name = "NAME", group = "values")]
+        software_name: Option<String>,
+
+        /// The software version.
+        #[arg(long, value_name = "VERSION", group = "values")]
+        software_version: Option<String>,
+
+        /// The operator's name.
+        #[arg(long, value_name = "NAME", group = "values")]
+        operator_name: Option<String>,
+
+        /// The operator's email address.
+        #[arg(long, value_name = "EMAIL", group = "values")]
+        operator_email: Option<String>,
+
+        /// The collection the file belongs to, written to the isPartOf field.
+        #[arg(long, value_name = "ID", group = "values")]
+        collection_id: Option<String>,
     },
 }
 
@@ -281,9 +334,45 @@ fn run(cli: Cli) -> Result<()> {
                 );
             }
         }
+        Command::Rewrite {
+            input,
+            output,
+            target:
+                RewriteTarget::Warcinfo {
+                    filename,
+                    software_name,
+                    software_version,
+                    operator_name,
+                    operator_email,
+                    collection_id,
+                },
+        } => {
+            let values = WarcinfoValues {
+                filename,
+                software_name,
+                software_version,
+                operator_name,
+                operator_email,
+                collection_id,
+            };
+            let summary = archivindex_warc_ops::rewrite::warcinfo(&input, &output, &values)?;
+            if !quiet {
+                println!(
+                    "Wrote {} to {}, rewriting {}.",
+                    plural(summary.records, "record"),
+                    output.display(),
+                    plural(summary.rewritten, "warcinfo record"),
+                );
+            }
+        }
     }
 
     Ok(())
+}
+
+/// Read a `TEXT` command-line value, such as a `WARC-Filename`.
+fn parse_text(value: &str) -> Result<Text, TextError> {
+    Text::parse(value.as_bytes())
 }
 
 /// Open a WARC file for reading, decompressing a path ending in `.gz`.
@@ -464,6 +553,55 @@ mod tests {
             cli.command,
             Command::Lint { input } if input.as_path() == Path::new("input.warc.gz")
         ));
+    }
+
+    #[test]
+    fn rewrite_warcinfo_needs_at_least_one_value() {
+        let parse = |values: &[&str]| {
+            let mut args = vec![
+                "archivindex-warc-cli",
+                "rewrite",
+                "input.warc",
+                "-o",
+                "output.warc.gz",
+                "warcinfo",
+            ];
+            args.extend_from_slice(values);
+
+            Cli::try_parse_from(args)
+        };
+
+        assert!(matches!(
+            parse(&[
+                "--software-version",
+                "1.2",
+                "--operator-email",
+                "operator@example.com",
+                "--filename",
+                "crawl.warc.gz",
+            ])
+            .unwrap()
+            .command,
+            Command::Rewrite {
+                input,
+                output,
+                target: RewriteTarget::Warcinfo {
+                    filename: Some(filename),
+                    software_name: None,
+                    software_version: Some(version),
+                    operator_name: None,
+                    operator_email: Some(email),
+                    collection_id: None,
+                },
+            } if input.as_path() == Path::new("input.warc")
+                && output.as_path() == Path::new("output.warc.gz")
+                && version == "1.2"
+                && email == "operator@example.com"
+                && filename.to_str() == Some("crawl.warc.gz")
+        ));
+        assert!(parse(&["--collection-id", "crawl-2026"]).is_ok());
+        assert!(parse(&[]).is_err());
+        assert!(parse(&["--filename", "two\nlines"]).is_err());
     }
 
     #[test]

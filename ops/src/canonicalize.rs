@@ -5,15 +5,14 @@
 //! Values, bodies, record order, and the relative order of repeated fields are preserved.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter};
+use std::io::BufWriter;
 use std::path::Path;
 
-use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::parse::raw;
 use archivindex_warc::parse::untyped::name::Field;
-use flate2::bufread::MultiGzDecoder;
 
+use crate::files::{is_gzip, open};
 use crate::{Error, Result};
 
 /// What was written to the canonicalized file.
@@ -93,29 +92,6 @@ fn canonicalize_header(header: &mut raw::RecordHeader) {
     header
         .headers
         .sort_by_key(|(name, _)| Field::from_name(name).map_or(usize::MAX, Field::canonical_rank));
-}
-
-/// Open a WARC file for reading, decompressing when the path names a gzip file.
-fn open(path: &Path) -> Result<WarcReader<Box<dyn BufRead>>> {
-    let file = File::open(path).map_err(|source| Error::Open {
-        path: path.to_owned(),
-        source,
-    })?;
-    let file = BufReader::new(file);
-    let reader: Box<dyn BufRead> = if is_gzip(path) {
-        Box::new(BufReader::new(MultiGzDecoder::new(file)))
-    } else {
-        Box::new(file)
-    };
-
-    Ok(WarcReader::new(reader))
-}
-
-/// Whether a path names a gzip-compressed file.
-fn is_gzip(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
 }
 
 #[cfg(test)]
