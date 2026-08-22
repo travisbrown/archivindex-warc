@@ -137,9 +137,13 @@ dependencies = [
  "archivindex-warc",
  "archivindex-warc-ops",
  "clap",
+ "csv",
  "d2-little",
  "flate2",
+ "fluent-uri",
  "log",
+ "serde",
+ "serde_json",
  "simplelog",
  "tempfile",
 ]
