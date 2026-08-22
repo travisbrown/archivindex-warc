@@ -7,7 +7,9 @@
 pub mod canonicalize;
 pub mod compress;
 mod error;
+mod files;
 pub mod lint;
 pub mod merge;
+pub mod rewrite;
 
 pub use error::{Error, Result};

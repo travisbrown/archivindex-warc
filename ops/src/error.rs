@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use archivindex_warc::io::{read, write};
 
+use crate::rewrite;
+
 /// A failure while performing a higher-level WARC operation.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -63,6 +65,18 @@ pub enum Error {
     SameInputAndOutput {
         /// The path used for both input and output.
         path: PathBuf,
+    },
+
+    /// A warcinfo record could not be rewritten.
+    #[error("cannot rewrite warcinfo record {index} of {}", path.display())]
+    RewriteWarcinfo {
+        /// The input path.
+        path: PathBuf,
+        /// The record's position in the input, counting from zero.
+        index: usize,
+        /// Why the record could not be rewritten.
+        #[source]
+        source: rewrite::WarcinfoError,
     },
 
     /// A kept warcinfo record had no identifier for redirecting references.
