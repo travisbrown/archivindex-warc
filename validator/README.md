@@ -29,6 +29,11 @@ The following external validators then run:
 - [JWAT-Tools][jwat-tools] is run as `jwattools test -e`.
 - [warcio] is run as `warcio check` and is primarily a digest checker.
 
+Warchaeology, JWAT-Tools, and warcio do not remove HTTP transfer coding before checking payload
+digests, even though the WARC standard specifically requires this. When one of these tools reports
+only payload-digest mismatches, the validator summarizes and ignores those findings (unrelated or
+mixed findings still fail and retain their detailed output).
+
 By default the application attempts a local installation when an external validator is not on
 `PATH`. Warchaeology release archives, JWAT-Tools, and a Python virtual environment for warcio
 are stored below the platform cache directory (for example,
