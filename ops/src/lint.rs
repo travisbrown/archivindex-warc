@@ -3,19 +3,21 @@
 //! [`Linter`] reads a file at the semantic level and checks every record that the standard accepts
 //! against these rules:
 //!
-//! 1. The first record is a `warcinfo` record.
-//! 2. Every other record names, in `WARC-Warcinfo-ID`, the `warcinfo` record that most closely
+//! 1. Header fields appear in canonical order. Standard fields precede extension fields; repeated
+//!    and extension fields retain their relative order.
+//! 2. The first record is a `warcinfo` record.
+//! 3. Every other record names, in `WARC-Warcinfo-ID`, the `warcinfo` record that most closely
 //!    precedes it.
-//! 3. Every record with a payload the block determines carries a `WARC-Payload-Digest`. Those are
+//! 4. Every record with a payload the block determines carries a `WARC-Payload-Digest`. Those are
 //!    `resource` and `conversion` records, and `request` and `response` records holding HTTP
 //!    messages. A `revisit` record's payload lies elsewhere, and a `continuation` record's payload
 //!    is digested in its first segment, so neither is held to this rule.
-//! 4. Every record carries a `WARC-Block-Digest`.
-//! 5. Every record with a block carries a `Content-Type` fitting its type: `application/warc-fields`
+//! 5. Every record carries a `WARC-Block-Digest`.
+//! 6. Every record with a block carries a `Content-Type` fitting its type: `application/warc-fields`
 //!    for `warcinfo` and `metadata`, `application/http;msgtype=request` for `request`, and
 //!    `application/http;msgtype=response` for `response` and for a `revisit` with a block.
 //!    A `continuation` record carries no `Content-Type`, as the standard says.
-//! 6. A capture is written as three consecutive records: a `request`, then the `response` (or the
+//! 7. A capture is written as three consecutive records: a `request`, then the `response` (or the
 //!    `revisit` standing in for it) naming the request alone in `WARC-Concurrent-To`, then a
 //!    `metadata` record naming the response alone. The response and the metadata record repeat the
 //!    request's `WARC-Target-URI`, and the metadata record's `application/warc-fields` body carries
@@ -28,7 +30,9 @@ use std::collections::VecDeque;
 use std::fmt::{self, Display, Formatter};
 use std::io::BufRead;
 
-use archivindex_warc::io::read::{self, RecordIter, WarcReader};
+use archivindex_warc::io::read::{self, UntypedIter, WarcReader};
+use archivindex_warc::parse::untyped::name::Field;
+use archivindex_warc::parse::untyped::{self};
 use archivindex_warc::record::extension::NoExtension;
 use archivindex_warc::record::fields::metadata::MetadataField;
 use archivindex_warc::record::{FieldsBlock, Record};
@@ -41,6 +45,14 @@ use fluent_uri::Uri;
 /// record had, where that is not obvious from the variant.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Violation {
+    /// Two adjacent fields appear in the opposite of canonical order.
+    #[error("`{following}` should appear before `{preceding}`")]
+    NonCanonicalHeaderOrder {
+        /// The earlier field, whose canonical rank is later.
+        preceding: String,
+        /// The later field, whose canonical rank is earlier.
+        following: String,
+    },
     /// The first record of the file is not a `warcinfo` record.
     #[error("the first record is a `{found}` record, not a `warcinfo` record")]
     FirstRecordNotWarcinfo {
@@ -208,7 +220,7 @@ enum Slot {
 /// it takes a position in the file but is checked against no rule, and a capture waiting on it is
 /// forgotten without a finding.
 pub struct Linter<R> {
-    records: RecordIter<R, NoExtension>,
+    records: UntypedIter<R>,
     /// The position of the next record read.
     index: usize,
     /// The identifier of the most recent `warcinfo` record.
@@ -223,7 +235,7 @@ impl<R: BufRead> Linter<R> {
     /// Lint the WARC records read from `reader`, which must already be decompressed.
     pub fn new(reader: R) -> Self {
         Self {
-            records: WarcReader::new(reader).iter_records(),
+            records: WarcReader::new(reader).iter_untyped_records(),
             index: 0,
             warcinfo_id: None,
             pending: None,
@@ -240,12 +252,15 @@ impl<R: BufRead> Linter<R> {
     }
 
     /// Check one record against every rule and queue what it yields.
-    fn check(&mut self, record: &Record) {
+    fn check(&mut self, record: &Record, order_violation: Option<Violation>) {
         let index = self.index;
         self.index += 1;
 
         let expected = self.settle(record);
         let mark = self.queue.len();
+        if let Some(violation) = order_violation {
+            self.report(index, &record.core().record_id, violation);
+        }
         self.check_record(index, record);
         self.check_capture(index, record, expected);
         if self.queue.len() == mark {
@@ -448,7 +463,17 @@ impl<R: BufRead> Iterator for Linter<R> {
             }
 
             match self.records.next() {
-                Some(Ok(record)) => self.check(&record),
+                Some(Ok(untyped)) => {
+                    let order_violation = canonical_order_violation(&untyped.header);
+                    match Record::<NoExtension>::try_from(untyped) {
+                        Ok(record) => self.check(&record, order_violation),
+                        Err(error) => {
+                            self.index += 1;
+                            self.pending = None;
+                            return Some(Err(error.into()));
+                        }
+                    }
+                }
                 Some(Err(error)) => {
                     self.index += 1;
                     self.pending = None;
@@ -463,6 +488,21 @@ impl<R: BufRead> Iterator for Linter<R> {
             }
         }
     }
+}
+
+/// Report the first adjacent pair whose ranks descend.
+fn canonical_order_violation(header: &untyped::RecordHeader) -> Option<Violation> {
+    header.headers.windows(2).find_map(|pair| {
+        let preceding = &pair[0].0;
+        let following = &pair[1].0;
+        let rank = |field: Option<Field>| field.map_or(usize::MAX, Field::canonical_rank);
+        (rank(preceding.field()) > rank(following.field())).then(|| {
+            Violation::NonCanonicalHeaderOrder {
+                preceding: preceding.name().to_owned(),
+                following: following.name().to_owned(),
+            }
+        })
+    })
 }
 
 /// Whether a record can stand in the response position of a capture.
@@ -545,6 +585,7 @@ mod tests {
     struct TestRecord {
         headers: Vec<(&'static str, String)>,
         body: String,
+        preserve_header_order: bool,
     }
 
     impl TestRecord {
@@ -557,6 +598,7 @@ mod tests {
                     ("WARC-Block-Digest", DIGEST.to_owned()),
                 ],
                 body: body.to_owned(),
+                preserve_header_order: false,
             }
         }
 
@@ -583,10 +625,22 @@ mod tests {
             self
         }
 
+        fn in_written_order(mut self) -> Self {
+            self.preserve_header_order = true;
+
+            self
+        }
+
         /// A WARC 1.1 record, framed by the body's length.
         fn render(&self, out: &mut Vec<u8>) {
             out.extend_from_slice(b"WARC/1.1\r\n");
-            for (name, value) in &self.headers {
+            let mut headers = self.headers.iter().collect::<Vec<_>>();
+            if !self.preserve_header_order {
+                headers.sort_by_key(|(name, _)| {
+                    Field::from_name(name).map_or(usize::MAX, Field::canonical_rank)
+                });
+            }
+            for (name, value) in headers {
                 out.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
             }
             out.extend_from_slice(
@@ -676,6 +730,22 @@ mod tests {
             [WARCINFO_ID, REQUEST_ID, RESPONSE_ID, METADATA_ID]
                 .map(|id| Ok(uri(id)))
                 .to_vec()
+        );
+    }
+
+    #[test]
+    fn header_fields_are_in_canonical_order() {
+        let records = [warcinfo(), resource(OTHER_ID).in_written_order()];
+
+        assert_eq!(
+            findings(&records),
+            [(
+                1,
+                Violation::NonCanonicalHeaderOrder {
+                    preceding: "WARC-Record-ID".to_owned(),
+                    following: "WARC-Date".to_owned(),
+                }
+            )]
         );
     }
 
@@ -1126,9 +1196,30 @@ mod tests {
                 .map(|finding| (finding.index, finding.violation))
                 .collect::<Vec<_>>(),
             [
+                (
+                    0,
+                    Violation::NonCanonicalHeaderOrder {
+                        preceding: "WARC-Record-ID".to_owned(),
+                        following: "WARC-Type".to_owned(),
+                    }
+                ),
                 (0, Violation::MissingBlockDigest),
+                (
+                    1,
+                    Violation::NonCanonicalHeaderOrder {
+                        preceding: "WARC-Record-ID".to_owned(),
+                        following: "WARC-Date".to_owned(),
+                    }
+                ),
                 (1, Violation::MissingWarcinfoId),
                 (1, Violation::ResponseWithoutRequest),
+                (
+                    2,
+                    Violation::NonCanonicalHeaderOrder {
+                        preceding: "WARC-Record-ID".to_owned(),
+                        following: "WARC-Date".to_owned(),
+                    }
+                ),
                 (2, Violation::MissingWarcinfoId),
                 (2, Violation::MissingPayloadDigest),
                 (2, Violation::RequestWithoutResponse { found: None }),
