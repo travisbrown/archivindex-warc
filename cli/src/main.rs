@@ -1,3 +1,4 @@
+mod export;
 mod graph;
 
 use std::fmt::Display;
@@ -100,6 +101,16 @@ enum Command {
         output: PathBuf,
     },
 
+    /// Write the records of a WARC file to standard output in a chosen format.
+    Export {
+        /// The WARC file to export; a .gz extension selects gzip decompression.
+        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        input: PathBuf,
+
+        #[command(subcommand)]
+        format: ExportFormat,
+    },
+
     /// Draw the records and their relationships as an SVG graph.
     Graph {
         /// The WARC file to graph; a .gz extension selects gzip decompression.
@@ -132,6 +143,16 @@ enum Command {
         #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         output: PathBuf,
     },
+}
+
+/// The formats the `export` command writes.
+#[derive(Debug, Subcommand)]
+enum ExportFormat {
+    /// One CSV row per record: its type, date, record identifier, and target URI.
+    Csv,
+
+    /// One JSON line per record whose identified payload type is JSON.
+    Json,
 }
 
 fn main() -> ExitCode {
@@ -189,6 +210,16 @@ fn run(cli: Cli) -> Result<()> {
                     output.display(),
                 );
             }
+        }
+        Command::Export { input, format } => {
+            let reader = open_input(&input)?;
+            let stdout = std::io::stdout().lock();
+            let records = match format {
+                ExportFormat::Csv => export::csv::export(reader, stdout),
+                ExportFormat::Json => export::json::export(reader, BufWriter::new(stdout)),
+            }
+            .with_context(|| format!("cannot export {}", input.display()))?;
+            log::info!("exported {}", plural(records, "record"));
         }
         Command::Graph { input, output } => {
             let summary = graph::graph(&input, output.as_deref())?;
@@ -401,6 +432,28 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn export_takes_an_input_and_a_format() {
+        let csv = Cli::try_parse_from(["archivindex-warc-cli", "export", "input.warc.gz", "csv"])
+            .unwrap();
+        let json =
+            Cli::try_parse_from(["archivindex-warc-cli", "export", "input.warc", "json"]).unwrap();
+
+        assert!(matches!(
+            csv.command,
+            Command::Export { input, format: ExportFormat::Csv }
+                if input.as_path() == Path::new("input.warc.gz")
+        ));
+        assert!(matches!(
+            json.command,
+            Command::Export {
+                format: ExportFormat::Json,
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from(["archivindex-warc-cli", "export", "input.warc"]).is_err());
     }
 
     #[test]

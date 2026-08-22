@@ -14,8 +14,12 @@ anyhow.workspace = true
 archivindex-warc.workspace = true
 archivindex-warc-ops = { path = "../ops" }
 clap.workspace = true
+csv.workspace = true
 d2-little = "0.7.1-1"
 flate2.workspace = true
+fluent-uri.workspace = true
 log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 simplelog.workspace = true
 tempfile.workspace = true
