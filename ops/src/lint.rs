@@ -22,6 +22,13 @@
 //!    `metadata` record naming the response alone. The response and the metadata record repeat the
 //!    request's `WARC-Target-URI`, and the metadata record's `application/warc-fields` body carries
 //!    a `fetchTimeMs` field. A `metadata` record outside a capture is not held to these rules.
+//! 8. Every `warcinfo` record names its collection in an `isPartOf` field, as a host, any number of
+//!    path parts, and a timestamp of digits, all joined by `-`, and its `WARC-Filename` is that
+//!    identifier followed by `.warc.gz`. A path part such as `en` holds no `.`, which tells it from
+//!    the host.
+//! 9. Every `request` record's target URI has, as its host, exactly the host of the collection
+//!    identifier named by the `warcinfo` record that most closely precedes it. A request that no
+//!    well-formed collection identifier governs is not held to this rule.
 //!
 //! Each rule a record breaks is one [`Finding`]. A record that breaks none is reported by its
 //! identifier alone.
@@ -34,9 +41,12 @@ use archivindex_warc::io::read::{self, UntypedIter, WarcReader};
 use archivindex_warc::parse::untyped::name::Field;
 use archivindex_warc::parse::untyped::{self};
 use archivindex_warc::record::extension::NoExtension;
+use archivindex_warc::record::fields::dcmi::DcmiTerm;
 use archivindex_warc::record::fields::metadata::MetadataField;
+use archivindex_warc::record::fields::warcinfo::WarcinfoField;
+use archivindex_warc::record::header::WarcinfoHeader;
 use archivindex_warc::record::{FieldsBlock, Record};
-use archivindex_warc::value::MediaType;
+use archivindex_warc::value::{MediaType, Text};
 use fluent_uri::Uri;
 
 /// A rule a record breaks.
@@ -125,6 +135,34 @@ pub enum Violation {
     /// A capture's `metadata` record carries no `fetchTimeMs` field.
     #[error("the capture's metadata record carries no `fetchTimeMs` field")]
     MissingFetchTime,
+    /// A `warcinfo` record carries no `isPartOf` field.
+    #[error("the warcinfo record carries no `isPartOf` field")]
+    MissingCollectionId,
+    /// A `warcinfo` record's `isPartOf` is not a host, path parts, and a timestamp joined by `-`.
+    #[error(
+        "`isPartOf` should be a host, path parts, and a timestamp joined by `-`, but is `{found}`"
+    )]
+    MalformedCollectionId {
+        /// The collection identifier the record names.
+        found: String,
+    },
+    /// A `warcinfo` record's `WARC-Filename` is not its collection identifier followed by
+    /// `.warc.gz`.
+    #[error("`WARC-Filename` should be `{expected}`, but {}", filename(found.as_ref()))]
+    WrongFilename {
+        /// The file name the collection identifier calls for.
+        expected: String,
+        /// The record's file name, or `None` if it carries none.
+        found: Option<Text>,
+    },
+    /// A `request` record's target URI does not have the collection's host as its host.
+    #[error("the target URI's host should be `{expected}`, but {}", host(found.as_deref()))]
+    WrongRequestHost {
+        /// The host of the collection identifier the `warcinfo` record names.
+        expected: String,
+        /// The target URI's host, or `None` if it has none.
+        found: Option<String>,
+    },
 }
 
 /// Describe the `warcinfo` record a record should have named.
@@ -160,6 +198,22 @@ fn target_uri(found: Option<&Uri<String>>) -> String {
     found.map_or_else(
         || "the record carries none".to_owned(),
         |uri| format!("is {uri}"),
+    )
+}
+
+/// Describe a record's file name in a message.
+fn filename(found: Option<&Text>) -> String {
+    found.map_or_else(
+        || "the record carries none".to_owned(),
+        |name| format!("is `{name}`"),
+    )
+}
+
+/// Describe a target URI's host in a message.
+fn host(found: Option<&str>) -> String {
+    found.map_or_else(
+        || "the URI has none".to_owned(),
+        |host| format!("is `{host}`"),
     )
 }
 
@@ -225,6 +279,9 @@ pub struct Linter<R> {
     index: usize,
     /// The identifier of the most recent `warcinfo` record.
     warcinfo_id: Option<Uri<String>>,
+    /// The host of the collection identifier the most recent `warcinfo` record names, if it
+    /// names a well-formed one.
+    collection_host: Option<String>,
     /// The capture record expected next, if a capture is under way.
     pending: Option<Pending>,
     /// Results not yet yielded, since one record can produce several.
@@ -238,6 +295,7 @@ impl<R: BufRead> Linter<R> {
             records: WarcReader::new(reader).iter_untyped_records(),
             index: 0,
             warcinfo_id: None,
+            collection_host: None,
             pending: None,
             queue: VecDeque::new(),
         }
@@ -306,8 +364,9 @@ impl<R: BufRead> Linter<R> {
             );
         }
 
-        if matches!(record, Record::Warcinfo { .. }) {
+        if let Record::Warcinfo { header, body } = record {
             self.warcinfo_id = Some(record_id.clone());
+            self.check_collection(index, header, body);
         } else {
             match record.warcinfo_id() {
                 None => self.report(index, record_id, Violation::MissingWarcinfoId),
@@ -321,6 +380,15 @@ impl<R: BufRead> Linter<R> {
                 ),
                 Some(_) => {}
             }
+        }
+
+        if let Record::Request { header, .. } = record
+            && let Some(violation) = self
+                .collection_host
+                .as_deref()
+                .and_then(|expected| wrong_host(expected, &header.target_uri))
+        {
+            self.report(index, record_id, violation);
         }
 
         if has_payload(record)
@@ -355,6 +423,57 @@ impl<R: BufRead> Linter<R> {
                     );
                 }
             }
+        }
+    }
+
+    /// Check that a `warcinfo` record names a well-formed collection and is in the file named for
+    /// it, and remember the collection's host for the requests that follow.
+    fn check_collection(
+        &mut self,
+        index: usize,
+        header: &WarcinfoHeader,
+        body: &FieldsBlock<WarcinfoField>,
+    ) {
+        let collection = match body {
+            FieldsBlock::Fields(fields) => fields.get(&WarcinfoField::Dcmi(DcmiTerm::IsPartOf)),
+            FieldsBlock::Raw(_) => None,
+        };
+        self.collection_host = None;
+        let Some(collection) = collection else {
+            self.report(
+                index,
+                &header.core.record_id,
+                Violation::MissingCollectionId,
+            );
+            return;
+        };
+
+        match collection_host(collection) {
+            Some(host) => self.collection_host = Some(host.to_owned()),
+            None => self.report(
+                index,
+                &header.core.record_id,
+                Violation::MalformedCollectionId {
+                    found: collection.to_owned(),
+                },
+            ),
+        }
+
+        let named_for_collection = header
+            .filename
+            .as_ref()
+            .and_then(Text::to_str)
+            .and_then(|name| name.strip_suffix(".warc.gz"))
+            == Some(collection);
+        if !named_for_collection {
+            self.report(
+                index,
+                &header.core.record_id,
+                Violation::WrongFilename {
+                    expected: format!("{collection}.warc.gz"),
+                    found: header.filename.clone(),
+                },
+            );
         }
     }
 
@@ -505,6 +624,37 @@ fn canonical_order_violation(header: &untyped::RecordHeader) -> Option<Violation
     })
 }
 
+/// The host of a collection identifier, which is a host, any number of path parts, and a timestamp
+/// of digits, all joined by `-`.
+///
+/// A path part holds no `.`, which tells it from the host. Returns `None` for an identifier not of
+/// that form.
+fn collection_host(collection: &str) -> Option<&str> {
+    let (mut host, timestamp) = collection.rsplit_once('-')?;
+    if timestamp.is_empty() || !timestamp.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    while let Some((head, part)) = host.rsplit_once('-')
+        && !part.contains('.')
+    {
+        if part.is_empty() {
+            return None;
+        }
+        host = head;
+    }
+
+    (!host.is_empty()).then_some(host)
+}
+
+/// Report a target URI whose host is not exactly the expected one.
+fn wrong_host(expected: &str, target_uri: &Uri<String>) -> Option<Violation> {
+    let host = target_uri.authority().map(|authority| authority.host());
+    (host != Some(expected)).then(|| Violation::WrongRequestHost {
+        expected: expected.to_owned(),
+        found: host.map(ToOwned::to_owned),
+    })
+}
+
 /// Whether a record can stand in the response position of a capture.
 const fn is_response_slot(record: &Record) -> bool {
     matches!(record, Record::Response { .. } | Record::Revisit { .. })
@@ -573,6 +723,9 @@ mod tests {
     const RESPONSE_ID: &str = "urn:uuid:cccccccc-0000-4000-8000-000000000000";
     const METADATA_ID: &str = "urn:uuid:dddddddd-0000-4000-8000-000000000000";
     const OTHER_ID: &str = "urn:uuid:eeeeeeee-0000-4000-8000-000000000000";
+    const HOST: &str = "example.com";
+    const COLLECTION: &str = "example.com-20240401120000";
+    const FILENAME: &str = "example.com-20240401120000.warc.gz";
     const TARGET: &str = "https://example.com/";
     const DATE: &str = "2024-04-01T12:00:00Z";
     /// The record layer keeps declared digests without checking them, so one value serves all.
@@ -652,8 +805,18 @@ mod tests {
     }
 
     fn warcinfo() -> TestRecord {
-        TestRecord::new("warcinfo", WARCINFO_ID, "software: test\r\n")
-            .with("Content-Type", "application/warc-fields")
+        warcinfo_with_id(WARCINFO_ID)
+    }
+
+    /// A `warcinfo` record naming the collection, in the file named for it.
+    fn warcinfo_with_id(id: &str) -> TestRecord {
+        TestRecord::new(
+            "warcinfo",
+            id,
+            &format!("software: test\r\nisPartOf: {COLLECTION}\r\n"),
+        )
+        .with("WARC-Filename", FILENAME)
+        .with("Content-Type", "application/warc-fields")
     }
 
     fn request() -> TestRecord {
@@ -809,9 +972,7 @@ mod tests {
         records[2] = records[2]
             .clone()
             .set("WARC-Warcinfo-ID", &format!("<{OTHER_ID}>"));
-        let second_warcinfo = TestRecord::new("warcinfo", OTHER_ID, "software: test\r\n")
-            .with("Content-Type", "application/warc-fields");
-        records.push(second_warcinfo);
+        records.push(warcinfo_with_id(OTHER_ID));
         records.push(resource(RESPONSE_ID));
 
         assert_eq!(
@@ -936,6 +1097,7 @@ mod tests {
         assert_eq!(
             findings(&records),
             [
+                (0, Violation::MissingCollectionId),
                 (
                     0,
                     Violation::WrongContentType {
@@ -1099,6 +1261,160 @@ mod tests {
     }
 
     #[test]
+    fn a_warcinfo_record_names_its_collection_and_its_file() {
+        let mut records = capture();
+        records[0].body = "software: test\r\n".to_owned();
+        records.push(warcinfo_with_id(OTHER_ID).without("WARC-Filename"));
+        records.push(warcinfo_with_id(OTHER_ID).set("WARC-Filename", "other.warc"));
+
+        assert_eq!(
+            findings(&records),
+            [
+                (0, Violation::MissingCollectionId),
+                (
+                    4,
+                    Violation::WrongFilename {
+                        expected: FILENAME.to_owned(),
+                        found: None
+                    }
+                ),
+                (
+                    5,
+                    Violation::WrongFilename {
+                        expected: FILENAME.to_owned(),
+                        found: Text::parse(b"other.warc").ok()
+                    }
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_collection_id_is_a_host_path_parts_and_a_timestamp() {
+        for (collection, host) in [
+            ("example.com-en-20240401120000", Some("example.com")),
+            ("example.com-en-mobile-20240401120000", Some("example.com")),
+            ("my-site.com-en-20240401120000", Some("my-site.com")),
+            ("localhost-20240401120000", Some("localhost")),
+            ("example.com--20240401120000", None),
+            ("-en-20240401120000", None),
+        ] {
+            assert_eq!(collection_host(collection), host, "{collection}");
+        }
+
+        let malformed = [HOST, "example.com-", "-20240401120000", "example.com-today"];
+        let mut records = capture();
+        for (index, collection) in malformed.into_iter().enumerate() {
+            let mut warcinfo = warcinfo_with_id(OTHER_ID);
+            warcinfo.body = format!("software: test\r\nisPartOf: {collection}\r\n");
+            records.push(warcinfo.set("WARC-Filename", &format!("{collection}.warc.gz")));
+            if index == 0 {
+                records.extend(capture()[1..].iter().map(|record| {
+                    record
+                        .clone()
+                        .set("WARC-Warcinfo-ID", &format!("<{OTHER_ID}>"))
+                        .set("WARC-Target-URI", "https://www.example.com/")
+                }));
+            }
+        }
+
+        assert_eq!(
+            findings(&records),
+            [4, 8, 9, 10]
+                .into_iter()
+                .zip(malformed)
+                .map(|(index, found)| {
+                    (
+                        index,
+                        Violation::MalformedCollectionId {
+                            found: found.to_owned(),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn requests_target_the_collection_host() {
+        let mut records = capture();
+        records[1] = records[1]
+            .clone()
+            .set("WARC-Target-URI", "https://Example.COM/");
+        let mut other = capture()[1..].to_vec();
+        for record in &mut other {
+            *record = record
+                .clone()
+                .set("WARC-Target-URI", "https://www.example.com/");
+        }
+        records.extend(other);
+        let mut hostless = capture()[1..].to_vec();
+        for record in &mut hostless {
+            *record = record
+                .clone()
+                .set("WARC-Target-URI", "urn:isbn:0451450523")
+                .without("WARC-Payload-Digest");
+        }
+        records.extend(hostless);
+
+        assert_eq!(
+            findings(&records),
+            [
+                (
+                    1,
+                    Violation::WrongRequestHost {
+                        expected: HOST.to_owned(),
+                        found: Some("Example.COM".to_owned())
+                    }
+                ),
+                (
+                    2,
+                    Violation::WrongTargetUri {
+                        expected: uri("https://Example.COM/"),
+                        found: Some(uri(TARGET))
+                    }
+                ),
+                (
+                    3,
+                    Violation::WrongTargetUri {
+                        expected: uri("https://Example.COM/"),
+                        found: Some(uri(TARGET))
+                    }
+                ),
+                (
+                    4,
+                    Violation::WrongRequestHost {
+                        expected: HOST.to_owned(),
+                        found: Some("www.example.com".to_owned())
+                    }
+                ),
+                (
+                    7,
+                    Violation::WrongRequestHost {
+                        expected: HOST.to_owned(),
+                        found: None
+                    }
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn requests_outside_a_collection_are_unconstrained() {
+        let mut records = capture();
+        records[0].body = "software: test\r\n".to_owned();
+        records[1] = records[1]
+            .clone()
+            .set("WARC-Target-URI", "https://www.example.com/");
+
+        assert!(
+            findings(&records)
+                .iter()
+                .all(|(_, violation)| !matches!(violation, Violation::WrongRequestHost { .. }))
+        );
+    }
+
+    #[test]
     fn metadata_outside_a_capture_is_unconstrained() {
         let mut records = capture();
         records.push(
@@ -1174,6 +1490,22 @@ mod tests {
             .to_string(),
             format!("`WARC-Target-URI` should be {TARGET}, but the record carries none")
         );
+        assert_eq!(
+            Violation::WrongFilename {
+                expected: FILENAME.to_owned(),
+                found: Text::parse(b"other.warc").ok()
+            }
+            .to_string(),
+            format!("`WARC-Filename` should be `{FILENAME}`, but is `other.warc`")
+        );
+        assert_eq!(
+            Violation::WrongRequestHost {
+                expected: HOST.to_owned(),
+                found: None
+            }
+            .to_string(),
+            format!("the target URI's host should be `{HOST}`, but the URI has none")
+        );
     }
 
     #[test]
@@ -1203,6 +1535,7 @@ mod tests {
                         following: "WARC-Type".to_owned(),
                     }
                 ),
+                (0, Violation::MissingCollectionId),
                 (0, Violation::MissingBlockDigest),
                 (
                     1,
