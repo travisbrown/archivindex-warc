@@ -1,7 +1,13 @@
 # WARC validator
 
 This standalone Rust application runs a WARC file through several independent validators and
-prints one summary.
+prints one summary. It is not a member of the repository's workspace: it builds on its own, with
+its own lock file, so that its dependency tree cannot constrain the other packages.
+
+The application depends on `archivindex-warc` by path, so `validator/Cargo.lock` also pins the
+library's dependencies. Continuous integration builds the validator with `--locked`. After
+changing a workspace dependency, regenerate this lock file with
+`cargo check --manifest-path validator/Cargo.toml`.
 
 ```console
 cargo run --manifest-path validator/Cargo.toml -- example.warc.gz
