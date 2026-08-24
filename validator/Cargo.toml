@@ -1,31 +1,35 @@
+# This package builds on its own, outside the repository's workspace, so that its dependency
+# tree cannot constrain the other packages.
+[workspace]
+
 [package]
 name = "archivindex-warc-validator"
-version.workspace = true
+version = "0.1.0"
 description = "Validate WARC files with several independent validators"
-authors.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
+authors = ["Travis Brown <travisrobertbrown@gmail.com>"]
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/travisbrown/archivindex-warc"
 publish = false
 
 [dependencies]
-anyhow.workspace = true
+anyhow = "1"
 # The crate under test, read from its own source tree rather than from a published release.
-archivindex-warc.workspace = true
+archivindex-warc = { path = ".." }
 # warcat 0.3.4 enables blake3's experimental digest traits, which became incompatible with its
 # digest 0.10 dependency in later blake3 releases.
 blake3 = { version = "=1.5.4", features = ["pure", "traits-preview"] }
-clap.workspace = true
+clap = { version = "4.5", features = ["derive"] }
 directories = "6"
-flate2.workspace = true
-log.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-simplelog.workspace = true
+flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+simplelog = "0.12"
 tar = "0.4"
-tempfile.workspace = true
+tempfile = "3"
 ureq = "3"
-warc.workspace = true
+warc = "=0.4.0"
 warcat = "0.3.4"
 zip = { version = "8", default-features = false, features = ["deflate"] }
