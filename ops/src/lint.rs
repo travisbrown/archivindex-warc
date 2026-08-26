@@ -791,27 +791,38 @@ fn has_payload(record: &Record) -> bool {
     }
 }
 
-/// Whether a record declares an HTTP message as its block.
-///
-/// A missing media type is accepted when the target URI uses HTTP or HTTPS, as the record layer
-/// accepts it when extracting a payload.
-fn holds_http_message(record: &Record) -> bool {
+/// Whether a record captures an exchange in a protocol whose messages this crate reads.
+fn has_http_target(record: &Record) -> bool {
     record.target_uri().is_some_and(|target_uri| {
         let scheme = target_uri.scheme().as_str();
         scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
-    }) && record
-        .core()
-        .content_type
-        .as_ref()
-        .is_none_or(|content_type| content_type.is("application", "http"))
+    })
+}
+
+/// Whether a record declares an HTTP message as its block.
+///
+/// The target URI must name HTTP or HTTPS, and the media type must be `application/http` or
+/// absent, which is what the record layer accepts when extracting a payload.
+fn holds_http_message(record: &Record) -> bool {
+    has_http_target(record)
+        && record
+            .core()
+            .content_type
+            .as_ref()
+            .is_none_or(|content_type| content_type.is("application", "http"))
 }
 
 /// The media type a record's type calls for, or `None` for a type this module does not constrain.
-const fn expected_content_type(record: &Record) -> Option<MediaType> {
+///
+/// WARC 1.1 clause 5.6 contemplates captures of other protocols, whose block is a message of that
+/// protocol rather than an HTTP one, so only a capture of an HTTP exchange is constrained.
+fn expected_content_type(record: &Record) -> Option<MediaType> {
     match record {
         Record::Warcinfo { .. } | Record::Metadata { .. } => Some(MediaType::WARC_FIELDS),
-        Record::Request { .. } => Some(MediaType::HTTP_REQUEST),
-        Record::Response { .. } | Record::Revisit { .. } => Some(MediaType::HTTP_RESPONSE),
+        Record::Request { .. } => has_http_target(record).then_some(MediaType::HTTP_REQUEST),
+        Record::Response { .. } | Record::Revisit { .. } => {
+            has_http_target(record).then_some(MediaType::HTTP_RESPONSE)
+        }
         Record::Resource { .. }
         | Record::Conversion { .. }
         | Record::Continuation { .. }
@@ -1202,6 +1213,25 @@ mod tests {
                 .clone()
                 .set("WARC-Target-URI", "ftp://example.com/")
                 .without("WARC-Payload-Digest");
+        }
+
+        assert_eq!(findings(&records), []);
+    }
+
+    /// WARC 1.1 clause 5.6 contemplates a capture of another protocol, whose block is its own.
+    #[test]
+    fn a_capture_of_another_protocol_declares_its_own_media_type() {
+        let mut records = capture();
+        for record in &mut records[1..] {
+            *record = record
+                .clone()
+                .set("WARC-Target-URI", "ftp://example.com/")
+                .without("WARC-Payload-Digest");
+        }
+        for record in &mut records[1..3] {
+            *record = record
+                .clone()
+                .set("Content-Type", "application/octet-stream");
         }
 
         assert_eq!(findings(&records), []);
