@@ -347,8 +347,11 @@ fn valid_date_time_layout(value: &str, seconds: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use chrono::{DateTime, NaiveDate, Utc};
+    use proptest::prelude::*;
+    use test_strategy::proptest;
 
     use super::{WarcDate, WarcDatePrecision};
+    use crate::strategies;
     use crate::version::WarcVersion;
 
     /// An instant with nonzero values at every supported precision.
@@ -524,5 +527,16 @@ mod tests {
             date.to_string_for_version(WarcVersion::V1_0),
             "2020-07-08T02:52:55Z"
         );
+    }
+
+    /// A date reads back at the instant and precision it was written with.
+    #[proptest]
+    fn round_trips_a_date_the_version_can_spell(
+        #[strategy(strategies::warc_version())] version: WarcVersion,
+        #[strategy(strategies::warc_date(#version))] date: WarcDate,
+    ) {
+        let written = date.to_string_for_version(version);
+
+        prop_assert_eq!(WarcDate::parse(&written, version), Some(date));
     }
 }

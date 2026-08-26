@@ -44,6 +44,8 @@
 //! [warc]: https://en.wikipedia.org/wiki/WARC_(file_format)
 
 mod parsing;
+#[cfg(test)]
+mod strategies;
 
 pub mod io;
 pub mod parse;
