@@ -1,3 +1,5 @@
+//! A command-line front end that validates WARC files with several independent validators.
+
 mod archivindex_validator;
 mod external;
 mod install;
@@ -59,7 +61,7 @@ struct Verbosity {
 
 impl Verbosity {
     /// The most detailed level to log.
-    fn level(&self) -> log::LevelFilter {
+    const fn level(&self) -> log::LevelFilter {
         if self.quiet {
             log::LevelFilter::Error
         } else {
@@ -144,7 +146,7 @@ fn run(cli: Cli) -> Result<bool> {
         cli.validator.into_iter().collect()
     };
 
-    let tools_dir = cli.tools_dir.map(Ok).unwrap_or_else(default_tools_dir)?;
+    let tools_dir = cli.tools_dir.map_or_else(default_tools_dir, Ok)?;
     let resolver = ToolResolver::new(tools_dir, !cli.no_install);
     let mut results = Vec::new();
 

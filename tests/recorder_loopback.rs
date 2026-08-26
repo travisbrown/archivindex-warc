@@ -131,7 +131,7 @@ fn records_a_chunked_response_verbatim_and_renders_its_records() {
 
     let records: CaptureRecords = captured
         .capture_event()
-        .exchange(captured.request.clone(), captured.response.clone())
+        .exchange(captured.request.clone(), captured.response)
         .expect("capture records");
     assert!(records.metadata.is_some(), "a fetch time was declared");
     records.request.into_raw().expect("a renderable request");
@@ -207,7 +207,7 @@ fn the_length_bound_truncates_the_record_and_it_still_renders() {
 
     let records: CaptureRecords = captured
         .capture_event()
-        .exchange(captured.request.clone(), captured.response.clone())
+        .exchange(captured.request.clone(), captured.response)
         .expect("capture records");
     let Record::Response { header, .. } = &records.response else {
         panic!("not a response record");

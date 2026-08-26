@@ -1,3 +1,5 @@
+//! Command-line tools for working with WARC files.
+
 mod export;
 mod graph;
 
@@ -40,7 +42,7 @@ struct Verbosity {
 
 impl Verbosity {
     /// The most detailed level to log.
-    fn level(&self) -> log::LevelFilter {
+    const fn level(&self) -> log::LevelFilter {
         if self.quiet {
             log::LevelFilter::Error
         } else {
@@ -239,31 +241,7 @@ fn run(cli: Cli) -> Result<()> {
             input,
             level,
             output,
-        } => {
-            if input == output {
-                bail!(
-                    "input and output must be different files: {}",
-                    input.display()
-                );
-            }
-            let reader = BufReader::new(
-                File::open(&input).with_context(|| format!("cannot open {}", input.display()))?,
-            );
-            let writer = BufWriter::new(
-                File::create(&output)
-                    .with_context(|| format!("cannot create {}", output.display()))?,
-            );
-            let summary = archivindex_warc_ops::compress::compress(reader, level, writer)
-                .with_context(|| format!("cannot compress {}", input.display()))?;
-            if !quiet {
-                println!(
-                    "Wrote {} ({} compressed) to {}.",
-                    plural(summary.records, "record"),
-                    plural(summary.bytes, "byte"),
-                    output.display(),
-                );
-            }
-        }
+        } => compress(&input, level, &output, quiet)?,
         Command::Export { input, format } => {
             let reader = open_input(&input)?;
             let stdout = std::io::stdout().lock();
@@ -289,36 +267,7 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Command::Lint { input } => {
-            let mut linter = Linter::new(open_input(&input)?);
-            let mut problems = 0;
-            while let Some(item) = linter.next() {
-                match item {
-                    Ok(Ok(_)) => continue,
-                    Ok(Err(finding)) => println!("{finding}"),
-                    Err(error) => println!(
-                        "record {}: {:#}",
-                        linter.position() - 1,
-                        anyhow::Error::from(error)
-                    ),
-                }
-                problems += 1;
-            }
-            if problems > 0 {
-                bail!(
-                    "found {} in {}",
-                    plural(problems, "problem"),
-                    input.display()
-                );
-            }
-            if !quiet {
-                println!(
-                    "Found no problems in {} of {}.",
-                    plural(linter.position(), "record"),
-                    input.display()
-                );
-            }
-        }
+        Command::Lint { input } => lint(&input, quiet)?,
         Command::Merge {
             first,
             second,
@@ -370,6 +319,72 @@ fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
+/// Compress `input` record by record into the gzip WARC at `output`.
+fn compress(input: &Path, level: u32, output: &Path, quiet: bool) -> Result<()> {
+    if input == output {
+        bail!(
+            "input and output must be different files: {}",
+            input.display()
+        );
+    }
+
+    let reader = BufReader::new(
+        File::open(input).with_context(|| format!("cannot open {}", input.display()))?,
+    );
+    let writer = BufWriter::new(
+        File::create(output).with_context(|| format!("cannot create {}", output.display()))?,
+    );
+    let summary = archivindex_warc_ops::compress::compress(reader, level, writer)
+        .with_context(|| format!("cannot compress {}", input.display()))?;
+
+    if !quiet {
+        println!(
+            "Wrote {} ({} compressed) to {}.",
+            plural(summary.records, "record"),
+            plural(summary.bytes, "byte"),
+            output.display(),
+        );
+    }
+
+    Ok(())
+}
+
+/// Report every finding in `input`, failing when there is one.
+fn lint(input: &Path, quiet: bool) -> Result<()> {
+    let mut linter = Linter::new(open_input(input)?);
+    let mut problems = 0;
+
+    while let Some(item) = linter.next() {
+        match item {
+            Ok(Ok(_)) => continue,
+            Ok(Err(finding)) => println!("{finding}"),
+            Err(error) => println!(
+                "record {}: {:#}",
+                linter.position() - 1,
+                anyhow::Error::from(error)
+            ),
+        }
+        problems += 1;
+    }
+
+    if problems > 0 {
+        bail!(
+            "found {} in {}",
+            plural(problems, "problem"),
+            input.display()
+        );
+    }
+    if !quiet {
+        println!(
+            "Found no problems in {} of {}.",
+            plural(linter.position(), "record"),
+            input.display()
+        );
+    }
+
+    Ok(())
+}
+
 /// Read a `TEXT` command-line value, such as a `WARC-Filename`.
 fn parse_text(value: &str) -> Result<Text, TextError> {
     Text::parse(value.as_bytes())
@@ -396,7 +411,7 @@ fn is_gzip(path: &Path) -> bool {
 }
 
 /// A count and its noun, pluralized by the count.
-fn plural<N: Display + From<u8> + PartialEq>(count: N, noun: &str) -> String {
+fn plural<N: Copy + Display + From<u8> + PartialEq>(count: N, noun: &str) -> String {
     let suffix = if count == N::from(1) { "" } else { "s" };
     format!("{count} {noun}{suffix}")
 }

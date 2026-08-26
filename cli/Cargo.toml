@@ -9,6 +9,9 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow = "1"
 archivindex-warc.workspace = true

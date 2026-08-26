@@ -1,3 +1,5 @@
+//! Fixture checks over the archives pywb's indexing tests exercise.
+
 #![cfg(feature = "gzip")]
 
 mod support;

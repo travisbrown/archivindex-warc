@@ -1,6 +1,7 @@
 //! The `graph` command.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -51,7 +52,7 @@ pub struct GraphSummary {
 /// The graph-relevant part of a raw record.
 #[derive(Debug)]
 struct Record {
-    record_type: String,
+    warc_type: String,
     id: Option<Vec<u8>>,
     references: Vec<Reference>,
 }
@@ -111,7 +112,7 @@ fn read_records(path: &Path) -> Result<Vec<Record>> {
     for result in WarcReader::new(crate::open_input(path)?).iter_raw_records() {
         let record = result.with_context(|| format!("cannot read {}", path.display()))?;
         let header = record.header;
-        let record_type = value(&header, "WARC-Type")
+        let warc_type = value(&header, "WARC-Type")
             .map_or_else(|| "unknown".to_owned(), |value| value.to_ascii_lowercase());
         let id = header
             .get("WARC-Record-ID")
@@ -129,7 +130,7 @@ fn read_records(path: &Path) -> Result<Vec<Record>> {
             .collect();
 
         records.push(Record {
-            record_type,
+            warc_type,
             id,
             references,
         });
@@ -147,24 +148,30 @@ fn source(records: &[Record]) -> (String, usize) {
 
     for (index, record) in records.iter().enumerate() {
         let color = colors
-            .get(&record.record_type)
+            .get(&record.warc_type)
             .expect("invariant violation: every record type has a color");
-        source.push_str(&format!(
+        write!(
+            source,
             "  record_{index}: \"{}\" {{\n    style.fill: \"{color}\"\n    style.font-size: {GRAPH_FONT_SIZE}\n  }}\n",
             escape(&labels[index])
-        ));
+        )
+        .expect("invariant violation: writing to a String");
     }
     for index in 1..records.len() {
-        source.push_str(&format!(
+        write!(
+            source,
             "  record_0 -> record_{index}: {{\n    style.opacity: 0\n  }}\n"
-        ));
+        )
+        .expect("invariant violation: writing to a String");
     }
     source.push_str("}\nkey: {\n  label: \"\"\n  grid-columns: 1\n");
     for (index, (record_type, color)) in colors.iter().enumerate() {
-        source.push_str(&format!(
+        write!(
+            source,
             "  type_{index}: \"{}\" {{\n    style.fill: \"{color}\"\n    style.font-size: {GRAPH_FONT_SIZE}\n  }}\n",
             escape(record_type)
-        ));
+        )
+        .expect("invariant violation: writing to a String");
     }
     source.push_str("}\n");
 
@@ -177,12 +184,14 @@ fn source(records: &[Record]) -> (String, usize) {
     for (source_index, record) in records.iter().enumerate() {
         for reference in &record.references {
             if let Some(target_index) = targets.get(reference.target.as_slice()) {
-                source.push_str(&format!(
+                write!(
+                    source,
                     "{} -> {}: \"{}\" {{\n  style.font-size: {EDGE_FONT_SIZE}\n}}\n",
                     node_path(source_index),
                     node_path(*target_index),
                     reference.label
-                ));
+                )
+                .expect("invariant violation: writing to a String");
                 reference_count += 1;
             } else {
                 log::warn!(
@@ -212,40 +221,43 @@ fn labels(records: &[Record]) -> Vec<String> {
     records
         .iter()
         .enumerate()
-        .map(|(index, record)| {
-            if let Some(uuid) = uuid_parts[index] {
-                let mut length = uuid.len().min(8);
-                while length < uuid.len()
-                    && uuid_parts.iter().enumerate().any(|(other_index, other)| {
-                        other_index != index
-                            && other.is_some_and(|other| {
-                                other != uuid && other.starts_with(&uuid[..length])
-                            })
-                    })
-                {
-                    length += 1;
-                }
-                uuid[..length].to_owned()
-            } else if let Some(id) = record.id.as_deref() {
-                shorten(&String::from_utf8_lossy(id))
-            } else {
-                format!("record {} (no ID)", index + 1)
-            }
-        })
+        .map(
+            |(index, record)| match (uuid_parts[index], record.id.as_deref()) {
+                (Some(uuid), _) => unique_prefix(uuid, index, &uuid_parts).to_owned(),
+                (None, Some(id)) => shorten(&String::from_utf8_lossy(id)),
+                (None, None) => format!("record {} (no ID)", index + 1),
+            },
+        )
         .collect()
+}
+
+/// The shortest prefix of at least eight characters that no other record's UUID begins with.
+fn unique_prefix<'uuid>(uuid: &'uuid str, index: usize, uuids: &[Option<&str>]) -> &'uuid str {
+    let mut length = uuid.len().min(8);
+
+    while length < uuid.len()
+        && uuids.iter().enumerate().any(|(other_index, other)| {
+            other_index != index
+                && other.is_some_and(|other| other != uuid && other.starts_with(&uuid[..length]))
+        })
+    {
+        length += 1;
+    }
+
+    &uuid[..length]
 }
 
 /// A color for every record type present, in key order.
 fn colors(records: &[Record]) -> BTreeMap<String, String> {
     let mut result = BTreeMap::new();
-    let mut generated = 0;
+    let mut generated: u16 = 0;
 
     for record in records {
-        result.entry(record.record_type.clone()).or_insert_with(|| {
+        result.entry(record.warc_type.clone()).or_insert_with(|| {
             TYPE_COLORS
                 .iter()
                 .find_map(|(record_type, color)| {
-                    (*record_type == record.record_type).then(|| (*color).to_owned())
+                    (*record_type == record.warc_type).then(|| (*color).to_owned())
                 })
                 .unwrap_or_else(|| {
                     let hue = (generated * 137 + 25) % 360;
@@ -259,11 +271,15 @@ fn colors(records: &[Record]) -> BTreeMap<String, String> {
 }
 
 /// Convert a moderately saturated, light HSL hue to a D2-compatible RGB color.
-fn hsl_color(hue: usize) -> String {
+///
+/// The hue is a degree in `0..360`. Every channel is a rounded value in `0.0..=255.0`, so it
+/// converts to `u8` unchanged.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn hsl_color(hue: u16) -> String {
     let chroma = 0.45_f64;
-    let sector = hue as f64 / 60.0;
+    let sector = f64::from(hue) / 60.0;
     let intermediate = chroma * (1.0 - (sector.rem_euclid(2.0) - 1.0).abs());
-    let (red, green, blue) = match sector as usize {
+    let (red, green, blue) = match hue / 60 {
         0 => (chroma, intermediate, 0.0),
         1 => (intermediate, chroma, 0.0),
         2 => (0.0, chroma, intermediate),
@@ -339,9 +355,8 @@ fn escape(label: &str) -> String {
 /// Open a file in the platform's default graphical viewer.
 fn open(path: &Path) -> Result<()> {
     for mut command in viewer_commands(path) {
-        match command.status() {
-            Ok(status) if status.success() => return Ok(()),
-            Ok(_) | Err(_) => continue,
+        if command.status().is_ok_and(|status| status.success()) {
+            return Ok(());
         }
     }
 
@@ -380,9 +395,9 @@ mod tests {
     const FIRST: &str = "urn:uuid:12345678-a000-4000-8000-000000000000";
     const SECOND: &str = "urn:uuid:12345678-b000-4000-8000-000000000000";
 
-    fn record(record_type: &str, id: Option<&str>, references: &[(&'static str, &str)]) -> Record {
+    fn record(warc_type: &str, id: Option<&str>, references: &[(&'static str, &str)]) -> Record {
         Record {
-            record_type: record_type.to_owned(),
+            warc_type: warc_type.to_owned(),
             id: id.map(|id| id.as_bytes().to_vec()),
             references: references
                 .iter()

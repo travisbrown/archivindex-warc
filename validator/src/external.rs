@@ -51,9 +51,10 @@ pub fn run_warchaeology(file: &Path, resolver: &ToolResolver) -> ValidationResul
     } else {
         ValidationResult::failed(
             NAME,
-            log.total_errors
-                .map(|count| plural(count, "validation error"))
-                .unwrap_or_else(|| exit_summary(&output)),
+            log.total_errors.map_or_else(
+                || exit_summary(&output),
+                |count| plural(count, "validation error"),
+            ),
             details,
         )
     }
@@ -199,17 +200,17 @@ fn combined_output(output: &Output) -> String {
 }
 
 fn exit_summary(output: &Output) -> String {
-    output
-        .status
-        .code()
-        .map(|code| format!("validator exited with status {code}"))
-        .unwrap_or_else(|| "validator was terminated by a signal".to_owned())
+    output.status.code().map_or_else(
+        || "validator was terminated by a signal".to_owned(),
+        |code| format!("validator exited with status {code}"),
+    )
 }
 
 fn summary_count(count: Option<usize>, noun: &str) -> String {
-    count
-        .map(|count| plural(count, noun))
-        .unwrap_or_else(|| "validation completed".to_owned())
+    count.map_or_else(
+        || "validation completed".to_owned(),
+        |count| plural(count, noun),
+    )
 }
 
 /// What Warchaeology's JSON log reported.
