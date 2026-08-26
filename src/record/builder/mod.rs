@@ -430,9 +430,9 @@ macro_rules! builder_end {
             /// # Errors
             ///
             /// Returns [`BlockError::ContentLengthMismatch`] if the builder was told a
-            /// `Content-Length` this block does not have, and
-            /// [`BlockError::UndeclaredRevisitTruncation`] if a `revisit` record under the
-            /// identical payload digest profile carries a block without declaring it truncated.
+            /// `Content-Length` this block does not have. A `revisit` record under the identical
+            /// payload digest profile that carries a block without declaring it truncated is
+            /// refused when it is written.
             pub fn body(self, body: impl Into<Vec<u8>>) -> Result<Record<E>, BlockError> {
                 let sha_1 = self.sha_1;
                 let mut record = RecordHeader::$variant(self.header).with_body(body.into())?;
