@@ -49,6 +49,29 @@ impl CaptureOutcome {
             }
         }
     }
+
+    /// Put the completed exchanges of earlier attempts ahead of this outcome's.
+    pub fn preceded_by(self, mut earlier: Vec<Exchange>) -> Self {
+        match self {
+            Self::Captured {
+                exchanges,
+                redirects,
+            } => {
+                earlier.extend(exchanges);
+                Self::Captured {
+                    exchanges: earlier,
+                    redirects,
+                }
+            }
+            Self::Failed { exchanges, error } => {
+                earlier.extend(exchanges);
+                Self::Failed {
+                    exchanges: earlier,
+                    error,
+                }
+            }
+        }
+    }
 }
 
 /// The precision at which `WARC-Date` fields are recorded.
