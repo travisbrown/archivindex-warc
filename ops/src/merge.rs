@@ -20,7 +20,7 @@ use archivindex_warc::parse::raw;
 use archivindex_warc::value::WarcDate;
 use archivindex_warc::version::WarcVersion;
 
-use crate::files::{compression, open};
+use crate::file::{compression, open};
 use crate::{Error, Result};
 
 /// Fields whose values are record identifiers that may point at a warcinfo record.

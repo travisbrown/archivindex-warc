@@ -3,7 +3,7 @@
 pub mod canonicalize;
 pub mod compress;
 mod error;
-mod files;
+pub mod file;
 pub mod lint;
 pub mod merge;
 pub mod rewrite;
