@@ -322,7 +322,9 @@ impl Display for Finding {
 /// What a lint pass says about one record, or one rule one record breaks.
 ///
 /// `Ok` carries the identifier of a record that breaks no rule. A record breaking several rules
-/// yields one `Err` per rule and no `Ok`. The finding is boxed to keep the common case small.
+/// yields one `Err` per rule and no `Ok`. Since a record can be faulted by the record that follows
+/// it, a record's result is only settled once the next one has been read. The finding is boxed to
+/// keep the common case small.
 pub type Checked = Result<Uri<String>, Box<Finding>>;
 
 /// The record a capture's next record must name and agree with.
@@ -364,8 +366,12 @@ pub struct Linter<R> {
     collection_host: Option<String>,
     /// The capture record expected next, if a capture is under way.
     pending: Option<Pending>,
+    /// The preceding record, if it broke no rule and the record after it may still fault it.
+    clean: Option<Uri<String>>,
     /// Results not yet yielded, since one record can produce several.
     queue: VecDeque<Checked>,
+    /// A read error to yield once the results queued before it have been.
+    deferred: Option<read::Error>,
 }
 
 impl<R: BufRead> Linter<R> {
@@ -377,7 +383,9 @@ impl<R: BufRead> Linter<R> {
             warcinfo_id: None,
             collection_host: None,
             pending: None,
+            clean: None,
             queue: VecDeque::new(),
+            deferred: None,
         }
     }
 
@@ -394,7 +402,11 @@ impl<R: BufRead> Linter<R> {
         let index = self.index;
         self.index += 1;
 
+        let mark = self.queue.len();
         let expected = self.settle(record);
+        // The preceding record is only clean once this one has failed to fault it.
+        self.settle_clean(mark);
+
         let mark = self.queue.len();
         if let Some(violation) = order_violation {
             self.report(index, &record.core().record_id, violation);
@@ -402,7 +414,23 @@ impl<R: BufRead> Linter<R> {
         self.check_record(index, record);
         self.check_capture(index, record, expected);
         if self.queue.len() == mark {
-            self.queue.push_back(Ok(record.core().record_id.clone()));
+            self.clean = Some(record.core().record_id.clone());
+        }
+    }
+
+    /// Queue the held `Ok`, or drop it if a finding was queued past `mark`.
+    fn settle_clean(&mut self, mark: usize) {
+        if self.queue.len() == mark {
+            self.release_clean();
+        } else {
+            self.clean = None;
+        }
+    }
+
+    /// Queue the held `Ok`, now that nothing can fault the record it belongs to.
+    fn release_clean(&mut self) {
+        if let Some(record_id) = self.clean.take() {
+            self.queue.push_back(Ok(record_id));
         }
     }
 
@@ -633,6 +661,7 @@ impl<R: BufRead> Linter<R> {
 
     /// Report a capture left waiting at the end of the file.
     fn finish(&mut self) {
+        let mark = self.queue.len();
         if let Some(pending) = self.pending.take() {
             let violation = match pending.slot {
                 Slot::Response => Violation::RequestWithoutResponse { found: None },
@@ -640,6 +669,18 @@ impl<R: BufRead> Linter<R> {
             };
             self.report(pending.index, &pending.record_id, violation);
         }
+        self.settle_clean(mark);
+    }
+
+    /// Take a record that cannot be checked out of the file, keeping its position.
+    ///
+    /// The capture expectation it might have met is forgotten without a finding, so the record
+    /// before it can no longer be faulted.
+    fn skip(&mut self, error: read::Error) {
+        self.index += 1;
+        self.pending = None;
+        self.release_clean();
+        self.deferred = Some(error);
     }
 
     /// Queue a finding.
@@ -660,24 +701,19 @@ impl<R: BufRead> Iterator for Linter<R> {
             if let Some(checked) = self.queue.pop_front() {
                 return Some(Ok(checked));
             }
+            if let Some(error) = self.deferred.take() {
+                return Some(Err(error));
+            }
 
             match self.records.next() {
                 Some(Ok(untyped)) => {
                     let order_violation = canonical_order_violation(&untyped.header);
                     match Record::<NoExtension>::try_from(untyped) {
                         Ok(record) => self.check(&record, order_violation),
-                        Err(error) => {
-                            self.index += 1;
-                            self.pending = None;
-                            return Some(Err(error.into()));
-                        }
+                        Err(error) => self.skip(error.into()),
                     }
                 }
-                Some(Err(error)) => {
-                    self.index += 1;
-                    self.pending = None;
-                    return Some(Err(error));
-                }
+                Some(Err(error)) => self.skip(error),
                 None => {
                     self.finish();
                     if self.queue.is_empty() {
@@ -990,6 +1026,45 @@ mod tests {
             [WARCINFO_ID, REQUEST_ID, RESPONSE_ID, METADATA_ID]
                 .map(|id| Ok(uri(id)))
                 .to_vec()
+        );
+    }
+
+    /// A record is reported clean only once the record after it has failed to fault it.
+    #[test]
+    fn a_record_the_next_record_faults_yields_no_ok() {
+        let records = [warcinfo(), request(), resource(OTHER_ID)];
+
+        assert_eq!(
+            lint(&records),
+            [
+                Ok(uri(WARCINFO_ID)),
+                Err(Box::new(Finding {
+                    index: 1,
+                    record_id: uri(REQUEST_ID),
+                    violation: Violation::RequestWithoutResponse {
+                        found: Some("resource".to_owned()),
+                    },
+                })),
+                Ok(uri(OTHER_ID)),
+            ]
+        );
+    }
+
+    /// A capture left waiting at the end of the file faults the record that opened it.
+    #[test]
+    fn a_record_the_end_of_the_file_faults_yields_no_ok() {
+        let records = [warcinfo(), request()];
+
+        assert_eq!(
+            lint(&records),
+            [
+                Ok(uri(WARCINFO_ID)),
+                Err(Box::new(Finding {
+                    index: 1,
+                    record_id: uri(REQUEST_ID),
+                    violation: Violation::RequestWithoutResponse { found: None },
+                })),
+            ]
         );
     }
 
