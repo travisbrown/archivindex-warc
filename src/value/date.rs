@@ -31,6 +31,9 @@ pub enum WarcDatePrecision {
 /// WARC 1.0 always serializes this value at second precision. WARC 1.1 preserves the
 /// precision of parsed values. Converting from [`DateTime<Utc>`] uses the shortest fractional
 /// representation that preserves the instant; [`new`](Self::new) accepts an explicit precision.
+///
+/// Both constructors clamp instants to W3C-DTF's representable range, so every value can be
+/// rendered in the field's grammar.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct WarcDate {
     date_time: DateTime<Utc>,
@@ -56,8 +59,10 @@ impl WarcDate {
 
     /// Create a date from an instant at the requested serialized precision.
     ///
-    /// The instant is truncated to the requested precision. `Fraction` digit counts are clamped
-    /// to the range one through nine.
+    /// The instant is moved into the range W3C-DTF can write, saturating a year outside `0000`
+    /// through `9999` and folding a leap second into the second it extends, and is then truncated
+    /// to the requested precision. `Fraction` digit counts are clamped to the range one through
+    /// nine.
     #[must_use]
     // Every component written here comes from a valid date or is a truncation of one, so nothing
     // here can panic.
@@ -65,6 +70,7 @@ impl WarcDate {
     pub fn new(date_time: DateTime<Utc>, precision: WarcDatePrecision) -> Self {
         const TRUNCATED: &str = "invariant violation: a truncated date component is out of range";
 
+        let date_time = renderable(date_time);
         let (date_time, precision) = match precision {
             WarcDatePrecision::Year => (
                 NaiveDate::from_ymd_opt(date_time.year(), 1, 1)
@@ -244,6 +250,7 @@ impl WarcDate {
 
 impl From<DateTime<Utc>> for WarcDate {
     fn from(date_time: DateTime<Utc>) -> Self {
+        let date_time = renderable(date_time);
         let nanoseconds = date_time.nanosecond();
         let precision = if nanoseconds == 0 {
             WarcDatePrecision::Second
@@ -271,6 +278,39 @@ impl Display for WarcDate {
     /// Display using the WARC 1.1 grammar, which can represent every supported precision.
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.to_string_for_version(WarcVersion::V1_1))
+    }
+}
+
+/// Move an instant into the range W3C-DTF can write.
+///
+/// A year outside `0000` through `9999` saturates to the nearest instant in range. A leap second,
+/// which chrono holds as the nanoseconds past the second it extends, folds into the last nanosecond
+/// of that second, since W3C-DTF has no `60`.
+fn renderable(date_time: DateTime<Utc>) -> DateTime<Utc> {
+    const NANOSECONDS_PER_SECOND: u32 = 1_000_000_000;
+
+    if date_time.year() < 0 {
+        return NaiveDate::from_ymd_opt(0, 1, 1)
+            .expect("invariant violation: the first day of year zero is a date")
+            .and_time(NaiveTime::MIN)
+            .and_utc();
+    }
+    if date_time.year() > 9999 {
+        return NaiveDate::from_ymd_opt(9999, 12, 31)
+            .expect("invariant violation: the last day of year 9999 is a date")
+            .and_time(
+                NaiveTime::from_hms_nano_opt(23, 59, 59, NANOSECONDS_PER_SECOND - 1)
+                    .expect("invariant violation: the last nanosecond of a day is a time"),
+            )
+            .and_utc();
+    }
+
+    if date_time.nanosecond() < NANOSECONDS_PER_SECOND {
+        date_time
+    } else {
+        date_time
+            .with_nanosecond(NANOSECONDS_PER_SECOND - 1)
+            .expect("invariant violation: a nanosecond below one second is in range")
     }
 }
 
@@ -306,7 +346,7 @@ fn valid_date_time_layout(value: &str, seconds: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{DateTime, Utc};
+    use chrono::{DateTime, NaiveDate, Utc};
 
     use super::{WarcDate, WarcDatePrecision};
     use crate::version::WarcVersion;
@@ -353,6 +393,54 @@ mod tests {
         assert_eq!(
             WarcDate::new(instant(), WarcDatePrecision::Fraction(12)).to_string(),
             "2020-07-08T02:52:55.123456789Z"
+        );
+    }
+
+    /// A year the grammar cannot write saturates to the nearest instant it can.
+    #[test]
+    fn new_saturates_a_year_outside_the_range_the_grammar_writes() {
+        for (year, precision, expected) in [
+            (12345, WarcDatePrecision::Second, "9999-12-31T23:59:59Z"),
+            (12345, WarcDatePrecision::Year, "9999"),
+            (-40, WarcDatePrecision::Second, "0000-01-01T00:00:00Z"),
+            (-40, WarcDatePrecision::Year, "0000"),
+        ] {
+            let date_time = NaiveDate::from_ymd_opt(year, 6, 7)
+                .expect("a date")
+                .and_hms_opt(8, 9, 10)
+                .expect("a time")
+                .and_utc();
+            let date = WarcDate::new(date_time, precision);
+
+            assert_eq!(date.to_string(), expected, "{year} {precision:?}");
+            assert_eq!(
+                date,
+                WarcDate::parse(expected, WarcVersion::V1_1).expect("a parseable date")
+            );
+        }
+    }
+
+    /// A leap second, which the grammar cannot write, folds into the second it extends rather than
+    /// rendering as a `60` no reader accepts.
+    #[test]
+    fn folds_a_leap_second_into_the_second_it_extends() {
+        let leap = NaiveDate::from_ymd_opt(2016, 12, 31)
+            .expect("a date")
+            .and_hms_nano_opt(23, 59, 59, 1_500_000_000)
+            .expect("a leap second")
+            .and_utc();
+
+        assert_eq!(
+            WarcDate::new(leap, WarcDatePrecision::Fraction(9)).to_string(),
+            "2016-12-31T23:59:59.999999999Z"
+        );
+        assert_eq!(
+            WarcDate::new(leap, WarcDatePrecision::Second).to_string(),
+            "2016-12-31T23:59:59Z"
+        );
+        assert_eq!(
+            WarcDate::from(leap).to_string(),
+            "2016-12-31T23:59:59.999999999Z"
         );
     }
 
