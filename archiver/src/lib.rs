@@ -106,7 +106,7 @@ pub struct Config {
     ///
     /// A response reaching the limit is truncated rather than failed: its record holds the bytes
     /// received up to the limit and carries a `WARC-Truncated` reason of `length`. Response size is
-    /// unbounded when unset.
+    /// unbounded when unset. The default is [`recorder::DEFAULT_MAX_RESPONSE_LENGTH`].
     pub max_response_length: Option<u64>,
 }
 
