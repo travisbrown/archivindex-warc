@@ -334,8 +334,7 @@ fn is_warchaeology(path: &Path) -> bool {
         return false;
     }
     serde_json::from_slice::<serde_json::Value>(&output.stdout)
-        .ok()
-        .is_some_and(|value| value.get("gitVersion").is_some() && value.get("platform").is_some())
+        .is_ok_and(|value| value.get("gitVersion").is_some() && value.get("platform").is_some())
 }
 
 /// Download an artifact and verify it against its pinned SHA-256 digest.
