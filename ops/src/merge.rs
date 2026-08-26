@@ -418,8 +418,8 @@ mod tests {
             "second.warc",
             &warcinfo(ID_B, "2024-05-02T00:00:00Z", "sha1:BBBB", &[]),
         );
-        // A name opening with a quote is read as a quoted string, which it does not close.
-        let output = directory.path().join("\"merged.warc");
+        // DEL is a control character, which no platform forbids in a file name.
+        let output = directory.path().join("merged\u{7f}.warc");
 
         merge(&first, &second, &output).unwrap();
 
