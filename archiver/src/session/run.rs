@@ -17,7 +17,8 @@ use crate::client::outcome::{CaptureOutcome, Exchange};
 
 enum AttemptOutcome {
     Finished(CaptureOutcome),
-    Cancelled,
+    /// The event sink cancelled the capture, after the exchanges of any completed attempts.
+    Cancelled(Vec<Exchange>),
 }
 
 enum CrawlOutcome {
@@ -119,7 +120,12 @@ impl Session<'_> {
             }
             let mut outcome = match self.capture_with_retry(&url, &collection) {
                 AttemptOutcome::Finished(outcome) => outcome,
-                AttemptOutcome::Cancelled => break CrawlOutcome::Cancelled,
+                AttemptOutcome::Cancelled(exchanges) => {
+                    break match collection.record_abandoned(exchanges, via.as_deref()) {
+                        Ok(()) => CrawlOutcome::Cancelled,
+                        Err(error) => CrawlOutcome::Fatal(error),
+                    };
+                }
             };
             let cancel_after_write = self
                 .events
@@ -212,9 +218,13 @@ impl Session<'_> {
     /// Capture a URL, revalidating the collection's earlier captures and retrying transient
     /// failures, retryable statuses, and responses cut short by a lost connection or an exceeded
     /// time bound, with exponential backoff.
+    ///
+    /// The exchanges every attempt completed are returned in order, ahead of the final attempt's,
+    /// so that the WARC file holds each retried response.
     fn capture_with_retry(&mut self, url: &str, collection: &Collection) -> AttemptOutcome {
         let attempts = self.retry.attempts.max(1);
         let mut delays = RetryDelays::new(&self.retry);
+        let mut earlier = Vec::new();
 
         for attempt in 0..attempts {
             if attempt > 0
@@ -223,26 +233,17 @@ impl Session<'_> {
                     .as_mut()
                     .is_some_and(|events| events.started(url, attempt + 1))
             {
-                return AttemptOutcome::Cancelled;
+                return AttemptOutcome::Cancelled(earlier);
             }
-            match self.archiver.capture(url, Some(collection)) {
-                CaptureOutcome::Failed { exchanges, error }
-                    if is_transient(&error) && attempt + 1 < attempts =>
-                {
-                    drop((exchanges, error));
-                    if self.event(CaptureEvent::Retrying {
-                        url,
-                        attempt: attempt + 2,
-                        delay: delays.backoff,
-                    }) == CaptureControl::Cancel
-                    {
-                        return AttemptOutcome::Cancelled;
-                    }
-                    thread::sleep(delays.backoff);
-                    delays.advance();
+            let last = attempt + 1 == attempts;
+            let (exchanges, delay) = match self.archiver.capture(url, Some(collection)) {
+                CaptureOutcome::Failed { exchanges, error } if is_transient(&error) && !last => {
+                    (exchanges, delays.backoff)
                 }
                 CaptureOutcome::Failed { exchanges, error } => {
-                    return AttemptOutcome::Finished(CaptureOutcome::Failed { exchanges, error });
+                    return AttemptOutcome::Finished(
+                        CaptureOutcome::Failed { exchanges, error }.preceded_by(earlier),
+                    );
                 }
                 CaptureOutcome::Captured {
                     exchanges,
@@ -252,44 +253,51 @@ impl Session<'_> {
                         .last()
                         .map(|exchange| exchange.status)
                         .filter(|status| is_retryable_status(*status));
-                    if attempt + 1 == attempts {
-                        return AttemptOutcome::Finished(match status {
-                            Some(status) => CaptureOutcome::Failed {
-                                exchanges,
-                                error: Error::HttpStatus {
-                                    url: url.to_owned(),
-                                    status,
+                    if last {
+                        return AttemptOutcome::Finished(
+                            match status {
+                                Some(status) => CaptureOutcome::Failed {
+                                    exchanges,
+                                    error: Error::HttpStatus {
+                                        url: url.to_owned(),
+                                        status,
+                                    },
                                 },
-                            },
-                            // A response cut short is kept, and the summary counts it.
-                            None => CaptureOutcome::Captured {
-                                exchanges,
-                                redirects,
-                            },
-                        });
+                                // A response cut short is kept, and the summary counts it.
+                                None => CaptureOutcome::Captured {
+                                    exchanges,
+                                    redirects,
+                                },
+                            }
+                            .preceded_by(earlier),
+                        );
                     }
                     if status.is_none() && !is_retryable_truncation(&exchanges) {
-                        return AttemptOutcome::Finished(CaptureOutcome::Captured {
-                            exchanges,
-                            redirects,
-                        });
+                        return AttemptOutcome::Finished(
+                            CaptureOutcome::Captured {
+                                exchanges,
+                                redirects,
+                            }
+                            .preceded_by(earlier),
+                        );
                     }
-
                     let delay = exchanges
                         .last()
                         .map_or_else(|| delays.backoff, |exchange| delays.for_exchange(exchange));
-                    if self.event(CaptureEvent::Retrying {
-                        url,
-                        attempt: attempt + 2,
-                        delay,
-                    }) == CaptureControl::Cancel
-                    {
-                        return AttemptOutcome::Cancelled;
-                    }
-                    thread::sleep(delay);
-                    delays.advance();
+                    (exchanges, delay)
                 }
+            };
+            earlier.extend(exchanges);
+            if self.event(CaptureEvent::Retrying {
+                url,
+                attempt: attempt + 2,
+                delay,
+            }) == CaptureControl::Cancel
+            {
+                return AttemptOutcome::Cancelled(earlier);
             }
+            thread::sleep(delay);
+            delays.advance();
         }
 
         unreachable!("at least one capture attempt is made")

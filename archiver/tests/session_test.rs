@@ -1221,7 +1221,7 @@ fn session_rejects_an_unwritable_operator_before_writing() -> Result<(), Box<dyn
 #[test]
 fn session_retries_transient_failures_with_backoff() -> Result<(), Box<dyn std::error::Error>> {
     // The first connection stalls past the client timeout before responding; the retry is then
-    // served promptly. Only the successful attempt's exchange is recorded.
+    // served promptly.
     let (port, server) = serve_concurrently_with(2, |attempt, head| {
         if attempt == 0 {
             thread::sleep(Duration::from_millis(300));
@@ -1255,7 +1255,7 @@ fn session_retries_transient_failures_with_backoff() -> Result<(), Box<dyn std::
     assert_eq!(summary.seed_captures.len(), 1);
     assert_eq!(summary.seed_captures[0].status, 200);
 
-    // The failed attempt leaves no trace: one warcinfo record plus one exchange's records.
+    // The stalled attempt completed no exchange: one warcinfo record plus one exchange's records.
     assert_eq!(records(&std::fs::read(&path)?)?.len(), 4);
 
     Ok(())
@@ -1326,6 +1326,22 @@ fn session_retries_retryable_http_statuses() -> Result<(), Box<dyn std::error::E
             "written"
         ]
     );
+
+    // Both attempts are archived, the 503 ahead of the 200.
+    let records = records(&std::fs::read(&path)?)?;
+    assert_eq!(
+        records.iter().map(Record::type_name).collect::<Vec<_>>(),
+        [
+            "warcinfo", "request", "response", "metadata", "request", "response", "metadata"
+        ]
+    );
+    let (Record::Response { body: first, .. }, Record::Response { body: second, .. }) =
+        (&records[2], &records[5])
+    else {
+        panic!("both attempts should store full response records");
+    };
+    assert!(first.starts_with(b"HTTP/1.1 503 ") && first.ends_with(b"try later"));
+    assert!(second.starts_with(b"HTTP/1.1 200 ") && second.ends_with(b"complete"));
 
     Ok(())
 }
@@ -1423,6 +1439,70 @@ fn session_reports_exhausted_http_status_retries() -> Result<(), Box<dyn std::er
         summary.failures[0].error,
         Error::HttpStatus { status: 503, .. }
     ));
+
+    // Every attempt's response is archived, the repeated body as a revisit, though the URL is
+    // recorded as a failure.
+    let records = records(&std::fs::read(&path)?)?;
+    assert_eq!(
+        records.iter().map(Record::type_name).collect::<Vec<_>>(),
+        [
+            "warcinfo", "request", "response", "metadata", "request", "revisit", "metadata"
+        ]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn session_cancelled_during_a_retry_keeps_the_completed_attempt()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (port, server) = serve_with(1, |head| {
+        (
+            plain(
+                "503 Service Unavailable",
+                "content-type: text/plain",
+                "busy",
+            ),
+            request_path(head).to_owned(),
+        )
+    })?;
+    let url = format!("http://127.0.0.1:{port}/");
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("status-cancelled.warc.gz");
+
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "status-cancelled",
+        operator(),
+        [&url],
+        &path,
+    )?
+    .events(|event: CaptureEvent<'_>| {
+        if matches!(event, CaptureEvent::Retrying { .. }) {
+            CaptureControl::Cancel
+        } else {
+            CaptureControl::Continue
+        }
+    })
+    .retry(RetryConfig {
+        attempts: 2,
+        initial_backoff: Duration::from_secs(30),
+        max_backoff: Duration::from_secs(30),
+    })
+    .run()?;
+    server.join().expect("server thread should not panic");
+
+    // The cancelled capture is neither a capture nor a failure, but its 503 exchange is archived.
+    assert!(summary.cancelled);
+    assert!(summary.seed_captures.is_empty());
+    assert!(summary.failures.is_empty());
+    assert_eq!(
+        records(&std::fs::read(&path)?)?
+            .iter()
+            .map(Record::type_name)
+            .collect::<Vec<_>>(),
+        ["warcinfo", "request", "response", "metadata"]
+    );
 
     Ok(())
 }

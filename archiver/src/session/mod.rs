@@ -3,8 +3,9 @@
 //! A processor may inspect successful responses, propose page titles, discover deduplicated URLs,
 //! and deliberately request recaptures. A recapture of a URL whose earlier response carried an
 //! `ETag` or `Last-Modified` validator is requested conditionally, so that the server may answer
-//! `304 Not Modified` instead of repeating the payload. Sessions retry transient failures and
-//! preserve completed work when a later recording failure ends the crawl.
+//! `304 Not Modified` instead of repeating the payload. Sessions retry transient failures,
+//! archiving the exchanges of every attempt, and preserve completed work when a later recording
+//! failure ends the crawl.
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -150,6 +151,11 @@ pub trait CaptureProcessor {
 }
 
 /// Retry policy for transient network failures.
+///
+/// The exchanges every attempt completes are written to the WARC file, ahead of the final
+/// attempt's, and may serve as revisit targets like any other. The final attempt alone determines
+/// the capture's summary and what the processor sees. Each earlier attempt's response stays in
+/// memory until the URL's capture is written.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetryConfig {
     /// Total attempts, including the first. Zero is treated as one.
