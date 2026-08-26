@@ -340,13 +340,24 @@ impl<F: fields::Field> FieldsBlock<F> {
         }
     }
 
-    /// Read a record's block as its fields when its `Content-Type` declares them, and keep it
-    /// as the bytes it arrived as otherwise.
-    fn read(content_type: Option<&MediaType>, body: Vec<u8>) -> Result<Self, BlockError> {
-        if content_type.is_some_and(|media_type| media_type.is("application", "warc-fields")) {
-            Ok(Self::Fields(fields::Body::parse(&body)?))
-        } else {
-            Ok(Self::Raw(body))
+    /// Read a record's block as its fields when its `Content-Type` declares them, and keep it as
+    /// the bytes it arrived as otherwise.
+    ///
+    /// A block the record declares truncated is not a complete entity, so one that does not parse
+    /// is kept as the bytes it arrived as rather than refused.
+    fn read(
+        content_type: Option<&MediaType>,
+        truncated: bool,
+        body: Vec<u8>,
+    ) -> Result<Self, BlockError> {
+        if !content_type.is_some_and(|media_type| media_type.is("application", "warc-fields")) {
+            return Ok(Self::Raw(body));
+        }
+
+        match fields::Body::parse(&body) {
+            Ok(fields) => Ok(Self::Fields(fields)),
+            Err(_) if truncated => Ok(Self::Raw(body)),
+            Err(error) => Err(error.into()),
         }
     }
 }
@@ -990,7 +1001,8 @@ impl<E: Extension> RecordHeader<E> {
     /// Pair this header with a content block to create a record.
     ///
     /// A `warcinfo` or `metadata` block declared as `application/warc-fields` is parsed into
-    /// fields. Other blocks remain raw.
+    /// fields. Other blocks remain raw, as does such a block that does not parse when the record
+    /// declares it truncated.
     ///
     /// A declared `Content-Length` must match the block. The resulting record stores its actual
     /// length.
@@ -1003,7 +1015,7 @@ impl<E: Extension> RecordHeader<E> {
     ///
     /// Returns [`BlockError::ContentLengthMismatch`] if the header block declares a
     /// `Content-Length` the given block does not have, [`BlockError::Fields`] if the block is
-    /// declared `application/warc-fields` and is not, and
+    /// declared `application/warc-fields`, is not, and is not declared truncated, and
     /// [`BlockError::UndeclaredRevisitTruncation`] if a `revisit` record under the identical
     /// payload digest profile carries a block without declaring it truncated.
     pub fn with_body(mut self, body: Vec<u8>) -> Result<Record<E>, BlockError> {
@@ -1018,11 +1030,19 @@ impl<E: Extension> RecordHeader<E> {
 
         let record = match self {
             Self::Warcinfo(header) => {
-                let body = FieldsBlock::read(header.core.content_type.as_ref(), body)?;
+                let body = FieldsBlock::read(
+                    header.core.content_type.as_ref(),
+                    header.core.truncated.is_some(),
+                    body,
+                )?;
                 Record::Warcinfo { header, body }
             }
             Self::Metadata(header) => {
-                let body = FieldsBlock::read(header.core.content_type.as_ref(), body)?;
+                let body = FieldsBlock::read(
+                    header.core.content_type.as_ref(),
+                    header.core.truncated.is_some(),
+                    body,
+                )?;
                 Record::Metadata { header, body }
             }
             Self::Response(header) => Record::Response { header, body },
@@ -2653,9 +2673,31 @@ mod tests {
         );
     }
 
-    /// A URI is held as the URI it names, and written back in the brackets the declared
-    /// version calls for: WARC 1.0 brackets every one of them, and WARC 1.1 only the five
-    /// whose value is a record identifier.
+    /// WARC 1.1 clause 5.15 lets a record declare its block incomplete, and a `warc-fields` block
+    /// cut mid-field is such a block, so its octets come back as they stand.
+    #[test]
+    fn a_malformed_warc_fields_body_declared_truncated_is_read_as_it_stands() {
+        const BLOCK: &[u8] = b"software: tool/1.0\r\nhttp-he";
+
+        let record = Record::<NoExtension>::try_from(grammar_of(
+            WarcVersion::V1_1,
+            "warcinfo",
+            &[
+                ("Content-Type", "application/warc-fields"),
+                ("WARC-Truncated", "length"),
+            ],
+            BLOCK,
+        ))
+        .expect("a block declared truncated is readable");
+        let Record::Warcinfo { body, .. } = record else {
+            panic!("not a warcinfo");
+        };
+        assert_eq!(body, FieldsBlock::Raw(BLOCK.to_vec()));
+    }
+
+    /// A URI is held as the URI it names, and written back in the brackets the declared version
+    /// calls for: WARC 1.0 brackets every one of them, and WARC 1.1 only the five whose value is a
+    /// record identifier.
     #[test]
     fn a_uri_is_written_bracketed_as_the_version_requires() {
         let mut record = lift_grammar(grammar_of(
