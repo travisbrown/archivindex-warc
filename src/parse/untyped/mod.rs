@@ -19,7 +19,7 @@ use crate::parse::{self, raw};
 ///
 /// This pairs a [`value::Error`](crate::value::Error) with the field that caused it.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("Malformed {name} field: {source}")]
+#[error("malformed {name} field: {source}")]
 pub struct Error {
     /// The field's name, as it was written.
     pub name: String,
@@ -264,7 +264,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "Malformed WARC-Date field: not a timestamp: yesterday"
+            "malformed WARC-Date field: not a timestamp: yesterday"
         );
         assert_eq!(
             std::error::Error::source(&error).map(ToString::to_string),

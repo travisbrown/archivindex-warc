@@ -219,7 +219,7 @@ impl Display for HopsFromSeed {
 
 /// An error returned by reading a `hopsFromSeed` value as [`HopsFromSeed`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("`{symbol}` at byte {offset} of the value names no hop.")]
+#[error("`{symbol}` at byte {offset} of the value names no hop")]
 pub struct UnknownHop {
     /// The character that names no hop.
     pub symbol: char,

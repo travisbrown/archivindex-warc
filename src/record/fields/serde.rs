@@ -76,7 +76,7 @@ pub enum Error {
     #[error(transparent)]
     Field(#[from] fields::Error),
     /// A repeated field was deserialized as a single value instead of a sequence.
-    #[error("The `{name}` field appears {count} times where one value is expected.")]
+    #[error("the `{name}` field appears {count} times where one value is expected")]
     RepeatedField {
         /// The requested field name.
         name: String,
@@ -84,7 +84,7 @@ pub enum Error {
         count: usize,
     },
     /// A field's text cannot be parsed as the requested type.
-    #[error("The `{name}` field cannot be read as {expected}.")]
+    #[error("the `{name}` field cannot be read as {expected}")]
     UnreadableValue {
         /// The requested field name.
         name: String,
@@ -92,7 +92,7 @@ pub enum Error {
         expected: &'static str,
     },
     /// A value has no representation as flat, named text fields.
-    #[error("Unsupported for warc-fields: {0}.")]
+    #[error("unsupported for warc-fields: {0}")]
     Unsupported(&'static str),
     /// Another Serde error, such as a missing required field.
     #[error("{0}")]

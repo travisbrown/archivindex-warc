@@ -32,21 +32,21 @@ use crate::record::extension::{Extension, NoExtension};
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The underlying read from the data source failed.
-    #[error("Error reading data source.")]
+    #[error("cannot read the data source")]
     Source(#[from] std::io::Error),
     /// The record's header block exceeds the supported maximum size.
-    #[error("Record header block too large.")]
+    #[error("record header block too large")]
     HeaderBlockTooLarge,
     /// The record's declared `Content-Length` is too large for its body to be buffered in memory
     /// on this platform.
-    #[error("Record body too large to buffer.")]
+    #[error("record body too large to buffer")]
     BodyTooLarge,
     /// The stream ended before the record's declared `Content-Length` was reached.
-    #[error("Unexpected end of body.")]
+    #[error("unexpected end of body")]
     UnexpectedEndOfBody,
     /// The `\r\n\r\n` terminator after the record's body was missing or malformed. The record
     /// was read completely, but is invalid.
-    #[error("Malformed record terminator.")]
+    #[error("malformed record terminator")]
     MalformedRecordTerminator,
     /// The octets read are not a record.
     ///
@@ -1093,28 +1093,28 @@ mod error_tests {
         let expectations = [
             (
                 Error::Source(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
-                "Error reading data source.",
+                "cannot read the data source",
                 true,
             ),
             (
                 Error::HeaderBlockTooLarge,
-                "Record header block too large.",
+                "record header block too large",
                 false,
             ),
             (
                 Error::BodyTooLarge,
-                "Record body too large to buffer.",
+                "record body too large to buffer",
                 false,
             ),
-            (Error::UnexpectedEndOfBody, "Unexpected end of body.", false),
+            (Error::UnexpectedEndOfBody, "unexpected end of body", false),
             (
                 Error::MalformedRecordTerminator,
-                "Malformed record terminator.",
+                "malformed record terminator",
                 false,
             ),
             (
                 Error::Raw(raw::Error::MissingContentLength),
-                "Missing Content-Length.",
+                "missing Content-Length",
                 false,
             ),
             (
@@ -1122,7 +1122,7 @@ mod error_tests {
                     name: "WARC-Date".to_owned(),
                     source: crate::value::Error::Date("yesterday".to_owned()),
                 }),
-                "Malformed WARC-Date field: not a timestamp: yesterday",
+                "malformed WARC-Date field: not a timestamp: yesterday",
                 true,
             ),
         ];
