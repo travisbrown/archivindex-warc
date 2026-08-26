@@ -17,16 +17,16 @@ const IDENTITY: &[u8] = b"identity";
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Error {
     /// The header section has no terminating empty line.
-    #[error("The HTTP message does not end its header section with an empty line.")]
+    #[error("the HTTP message does not end its header section with an empty line")]
     UnterminatedHeaders,
     /// The message uses an unsupported transfer-coding.
-    #[error("The HTTP message declares the transfer-coding `{0}`, which this crate cannot remove.")]
+    #[error("the HTTP message declares the transfer-coding `{0}`, which this crate cannot remove")]
     UnsupportedTransferCoding(String),
     /// A chunk has an invalid size line.
-    #[error("The chunked message declares `{0}` where a chunk size belongs.")]
+    #[error("the chunked message declares `{0}` where a chunk size belongs")]
     MalformedChunkSize(String),
     /// The chunked body is incomplete.
-    #[error("The chunked message ends before the chunk that closes it.")]
+    #[error("the chunked message ends before the chunk that closes it")]
     IncompleteChunkedBody,
 }
 

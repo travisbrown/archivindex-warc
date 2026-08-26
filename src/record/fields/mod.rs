@@ -26,19 +26,19 @@ use crate::record::fields::dcmi::DcmiTerm;
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Error {
     /// The block contains something other than a named field at the given byte offset.
-    #[error("Not a named field at byte {offset} of the block.")]
+    #[error("not a named field at byte {offset} of the block")]
     NotANamedField {
         /// Where in the block reading stopped.
         offset: usize,
     },
     /// A field's value is not valid UTF-8, which is the only encoding the standard permits.
-    #[error("The value of the `{name}` field is not valid UTF-8.")]
+    #[error("the value of the `{name}` field is not valid UTF-8")]
     InvalidValue {
         /// The name of the field, as it was spelled in the block.
         name: String,
     },
     /// A field carries a name or a value that cannot be written as a valid field line.
-    #[error("The `{name}` field cannot be written: {reason}.")]
+    #[error("the `{name}` field cannot be written: {reason}")]
     UnwritableField {
         /// The field's name, as it was given.
         name: String,

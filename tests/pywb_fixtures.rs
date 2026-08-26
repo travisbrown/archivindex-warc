@@ -181,20 +181,17 @@ fn malformed_compressed_example_is_rejected() {
 #[test]
 fn nonconforming_examples_report_framing_errors() {
     for (name, expected_error) in [
-        ("example-extra.warc", "Malformed record terminator."),
+        ("example-extra.warc", "malformed record terminator"),
         (
             "example-url-agnostic-orig.warc.gz",
-            "Malformed record terminator.",
+            "malformed record terminator",
         ),
         (
             "example-url-agnostic-revisit.warc.gz",
-            "Malformed record terminator.",
+            "malformed record terminator",
         ),
-        ("example.warc", "Malformed record terminator."),
-        (
-            "missing-status-text.warc",
-            "Unexpected end of header block.",
-        ),
+        ("example.warc", "malformed record terminator"),
+        ("missing-status-text.warc", "unexpected end of header block"),
     ] {
         assert_eq!(FIXTURES.read(name).unwrap_err(), expected_error, "{name}");
     }
