@@ -326,9 +326,17 @@ impl RetryDelays {
     }
 
     fn for_exchange(&self, exchange: &Exchange) -> Duration {
-        exchange
-            .response_field("retry-after")
-            .and_then(|value| parse_retry_after(&value, chrono::Utc::now()))
+        self.for_retry_after(
+            exchange.response_field("retry-after").as_deref(),
+            chrono::Utc::now(),
+        )
+    }
+
+    /// The delay a `Retry-After` value asks for, or the backoff when there is none or it cannot be
+    /// read, capped at the maximum.
+    fn for_retry_after(&self, value: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> Duration {
+        value
+            .and_then(|value| parse_retry_after(value, now))
             .unwrap_or(self.backoff)
             .min(self.maximum)
     }
@@ -348,7 +356,9 @@ fn parse_retry_after(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<
         return Some(Duration::from_secs(seconds));
     }
 
-    (crate::http_date::parse(value, now)? - now).to_std().ok()
+    let delay = (crate::http_date::parse(value, now)? - now).to_std();
+
+    Some(delay.unwrap_or(Duration::ZERO))
 }
 
 /// Whether a capture was cut short for a reason another attempt could resolve.
@@ -403,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_after_accepts_seconds_and_future_http_dates_only() {
+    fn retry_after_accepts_seconds_and_http_dates() {
         let now = chrono::Utc.with_ymd_and_hms(2026, 8, 21, 12, 0, 0).unwrap();
 
         assert_eq!(
@@ -428,8 +438,28 @@ mod tests {
         );
         assert_eq!(
             parse_retry_after("Fri, 21 Aug 2026 11:59:00 GMT", now),
-            None
+            Some(Duration::ZERO)
         );
         assert_eq!(parse_retry_after("not a delay", now), None);
+    }
+
+    #[test]
+    fn a_past_retry_after_date_overrides_the_backoff() {
+        let now = chrono::Utc.with_ymd_and_hms(2026, 8, 21, 12, 0, 0).unwrap();
+        let delays = RetryDelays::new(&RetryConfig {
+            attempts: 3,
+            initial_backoff: Duration::from_secs(5),
+            max_backoff: Duration::from_secs(60),
+        });
+
+        assert_eq!(
+            delays.for_retry_after(Some("Fri, 21 Aug 2026 11:59:00 GMT"), now),
+            Duration::ZERO
+        );
+        assert_eq!(
+            delays.for_retry_after(Some("not a delay"), now),
+            Duration::from_secs(5)
+        );
+        assert_eq!(delays.for_retry_after(None, now), Duration::from_secs(5));
     }
 }
