@@ -103,12 +103,12 @@ pub fn is_text(value: &[u8]) -> bool {
     value.iter().copied().all(is_text_char)
 }
 
-/// Whether a value holds no line break other than the `CRLF` of a fold.
+/// Find the first line break that is not the `CRLF` of a fold.
 ///
 /// A fold is `CRLF` followed by at least one space or tab. Any other line break would end the
 /// field line rather than continue the value, so a value holding one cannot be written back as it
 /// was read. Control characters other than line breaks are left to the grammar layer.
-pub fn is_folded_value(value: &[u8]) -> bool {
+pub fn stray_line_break(value: &[u8]) -> Option<usize> {
     let mut index = 0;
     while index < value.len() {
         match value[index] {
@@ -116,16 +116,21 @@ pub fn is_folded_value(value: &[u8]) -> bool {
                 if value.get(index + 1) != Some(&b'\n')
                     || !matches!(value.get(index + 2), Some(b' ' | b'\t'))
                 {
-                    return false;
+                    return Some(index);
                 }
                 index += 3;
             }
-            b'\n' => return false,
+            b'\n' => return Some(index),
             _ => index += 1,
         }
     }
 
-    true
+    None
+}
+
+/// Whether a value holds no line break other than the `CRLF` of a fold.
+pub fn is_folded_value(value: &[u8]) -> bool {
+    stray_line_break(value).is_none()
 }
 
 /// The rule a `quoted-string` did not match.
