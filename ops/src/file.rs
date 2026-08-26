@@ -101,22 +101,33 @@ pub fn is_gzip(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
 }
 
-/// Stream the records of `inputs` through `transform` into `output`, returning the number of
-/// records written.
+/// What a transform wrote.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TransformSummary {
+    /// The number of records written.
+    pub records: usize,
+    /// The number of bytes written, after any compression.
+    pub bytes: u64,
+}
+
+/// Stream the records of `inputs` through `transform` into `output`, written with `compression`.
 ///
 /// The records of each input are read in order, with all of one input's records preceding the
 /// next's, and are numbered from zero across the inputs. A record the closure returns as `None`
-/// is dropped. Both inputs and output are compressed when their paths end in `.gz`, and a
-/// compressed output holds one gzip member per record.
+/// is dropped. An input is decompressed when its path ends in `.gz`; a compressed output holds
+/// one gzip member per record.
 ///
 /// The records are written to `<output>.partial`, synced, and moved into place once the last
 /// one is written, so a failure partway through leaves any file already at `output` as it was,
-/// and a crash after this returns cannot lose the output.
+/// and a crash after this returns cannot lose the output. The move replaces the name rather than
+/// the file it held, so an output that is a hard link or symbolic link to an input leaves the
+/// input as it was.
 pub(crate) fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Record>>>(
     inputs: &[&Path],
     output: &Path,
+    compression: Compression,
     mut transform: F,
-) -> Result<usize> {
+) -> Result<TransformSummary> {
     if let Some(path) = inputs.iter().find(|input| is_same_file(input, output)) {
         return Err(Error::SameInputAndOutput {
             path: (*path).to_owned(),
@@ -137,7 +148,7 @@ pub(crate) fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Recor
         path: partial.clone(),
         source,
     })?;
-    let mut writer = WarcWriter::new(BufWriter::new(file)).with_compression(compression(output));
+    let mut writer = WarcWriter::new(BufWriter::new(file)).with_compression(compression);
     let mut records = 0;
     let mut index = 0;
 
@@ -166,6 +177,7 @@ pub(crate) fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Recor
         }
     }
 
+    let bytes = writer.position();
     writer
         .finish()
         .map_err(io::IntoInnerError::into_error)
@@ -183,7 +195,7 @@ pub(crate) fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Recor
         source,
     })?;
 
-    Ok(records)
+    Ok(TransformSummary { records, bytes })
 }
 
 /// Make the rename that published `output` durable.
@@ -335,7 +347,10 @@ mod tests {
         std::fs::write(&input, resource("body")).unwrap();
         let output = directory.path().join(".").join("input.warc");
 
-        let error = transform(&[&input], &output, |_, record| Ok(Some(record))).unwrap_err();
+        let error = transform(&[&input], &output, Compression::NONE, |_, record| {
+            Ok(Some(record))
+        })
+        .unwrap_err();
 
         assert!(matches!(&error, Error::SameInputAndOutput { path } if path == &input));
     }
@@ -350,7 +365,10 @@ mod tests {
         std::fs::write(&input, contents).unwrap();
         std::fs::write(&output, b"previous").unwrap();
 
-        let error = transform(&[&input], &output, |_, record| Ok(Some(record))).unwrap_err();
+        let error = transform(&[&input], &output, Compression::NONE, |_, record| {
+            Ok(Some(record))
+        })
+        .unwrap_err();
 
         assert!(matches!(error, Error::Read { .. }));
         assert_eq!(std::fs::read(&output).unwrap(), b"previous");
@@ -367,10 +385,53 @@ mod tests {
         stale.write_all(b"stale").unwrap();
         drop(stale);
 
-        let records = transform(&[&input], &output, |_, record| Ok(Some(record))).unwrap();
+        let summary = transform(&[&input], &output, Compression::NONE, |_, record| {
+            Ok(Some(record))
+        })
+        .unwrap();
 
-        assert_eq!(records, 1);
+        assert_eq!(summary.records, 1);
         assert!(!partial_path(&output).exists());
+        assert_eq!(open(&output).unwrap().iter_raw_records().count(), 1);
+    }
+
+    #[test]
+    fn replaces_an_output_hard_linked_to_the_input_without_touching_the_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input.warc");
+        let output = directory.path().join("output.warc.gz");
+        let contents = resource("body");
+        std::fs::write(&input, &contents).unwrap();
+        std::fs::hard_link(&input, &output).unwrap();
+
+        let summary = transform(&[&input], &output, Compression::gzip(), |_, record| {
+            Ok(Some(record))
+        })
+        .unwrap();
+
+        assert_eq!(summary.records, 1);
+        assert_eq!(std::fs::read(&input).unwrap(), contents);
+        assert_eq!(open(&output).unwrap().iter_raw_records().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replaces_an_output_symbolically_linked_to_the_input_with_a_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input.warc");
+        let output = directory.path().join("output.warc.gz");
+        let contents = resource("body");
+        std::fs::write(&input, &contents).unwrap();
+        std::os::unix::fs::symlink(&input, &output).unwrap();
+
+        let summary = transform(&[&input], &output, Compression::gzip(), |_, record| {
+            Ok(Some(record))
+        })
+        .unwrap();
+
+        assert_eq!(summary.records, 1);
+        assert_eq!(std::fs::read(&input).unwrap(), contents);
+        assert!(std::fs::symlink_metadata(&output).unwrap().is_file());
         assert_eq!(open(&output).unwrap().iter_raw_records().count(), 1);
     }
 }

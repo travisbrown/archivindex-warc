@@ -12,7 +12,7 @@ use archivindex_warc::record::fields::warcinfo::WarcinfoField;
 use archivindex_warc::record::{self, FieldsBlock, Record, RenderError};
 use archivindex_warc::value::{LabelledDigest, Text, marker};
 
-use crate::file::transform;
+use crate::file::{compression, transform};
 use crate::header::is_warcinfo;
 use crate::{Error, Result};
 
@@ -169,20 +169,29 @@ impl TwoPartField {
 /// be flushed or moved into place.
 pub fn warcinfo(input: &Path, output: &Path, values: &WarcinfoValues) -> Result<RewriteSummary> {
     let mut rewritten = 0;
-    let records = transform(&[input], output, |index, mut record| {
-        if is_warcinfo(&record.header) {
-            record = rewrite_warcinfo(record, values).map_err(|source| Error::RewriteWarcinfo {
-                path: input.to_owned(),
-                index,
-                source,
-            })?;
-            rewritten += 1;
-        }
+    let summary = transform(
+        &[input],
+        output,
+        compression(output),
+        |index, mut record| {
+            if is_warcinfo(&record.header) {
+                record =
+                    rewrite_warcinfo(record, values).map_err(|source| Error::RewriteWarcinfo {
+                        path: input.to_owned(),
+                        index,
+                        source,
+                    })?;
+                rewritten += 1;
+            }
 
-        Ok(Some(record))
-    })?;
+            Ok(Some(record))
+        },
+    )?;
 
-    Ok(RewriteSummary { records, rewritten })
+    Ok(RewriteSummary {
+        records: summary.records,
+        rewritten,
+    })
 }
 
 /// Lift a warcinfo record, set `values` in its block, and render it again.

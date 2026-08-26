@@ -70,6 +70,10 @@ pub enum Error {
         source: io::Error,
     },
 
+    /// A gzip compression level was outside the levels gzip defines.
+    #[error(transparent)]
+    CompressionLevel(write::Error),
+
     /// An operation was asked to overwrite its input file.
     #[error("input and output must be different files: {}", path.display())]
     SameInputAndOutput {
