@@ -86,7 +86,8 @@ enum Command {
     ///
     /// Exits 1 when the file has findings, and 2, as every command does, when it cannot be read.
     Lint {
-        /// The WARC file to lint; a .gz extension selects gzip decompression.
+        /// The WARC file to lint; a .gz extension selects gzip decompression, whose member
+        /// framing is checked as well.
         #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
@@ -339,7 +340,13 @@ fn compress(input: &Path, level: u32, output: &Path, quiet: bool) -> Result<()> 
 
 /// Report every finding in `input`, returning the outcome the findings call for.
 fn lint(input: &Path, format: LintFormat, quiet: bool) -> Result<CommandOutcome> {
-    let mut linter = Linter::new(archivindex_warc_ops::file::read(input)?);
+    let (reader, framing) = archivindex_warc_ops::file::read_framed(input)?;
+    let mut linter = Linter::new(reader);
+
+    if let Some(framing) = framing {
+        linter = linter.checking_gzip_framing(framing);
+    }
+
     let mut problems = 0;
 
     while let Some(item) = linter.next() {
