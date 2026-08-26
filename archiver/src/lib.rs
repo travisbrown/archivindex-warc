@@ -26,9 +26,9 @@
 //!
 //! The [`session`] module provides queue-driven crawls. A user-supplied processor can inspect each
 //! response, discover URLs, request recaptures, and propose titles for optional metadata. Sessions
-//! retry transient network failures and can use a persistent revisit index to deduplicate captures
-//! and reuse HTTP validators across runs. A `304 Not Modified` response becomes a
-//! `server-not-modified` revisit record.
+//! retry transient network failures, archiving the exchanges of every attempt, and can use a
+//! persistent revisit index to deduplicate captures and reuse HTTP validators across runs. A
+//! `304 Not Modified` response becomes a `server-not-modified` revisit record.
 //!
 //! # Modules
 //!
