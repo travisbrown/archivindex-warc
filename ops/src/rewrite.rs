@@ -10,7 +10,7 @@ use archivindex_warc::record::fields::Body;
 use archivindex_warc::record::fields::dcmi::DcmiTerm;
 use archivindex_warc::record::fields::warcinfo::WarcinfoField;
 use archivindex_warc::record::{self, FieldsBlock, Record, RenderError};
-use archivindex_warc::value::{LabelledDigest, Text};
+use archivindex_warc::value::{LabelledDigest, Text, marker};
 
 use crate::file::transform;
 use crate::{Error, Result};
@@ -226,7 +226,7 @@ fn rewrite_warcinfo(
         block.set(WarcinfoField::Dcmi(DcmiTerm::IsPartOf), id.clone())?;
     }
 
-    // Rendering measures the block and adds a SHA-256 digest when none is declared.
+    // Rendering measures the block, and is asked for a SHA-256 digest when none is declared.
     header.core.content_length = None;
     let mut record = Record::Warcinfo { header, body };
     let declared = record.core().block_digest.clone();
@@ -234,7 +234,7 @@ fn rewrite_warcinfo(
         record.core_mut().block_digest = Some(refreshed_digest(&declared, &record.body_bytes())?);
     }
 
-    Ok(record.into_raw()?)
+    Ok(record.into_raw_with_digests(marker::Sha256)?)
 }
 
 /// The digest of `block` under the algorithm `declared` names.
