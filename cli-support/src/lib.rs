@@ -4,6 +4,52 @@
 
 use std::fmt::Display;
 use std::io::IsTerminal;
+use std::process::ExitCode;
+
+/// The outcome of a command, as its exit status reports it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum CommandOutcome {
+    /// The command did what it was asked.
+    Success = 0,
+    /// The command finished with problems to report about its input.
+    ReportedProblems = 1,
+    /// The command could not do what it was asked.
+    OperationalError = 2,
+}
+
+impl CommandOutcome {
+    /// [`Self::ReportedProblems`] when problems were found, [`Self::Success`] otherwise.
+    #[must_use]
+    pub const fn from_reported_problems(found: bool) -> Self {
+        if found {
+            Self::ReportedProblems
+        } else {
+            Self::Success
+        }
+    }
+}
+
+impl From<CommandOutcome> for ExitCode {
+    fn from(outcome: CommandOutcome) -> Self {
+        Self::from(outcome as u8)
+    }
+}
+
+/// Convert a command result to an exit code, logging operational errors.
+///
+/// The error is written in its alternate form, which for an `anyhow::Error` is its chain of
+/// contexts.
+pub fn exit_code<E: Display>(result: Result<CommandOutcome, E>) -> ExitCode {
+    match result {
+        Ok(outcome) => outcome.into(),
+        Err(error) => {
+            log::error!("{error:#}");
+            CommandOutcome::OperationalError.into()
+        }
+    }
+}
+
 /// A count and the noun it counts, pluralized by the count.
 #[must_use]
 pub fn plural<N: Copy + Display + From<u8> + PartialEq>(count: N, noun: &str) -> String {
@@ -81,9 +127,11 @@ impl Verbosity {
 
 #[cfg(test)]
 mod tests {
+    use std::process::ExitCode;
+
     use clap::Parser;
 
-    use super::Verbosity;
+    use super::{CommandOutcome, Verbosity};
 
     #[derive(Debug, Parser)]
     struct Cli {
@@ -128,5 +176,30 @@ mod tests {
         assert_eq!(super::plural(0_usize, "record"), "0 records");
         assert_eq!(super::plural(1_usize, "record"), "1 record");
         assert_eq!(super::plural(2_u64, "byte"), "2 bytes");
+    }
+
+    #[test]
+    fn outcomes_have_the_documented_exit_codes() {
+        assert_eq!(ExitCode::from(CommandOutcome::Success), ExitCode::from(0));
+        assert_eq!(
+            ExitCode::from(CommandOutcome::ReportedProblems),
+            ExitCode::from(1)
+        );
+        assert_eq!(
+            ExitCode::from(CommandOutcome::OperationalError),
+            ExitCode::from(2)
+        );
+    }
+
+    #[test]
+    fn reported_problems_select_the_outcome() {
+        assert_eq!(
+            CommandOutcome::from_reported_problems(false),
+            CommandOutcome::Success
+        );
+        assert_eq!(
+            CommandOutcome::from_reported_problems(true),
+            CommandOutcome::ReportedProblems
+        );
     }
 }
