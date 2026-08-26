@@ -17,7 +17,8 @@
 //!
 //! Declared digests are preserved when a record is read. Use
 //! [`Record::incorrect_block_digest`] and [`Record::incorrect_payload_digest`] to inspect them.
-//! Rendering validates declared digests and adds missing digests when possible.
+//! Rendering validates declared digests. [`Record::into_raw_with_digests`] adds the digests a
+//! record does not declare.
 //!
 //! Payload digests follow WARC 1.1 clause 5.9. For `application/http`, this means the HTTP
 //! entity-body after transfer-coding has been removed. Some widely used tools digest the message
@@ -62,9 +63,7 @@ use crate::record::header::{
 use crate::record::lift::Lifter;
 use crate::record::record_type::RecordType;
 use crate::record::render::Renderer;
-use crate::value::{
-    Algorithm, LabelledDigest, MediaType, Supported, WarcDate, WarcDatePrecision, marker,
-};
+use crate::value::{Algorithm, LabelledDigest, MediaType, Supported, WarcDate, WarcDatePrecision};
 use crate::version::WarcVersion;
 
 /// The ways a header block and its content block can fail to go together.
@@ -847,13 +846,12 @@ impl<E: Extension> Record<E> {
     /// `Content-Length` comes from the rendered body. If the header also declares a length, the
     /// two must match. Clear or update the declaration after editing a body.
     ///
-    /// `WARC-Block-Digest` is checked against the rendered body, and a record that declares none
-    /// is given one under SHA-256. A digest naming an algorithm this crate does not compute is
-    /// written as read and is not checked.
+    /// `WARC-Block-Digest` is checked against the rendered body. A digest naming an algorithm
+    /// this crate does not compute is written as read and is not checked.
     ///
-    /// `WARC-Payload-Digest` is checked against [`payload_bytes`](Self::payload_bytes). Missing
-    /// digests are added to HTTP `response` and `request` records that are neither segments nor
-    /// truncated.
+    /// `WARC-Payload-Digest` is checked against [`payload_bytes`](Self::payload_bytes). No digest
+    /// is added to a record that declares none; use
+    /// [`into_raw_with_digests`](Self::into_raw_with_digests) for that.
     ///
     /// Clone the record first if it must be retained.
     ///
@@ -875,11 +873,13 @@ impl<E: Extension> Record<E> {
     /// [`BlockError::MalformedPayloadDigest`], [`BlockError::PayloadDigestMismatch`], or
     /// [`BlockError::Payload`] where the payload digest fails as the block digest does.
     pub fn into_raw(self) -> Result<raw::Record, RenderError> {
-        self.into_raw_added(Some(marker::Sha256::ALGORITHM))
+        self.into_raw_added(None)
     }
 
-    /// Render as [`into_raw`](Self::into_raw), using the given algorithm for added digests.
+    /// Render as [`into_raw`](Self::into_raw), adding the digests the record does not declare.
     ///
+    /// A record declaring no `WARC-Block-Digest` is given one, and a `WARC-Payload-Digest` is
+    /// added to HTTP `response` and `request` records that are neither segments nor truncated.
     /// The algorithm is chosen at the type level ([`Supported`]), so an algorithm this build
     /// cannot compute is a compile error. Declared digests are checked exactly as
     /// [`into_raw`](Self::into_raw) checks them.
@@ -892,17 +892,6 @@ impl<E: Extension> Record<E> {
         _algorithm: A,
     ) -> Result<raw::Record, RenderError> {
         self.into_raw_added(Some(A::ALGORITHM))
-    }
-
-    /// Render without adding missing digests.
-    ///
-    /// Declared digests are still validated and preserved.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`into_raw`](Self::into_raw).
-    pub fn into_raw_without_digests(self) -> Result<raw::Record, RenderError> {
-        self.into_raw_added(None)
     }
 
     /// Render, optionally adding block and payload digests.
@@ -1333,7 +1322,7 @@ mod tests {
     use crate::record::extension::{ExtensionFields, ExtensionTruncatedReason, Never, Unclaimed};
     use crate::record::header::SegmentNumber;
     use crate::strategies;
-    use crate::value::Text;
+    use crate::value::{Text, marker};
 
     const RECORD_ID: &str = "urn:uuid:00000000-0000-0000-0000-000000000001";
     const DATE: &str = "2020-07-08T02:52:55Z";
@@ -1398,27 +1387,6 @@ mod tests {
             .header
             .get(name)
             .map(|value| String::from_utf8_lossy(value).trim().to_owned())
-    }
-
-    /// Update a record with the digests rendering would add.
-    ///
-    /// Used when comparing a value before and after a rendering round trip.
-    pub(super) fn as_rendered<E: Extension>(mut record: Record<E>) -> Record<E> {
-        use crate::value::Algorithm;
-
-        if record.core().block_digest.is_none() {
-            let digest =
-                crate::record::digest::added_digest(Algorithm::Sha256, &record.body_bytes());
-            record.core_mut().block_digest = Some(digest);
-        }
-
-        if let Ok(Some(digest)) = check_payload_digest(&record, Some(Algorithm::Sha256))
-            && let Some(headers) = record.payload_mut()
-        {
-            headers.payload_digest = Some(digest);
-        }
-
-        record
     }
 
     /// The names a rendered record's block is written with, in order.
@@ -1656,7 +1624,7 @@ mod tests {
 
         let again = Record::try_from(untyped::Record::try_from(raw).expect("readable record"))
             .expect("liftable record");
-        assert_eq!(again, as_rendered(record));
+        assert_eq!(again, record);
     }
 
     /// A header block is read without the block its record frames, and answers about its fields
@@ -1891,7 +1859,7 @@ mod tests {
         LabelledDigest::parse(value.as_bytes()).expect("a labelled digest")
     }
 
-    /// Rendering adds a SHA-256 block digest when none is declared.
+    /// Rendering with digests gives a record declaring no block digest one.
     #[test]
     fn a_record_declaring_no_block_digest_is_given_one() {
         let raw = lift_grammar(grammar_of(
@@ -1901,7 +1869,7 @@ mod tests {
             DIGESTED_BLOCK,
         ))
         .expect("liftable record")
-        .into_raw()
+        .into_raw_with_digests(marker::Sha256)
         .expect("renderable record");
 
         assert_eq!(
@@ -1931,15 +1899,13 @@ mod tests {
             Some("sha1:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N")
         );
 
-        let undigested = record()
-            .into_raw_without_digests()
-            .expect("renderable record");
+        let undigested = record().into_raw().expect("renderable record");
         assert_eq!(written(&undigested, "WARC-Block-Digest"), None);
 
         // A declared digest the block does not have is still an error without added digests.
         assert!(
             declaring_digest("md5:00000000000000000000000000000000")
-                .into_raw_without_digests()
+                .into_raw()
                 .is_err()
         );
     }
@@ -2152,7 +2118,8 @@ mod tests {
         }
     }
 
-    /// Rendering adds payload digests to requests and responses, but not whole-block payloads.
+    /// Rendering with digests adds payload digests to requests and responses, but not
+    /// whole-block payloads.
     #[test]
     fn a_record_declaring_no_payload_digest_is_given_one() {
         for (record_type, block, digest) in [
@@ -2161,7 +2128,7 @@ mod tests {
             ("resource", DIGESTED_BLOCK, None),
         ] {
             let raw = payload_record(record_type, &[], block)
-                .into_raw()
+                .into_raw_with_digests(marker::Sha256)
                 .expect("renderable record");
 
             assert_eq!(
@@ -2592,7 +2559,9 @@ mod tests {
             ]
         );
 
-        let raw = record.into_raw().expect("renderable record");
+        let raw = record
+            .into_raw_with_digests(marker::Sha256)
+            .expect("renderable record");
         assert_eq!(
             written_names(&raw),
             [
@@ -2627,7 +2596,7 @@ mod tests {
 
         let raw = Record::<NoExtension>::try_from(grammar)
             .expect("liftable record")
-            .into_raw()
+            .into_raw_with_digests(marker::Sha256)
             .expect("renderable record");
 
         assert_eq!(
@@ -2807,10 +2776,7 @@ mod tests {
         };
         let grammar = untyped::Record::try_from(raw).expect("a rendered record is grammatical");
 
-        assert_eq!(
-            Record::<E>::try_from(grammar).ok(),
-            Some(as_rendered(record.clone()))
-        );
+        assert_eq!(Record::<E>::try_from(grammar).ok(), Some(record.clone()));
     }
 
     /// Records read from an archive and then edited through their public fields, which is the
