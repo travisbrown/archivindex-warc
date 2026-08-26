@@ -9,12 +9,16 @@ use fluent_uri::Uri;
 use super::records;
 
 /// The column names written before the first row.
-const HEADER: [&str; 4] = ["type", "date", "record_id", "target_uri"];
+const HEADER: [&str; 4] = ["type", "date", "record_uuid", "target_uri"];
+
+/// The scheme and namespace nearly every record identifier is written in.
+const UUID_PREFIX: &str = "urn:uuid:";
 
 /// Write the type, date, record identifier, and target URI of every record as a CSV row.
 ///
-/// A record identifier in the `urn` scheme is written without that scheme, and a record without a
-/// target URI leaves that field empty. Returns the number of rows written after the header.
+/// A record identifier in the `urn:uuid` namespace is written as a bare UUID and any other is
+/// written in full. A record without a target URI leaves that field empty. Returns the number of
+/// rows written after the header.
 pub fn export<R: BufRead, W: Write>(reader: R, writer: W) -> Result<usize> {
     let mut rows = csv::Writer::from_writer(writer);
     rows.write_record(HEADER)
@@ -30,7 +34,7 @@ pub fn export<R: BufRead, W: Write>(reader: R, writer: W) -> Result<usize> {
         rows.write_record([
             record.type_name(),
             &date,
-            record_id(&core.record_id),
+            record_uuid(&core.record_id),
             record.target_uri().map_or("", Uri::as_str),
         ])
         .with_context(|| format!("cannot write record {index}"))?;
@@ -42,12 +46,13 @@ pub fn export<R: BufRead, W: Write>(reader: R, writer: W) -> Result<usize> {
     Ok(count)
 }
 
-/// A record identifier with any `urn` scheme removed.
-fn record_id(uri: &Uri<String>) -> &str {
-    if uri.scheme().as_str().eq_ignore_ascii_case("urn") {
-        uri.path().as_str()
-    } else {
-        uri.as_str()
+/// A record identifier as a bare UUID, or in full when it is not a `urn:uuid` URI.
+fn record_uuid(uri: &Uri<String>) -> &str {
+    let id = uri.as_str();
+
+    match id.split_at_checked(UUID_PREFIX.len()) {
+        Some((prefix, uuid)) if prefix.eq_ignore_ascii_case(UUID_PREFIX) => uuid,
+        _ => id,
     }
 }
 
@@ -102,8 +107,8 @@ mod tests {
         assert_eq!(count, 2);
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "type,date,record_id,target_uri\n\
-             warcinfo,2024-01-02T03:04:05Z,uuid:1,\n\
+            "type,date,record_uuid,target_uri\n\
+             warcinfo,2024-01-02T03:04:05Z,1,\n\
              resource,2024-01-02T03:04:05.678Z,https://example.com/ids/2,\
              \"https://example.com/a,b\"\n"
         );
