@@ -19,7 +19,7 @@ pub mod warcinfo;
 use std::fmt::Display;
 use std::str;
 
-use crate::parsing::{is_text, is_token};
+use crate::parsing::{is_lws, is_text, is_token};
 use crate::record::fields::dcmi::DcmiTerm;
 
 /// An error returned by reading a record body written as `application/warc-fields`.
@@ -93,8 +93,9 @@ pub trait Field: Sized + Clone + Eq + 'static {
 /// A parsed body keeps its source block for byte-exact round-tripping. Changing the body discards
 /// the source, after which the fields are rendered canonically. See [`source`](Self::source).
 ///
-/// A field of a body is one the grammar can write back: [`push`](Self::push) refuses a name that
-/// is not a token or a value that is not `TEXT`, and a parsed block holds nothing else.
+/// A field of a body is one the grammar can write back and read again as it stands:
+/// [`push`](Self::push) refuses a name that is not a token, a value that is not `TEXT`, and a
+/// value opening with white space, and a parsed block holds nothing else.
 #[derive(Clone, Debug)]
 pub struct Body<F> {
     fields: Vec<(F, String)>,
@@ -149,9 +150,10 @@ impl<F: Field> Body<F> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::UnwritableField`] if the field's name is not a token or its value is not
-    /// `TEXT`. A value holding a line break would be read back as a field of its own, and a name
-    /// outside the token grammar would not be read back as a field at all.
+    /// Returns [`Error::UnwritableField`] if the field's name is not a token, its value is not
+    /// `TEXT`, or its value opens with white space. A value holding a line break would be read
+    /// back as a field of its own, a name outside the token grammar would not be read back as a
+    /// field at all, and white space opening a value is read as the space after the colon.
     pub fn push(&mut self, field: impl Into<F>, value: impl Into<String>) -> Result<(), Error> {
         let field = field.into();
         let value = value.into();
@@ -322,6 +324,14 @@ fn check_writable<F: Field>(field: &F, value: &str) -> Result<(), Error> {
         return Err(Error::UnwritableField {
             name: field.name().to_owned(),
             reason: "the value holds a control character".to_owned(),
+        });
+    }
+    // The space a field line writes after its colon is not part of the value, so a value opening
+    // with white space is read back without it.
+    if value.as_bytes().first().copied().is_some_and(is_lws) {
+        return Err(Error::UnwritableField {
+            name: field.name().to_owned(),
+            reason: "the value opens with white space".to_owned(),
         });
     }
 
@@ -569,6 +579,33 @@ mod tests {
 
         body.push("x-custom", "one\ttwo three")?;
         assert_eq!(body.to_string(), "x-custom: one\ttwo three\r\n");
+
+        Ok(())
+    }
+
+    /// The space after the colon is not part of the value, so a value opening with white space
+    /// would be read back without it and is refused rather than written.
+    #[test]
+    fn a_value_opening_with_white_space_is_refused() -> Result<(), Error> {
+        let mut body = WarcinfoBody::new();
+
+        for value in [" lead", "\tlead"] {
+            assert_eq!(
+                body.push("x-custom", value),
+                Err(Error::UnwritableField {
+                    name: "x-custom".to_string(),
+                    reason: "the value opens with white space".to_string()
+                }),
+                "{value:?}"
+            );
+        }
+
+        // Space elsewhere in a value survives being written and read again.
+        body.push("x-custom", "two  spaces ")?;
+        assert_eq!(
+            WarcinfoBody::parse(body.to_string().as_bytes())?.get(&"x-custom".into()),
+            Some("two  spaces ")
+        );
 
         Ok(())
     }
