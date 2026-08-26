@@ -10,7 +10,7 @@ use archivindex_warc::parse::raw;
 use archivindex_warc::parse::untyped::name::Field;
 
 use crate::Result;
-use crate::file::transform;
+use crate::file::{compression, transform};
 
 /// What was written to the canonicalized file.
 #[derive(Debug)]
@@ -31,13 +31,15 @@ pub struct CanonicalizeSummary {
 /// Returns an error when the input and output paths are the same, a file cannot be opened, a
 /// record cannot be read or written, or the output cannot be flushed or moved into place.
 pub fn canonicalize(input: &Path, output: &Path) -> Result<CanonicalizeSummary> {
-    let records = transform(&[input], output, |_, mut record| {
+    let summary = transform(&[input], output, compression(output), |_, mut record| {
         canonicalize_header(&mut record.header);
 
         Ok(Some(record))
     })?;
 
-    Ok(CanonicalizeSummary { records })
+    Ok(CanonicalizeSummary {
+        records: summary.records,
+    })
 }
 
 /// Respell standard fields and put them before extension fields in conventional order.
