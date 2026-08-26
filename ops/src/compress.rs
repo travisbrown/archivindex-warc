@@ -68,10 +68,10 @@ pub fn compress<R: BufRead, W: Write>(
 
 /// Compress the WARC file at `input` into the file at `output` at `level`.
 ///
-/// The records are compressed as by [`compress`], but written to `<output>.partial` and moved
-/// into place once the last one is written, so a failure leaves any file already at `output` as
-/// it was, and an output that is a hard link or symbolic link to the input leaves the input as
-/// it was.
+/// The records are compressed as by [`compress`], but written to `<output>.partial`, which must
+/// not already exist, and moved into place once the last one is written, so a failure leaves any
+/// file already at `output` as it was, and an output that is a hard link or symbolic link to the
+/// input leaves the input as it was.
 ///
 /// # Errors
 ///
