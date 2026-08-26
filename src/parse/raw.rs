@@ -25,7 +25,10 @@ use crate::version::WarcVersion;
 /// [`io::write::Error`](crate::io::write::Error).
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Error {
-    /// The record's version line names a version this crate does not support.
+    /// The record's version line names a version other than WARC 1.0 or 1.1.
+    ///
+    /// The rest of the header block is not parsed, so a reader cannot frame the record's body
+    /// and stops at it.
     #[error(transparent)]
     MalformedVersion(#[from] crate::version::Error),
     /// The record does not open with a `WARC/` version line at all.

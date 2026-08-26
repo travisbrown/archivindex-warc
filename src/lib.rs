@@ -26,6 +26,18 @@
 //! fields, fields unavailable in the declared version, and names or values that cannot form a
 //! valid header line. [`io::read::Error`] and [`io::write::Error`] add stream failures.
 //!
+//! Field values are read and written as they are spelled. Clause 4 of the WARC 1.1 standard admits
+//! non-ASCII characters in a field value only as the encoded words of RFC 2047, a mechanism the
+//! [annotated standard][annotated] finds underspecified for WARC, rarely implemented, and
+//! obsoleted by Unicode. Its community recommendation #67 is not to implement it, and this crate
+//! follows that: an encoded word reaches the caller as it was read, and a value is written as it
+//! was given.
+//!
+//! WARC 1.0 and 1.1 are the versions read and written. A record declaring any other version is
+//! a stream failure rather than a record-level error: the reader frames a record by the
+//! `Content-Length` in its header block, which it does not parse under a version it does not
+//! know, so it cannot skip to the next record and iteration ends there.
+//!
 //! [annotated]:
 //!   https://iipc.github.io/warc-specifications/specifications/warc-format/warc-1.1-annotated/
 //! [warc-crate]: https://crates.io/crates/warc

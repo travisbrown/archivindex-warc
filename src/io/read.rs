@@ -41,6 +41,9 @@ pub enum Error {
     #[error("Malformed record terminator.")]
     MalformedRecordTerminator,
     /// The octets read are not a record.
+    ///
+    /// This includes a record declaring a version this crate does not read. Its header block is
+    /// not parsed, so its body cannot be skipped, and iteration ends at that record.
     #[error(transparent)]
     Raw(#[from] raw::Error),
     /// A field's value does not match the grammar its name selects.
@@ -490,7 +493,10 @@ impl<R: BufRead> Reading<R> {
 /// An iterator over the records of a reader, at the raw level.
 ///
 /// After an I/O or framing error the underlying reader is at an unspecified position, so the
-/// iterator is fused: every further call returns `None`.
+/// iterator is fused: every further call returns `None`. A record declaring a WARC version other
+/// than 1.0 or 1.1 is a framing error: the body is framed by the `Content-Length` of a header
+/// block this crate parses only under a version it knows, so the record cannot be skipped and the
+/// rest of the stream is unreachable.
 pub struct RawIter<R> {
     reading: Reading<R>,
 }
@@ -824,6 +830,36 @@ mod iter_raw_tests {
             Some(Err(Error::MalformedRecordTerminator))
         ));
         assert!(reader.next().is_none());
+        assert!(reader.next().is_none());
+    }
+
+    /// A version this crate does not read is a framing error, so the records after it are not
+    /// reached.
+    #[test]
+    fn raw_iter_fuses_after_an_unsupported_version() {
+        let raw = b"\
+            WARC/1.2\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:after-version:record-1>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(Error::Raw(raw::Error::MalformedVersion(crate::version::Error(version)))))
+                if version == "1.2"
+        ));
         assert!(reader.next().is_none());
     }
 
