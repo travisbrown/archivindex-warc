@@ -9,12 +9,15 @@
 //! carry the same fields other than `WARC-Record-ID`, `WARC-Date`, `WARC-Filename`,
 //! `WARC-Block-Digest`, and `WARC-Payload-Digest`. Field order, field name case, and white space
 //! around values do not affect matching.
+//!
+//! A warcinfo record that declares a `WARC-Filename` has it rewritten to the name of the output,
+//! which is the file it is then in.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use archivindex_warc::parse::raw;
-use archivindex_warc::value::WarcDate;
+use archivindex_warc::value::{Text, WarcDate};
 use archivindex_warc::version::WarcVersion;
 
 use crate::file::{open, transform};
@@ -50,9 +53,10 @@ pub struct MergeSummary {
 /// Merge the records of two WARC files into `output`.
 ///
 /// Records keep their order, with all of `first` preceding all of `second`. Matching warcinfo
-/// records are merged as described in the module documentation. A path with a `.gz` extension
-/// names a gzip-compressed file; a compressed output holds one gzip member per record. The output
-/// is written beside itself and moved into place once the last record is written.
+/// records are merged and `WARC-Filename` is rewritten as described in the module documentation.
+/// A path with a `.gz` extension names a gzip-compressed file; a compressed output holds one gzip
+/// member per record. A temporary file beside `output` is moved into place after the last record
+/// is written.
 ///
 /// # Errors
 ///
@@ -152,6 +156,7 @@ impl MergePlan {
         let Self { actions, redirects } = self;
         let mut actions = actions.into_iter();
         let mut merged = 0;
+        let filename = output_filename(output);
         let records = transform(&[first, second], output, |_, mut record| {
             if is_warcinfo(&record.header) {
                 match actions.next().ok_or(Error::WarcinfoRecordsChanged)? {
@@ -166,6 +171,8 @@ impl MergePlan {
                         return Ok(None);
                     }
                 }
+
+                set_filename(&mut record.header, filename.as_deref());
             }
 
             redirect_references(&mut record.header, &redirects);
@@ -214,6 +221,39 @@ fn redirect_references(header: &mut raw::RecordHeader, redirects: &HashMap<Vec<u
             value.clone_from(replacement);
         }
     }
+}
+
+/// The `WARC-Filename` value naming the output, when its name can be written as one.
+///
+/// A name that is not valid UTF-8, or that no `TEXT` value can spell, has no accurate field value.
+fn output_filename(output: &Path) -> Option<Vec<u8>> {
+    let name = output.file_name()?.to_str()?;
+    let spelled = Text::parse(name.as_bytes()).ok()?;
+    let spelled = spelled.to_bytes();
+    let mut value = Vec::with_capacity(spelled.len() + 1);
+    value.push(b' ');
+    value.extend_from_slice(&spelled);
+
+    Some(value)
+}
+
+/// Name the file a warcinfo record is now in, dropping the field when it cannot be named.
+///
+/// WARC 1.1 clause 5.17 defines `WARC-Filename` as the name of the containing file, so a record
+/// written into the output cannot keep the name of the file it was read from.
+fn set_filename(header: &mut raw::RecordHeader, filename: Option<&[u8]>) {
+    header.headers.retain_mut(|(name, value)| {
+        if !name.eq_ignore_ascii_case("WARC-Filename") {
+            return true;
+        }
+        let Some(filename) = filename else {
+            return false;
+        };
+        value.clear();
+        value.extend_from_slice(filename);
+
+        true
+    });
 }
 
 /// Whether a header block declares a warcinfo record.
@@ -344,14 +384,13 @@ mod tests {
             "via: https://example.com/\r\n",
         ));
 
-        let second_warcinfo = warcinfo(
+        let second_response = response("<urn:uuid:eeeeeeee-0000-4000-8000-000000000000>", ID_B);
+        let mut second_contents = warcinfo(
             ID_B,
             "2024-05-01T00:00:00Z",
             "sha1:BBBB",
             &[("WARC-Filename", "second.warc")],
         );
-        let second_response = response("<urn:uuid:eeeeeeee-0000-4000-8000-000000000000>", ID_B);
-        let mut second_contents = second_warcinfo.clone();
         second_contents.extend_from_slice(&second_response);
 
         let first = write_file(directory.path(), "first.warc", &first_contents);
@@ -365,8 +404,17 @@ mod tests {
         let records = read_records(&output);
         assert_eq!(records.len(), 4);
 
-        // The second file's warcinfo record is kept, at the first file's position.
-        assert_eq!(records[0].to_bytes().unwrap(), second_warcinfo);
+        // The second file's warcinfo record is kept, at the first file's position, under the
+        // name of the file it is now in.
+        assert_eq!(
+            records[0].to_bytes().unwrap(),
+            warcinfo(
+                ID_B,
+                "2024-05-01T00:00:00Z",
+                "sha1:BBBB",
+                &[("WARC-Filename", "merged.warc")]
+            )
+        );
 
         // References to the dropped record point at the kept one; others are untouched.
         assert_eq!(trimmed(&records[1], "WARC-Warcinfo-ID").unwrap(), ID_B);
@@ -378,6 +426,37 @@ mod tests {
 
         // A record referencing the kept warcinfo record round-trips byte for byte.
         assert_eq!(records[3].to_bytes().unwrap(), second_response);
+    }
+
+    /// A `WARC-Filename` that cannot be spelled as a `TEXT` value is dropped rather than left
+    /// naming a file the record is not in.
+    #[test]
+    fn drops_a_filename_the_output_cannot_be_named_by() {
+        let directory = tempfile::tempdir().unwrap();
+
+        let first = write_file(
+            directory.path(),
+            "first.warc",
+            &warcinfo(
+                ID_A,
+                "2024-05-01T00:00:00Z",
+                "sha1:AAAA",
+                &[("WARC-Filename", "first.warc")],
+            ),
+        );
+        let second = write_file(
+            directory.path(),
+            "second.warc",
+            &warcinfo(ID_B, "2024-05-02T00:00:00Z", "sha1:BBBB", &[]),
+        );
+        // A name opening with a quote is read as a quoted string, which it does not close.
+        let output = directory.path().join("\"merged.warc");
+
+        merge(&first, &second, &output).unwrap();
+
+        let records = read_records(&output);
+        assert_eq!(records.len(), 1);
+        assert_eq!(trimmed(&records[0], "WARC-Filename"), None);
     }
 
     /// A date tie is broken in favor of the first file's record.
