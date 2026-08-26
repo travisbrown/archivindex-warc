@@ -51,13 +51,14 @@ pub struct MergeSummary {
 ///
 /// Records keep their order, with all of `first` preceding all of `second`. Matching warcinfo
 /// records are merged as described in the module documentation. A path with a `.gz` extension
-/// names a gzip-compressed file; a compressed output holds one gzip member per record.
+/// names a gzip-compressed file; a compressed output holds one gzip member per record. The output
+/// is written beside itself and moved into place once the last record is written.
 ///
 /// # Errors
 ///
 /// Returns an error when the output path is also an input path, a file cannot be opened, a record
-/// cannot be read or written, or a warcinfo record whose duplicates are dropped has no
-/// `WARC-Record-ID` to redirect their references to.
+/// cannot be read or written, a warcinfo record whose duplicates are dropped has no
+/// `WARC-Record-ID` to redirect their references to, or the output cannot be moved into place.
 pub fn merge(first: &Path, second: &Path, output: &Path) -> Result<MergeSummary> {
     let plan = MergePlan::build(first, second)?;
 

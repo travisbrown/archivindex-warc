@@ -23,12 +23,13 @@ pub struct CanonicalizeSummary {
 ///
 /// Standard field names are respelled and sorted into conventional order. Extension field names,
 /// all field values, bodies, and record order are preserved. A path with a `.gz` extension names
-/// a gzip-compressed file; a compressed output holds one gzip member per record.
+/// a gzip-compressed file; a compressed output holds one gzip member per record. A temporary file
+/// beside `output` is moved into place after the last record is written.
 ///
 /// # Errors
 ///
 /// Returns an error when the input and output paths are the same, a file cannot be opened, a
-/// record cannot be read or written, or the output cannot be flushed.
+/// record cannot be read or written, or the output cannot be flushed or moved into place.
 pub fn canonicalize(input: &Path, output: &Path) -> Result<CanonicalizeSummary> {
     let records = transform(&[input], output, |_, mut record| {
         canonicalize_header(&mut record.header);
