@@ -258,8 +258,9 @@ pub fn reconstruct_response(
 
 /// Reconstruct an HTTP/1.1 request block from parsed message parts.
 ///
-/// The target is written in origin-form; `headers` must therefore contain the authority in
-/// `Host`. With `body` set to `None`, headers are preserved. For a provided body,
+/// The target is written in origin-form, for which `headers` must contain the authority in
+/// `Host`, except under `CONNECT`, which takes the authority-form RFC 9112 section 3.2.3 defines.
+/// With `body` set to `None`, headers are preserved. For a provided body,
 /// `Transfer-Encoding` is removed and the length is written unless a lone `Content-Length`
 /// already matches.
 ///
@@ -271,9 +272,13 @@ pub fn reconstruct_request(
     headers: &HeaderMap,
     body: Option<&[u8]>,
 ) -> Vec<u8> {
-    let target = target
-        .path_and_query()
-        .map_or("/", http::uri::PathAndQuery::as_str);
+    let target = if method == Method::CONNECT {
+        target.authority().map_or("/", http::uri::Authority::as_str)
+    } else {
+        target
+            .path_and_query()
+            .map_or("/", http::uri::PathAndQuery::as_str)
+    };
     let mut message = Vec::with_capacity(
         method.as_str().len() + target.len() + 12 + header_capacity(headers, body),
     );
@@ -670,6 +675,24 @@ mod tests {
         );
 
         assert_eq!(message, b"GET / HTTP/1.1\r\n\r\n");
+    }
+
+    /// A `CONNECT` target is the authority to open a tunnel to, which has no path to write.
+    #[test]
+    fn connect_request_target_is_written_in_authority_form() {
+        let target: Uri = "https://example.com:443".parse().unwrap();
+        let message = reconstruct_request(
+            &Method::CONNECT,
+            &target,
+            Version::HTTP_11,
+            &headers(&[("host", "example.com:443")]),
+            None,
+        );
+
+        assert_eq!(
+            message,
+            b"CONNECT example.com:443 HTTP/1.1\r\nhost: example.com:443\r\n\r\n"
+        );
     }
 
     /// A matching `Content-Length` remains in place.
