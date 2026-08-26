@@ -241,7 +241,7 @@ mod tests {
             [(
                 2,
                 Violation::UnreadablePayload {
-                    reason: "The HTTP message does not end its header section with an empty line."
+                    reason: "the HTTP message does not end its header section with an empty line"
                         .to_owned(),
                 }
             )]

@@ -34,33 +34,33 @@ pub enum Error {
     /// The record does not open with a `WARC/` version line at all.
     ///
     /// Carries the line that was read in its place, which names no version to report.
-    #[error("Malformed version line: {0}")]
+    #[error("malformed version line: {0}")]
     MalformedVersionLine(String),
     /// A header line does not match the `field-name ":" field-value` grammar.
     ///
     /// This includes an invalid name, a missing colon, an unattached continuation, or a line break
     /// outside a fold. Carries the offending line when parsing, or its field name when validating.
-    #[error("Malformed field line: {0}")]
+    #[error("malformed field line: {0}")]
     MalformedFieldLine(String),
     /// The input ended before the header block's terminating blank line.
     ///
     /// Bare `LF` line endings also produce this error because WARC header lines require `CRLF`.
-    #[error("Unexpected end of header block.")]
+    #[error("unexpected end of header block")]
     UnexpectedEndOfHeaderBlock,
     /// A record carries no `Content-Length`, so its body cannot be framed.
-    #[error("Missing Content-Length.")]
+    #[error("missing Content-Length")]
     MissingContentLength,
     /// A record carries more than one `Content-Length`, so where its body ends depends on which
     /// one a reader takes.
-    #[error("Repeated Content-Length.")]
+    #[error("repeated Content-Length")]
     RepeatedContentLength,
     /// A record's `Content-Length` is not the `1*DIGIT` the grammar requires, or names a length
     /// beyond the unsigned 64-bit range.
-    #[error("Malformed Content-Length: {0}")]
+    #[error("malformed Content-Length: {0}")]
     MalformedContentLength(String),
     /// A record's declared `Content-Length` does not match the body it carries, so writing it
     /// would produce an archive that cannot be read back.
-    #[error("Content-Length declares {declared} bytes, but the body is {actual}.")]
+    #[error("Content-Length declares {declared} bytes, but the body is {actual}")]
     ContentLengthMismatch {
         /// The length the record's `Content-Length` field declares.
         declared: u64,
@@ -726,31 +726,31 @@ mod tests {
         let expectations = [
             (
                 Error::MalformedVersion(crate::version::Error("0.9".to_owned())),
-                "Malformed version: 0.9",
+                "malformed version: 0.9",
             ),
             (
                 Error::MalformedVersionLine("HTTP/1.1 200 OK".to_owned()),
-                "Malformed version line: HTTP/1.1 200 OK",
+                "malformed version line: HTTP/1.1 200 OK",
             ),
             (
                 Error::MalformedFieldLine("no colon here".to_owned()),
-                "Malformed field line: no colon here",
+                "malformed field line: no colon here",
             ),
             (
                 Error::UnexpectedEndOfHeaderBlock,
-                "Unexpected end of header block.",
+                "unexpected end of header block",
             ),
-            (Error::MissingContentLength, "Missing Content-Length."),
+            (Error::MissingContentLength, "missing Content-Length"),
             (
                 Error::MalformedContentLength("12 34".to_owned()),
-                "Malformed Content-Length: 12 34",
+                "malformed Content-Length: 12 34",
             ),
             (
                 Error::ContentLengthMismatch {
                     declared: 5,
                     actual: 7,
                 },
-                "Content-Length declares 5 bytes, but the body is 7.",
+                "Content-Length declares 5 bytes, but the body is 7",
             ),
         ];
 

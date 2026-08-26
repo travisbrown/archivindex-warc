@@ -29,7 +29,7 @@ pub const MAX_GZIP_COMPRESSION_LEVEL: u32 = 9;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The underlying write to the output stream failed.
-    #[error("Error writing to output stream.")]
+    #[error("cannot write to the output stream")]
     Sink(#[from] std::io::Error),
     /// The record cannot be written, because an archive holding it could not be read back.
     #[error(transparent)]
@@ -51,7 +51,7 @@ mod error_tests {
     #[test]
     fn each_error_states_its_failure() {
         let sink = Error::Sink(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
-        assert_eq!(sink.to_string(), "Error writing to output stream.");
+        assert_eq!(sink.to_string(), "cannot write to the output stream");
         assert!(std::error::Error::source(&sink).is_some());
 
         let unreadable = Error::Raw(raw::Error::ContentLengthMismatch {
@@ -60,7 +60,7 @@ mod error_tests {
         });
         assert_eq!(
             unreadable.to_string(),
-            "Content-Length declares 5 bytes, but the body is 7."
+            "Content-Length declares 5 bytes, but the body is 7"
         );
         assert!(std::error::Error::source(&unreadable).is_none());
     }

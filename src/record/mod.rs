@@ -74,7 +74,7 @@ use crate::version::WarcVersion;
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum BlockError {
     /// The record declares a `Content-Length` that is not the length of the block it carries.
-    #[error("`Content-Length` declares {declared} octets, but the block is {actual}.")]
+    #[error("`Content-Length` declares {declared} octets, but the block is {actual}")]
     ContentLengthMismatch {
         /// The length the record declares.
         declared: u64,
@@ -82,11 +82,11 @@ pub enum BlockError {
         actual: u64,
     },
     /// The block digest is invalid for its declared algorithm, which this crate computes.
-    #[error("The block digest `{0}` is not a digest the algorithm it names can have produced.")]
+    #[error("the block digest `{0}` is not a digest the algorithm it names can have produced")]
     MalformedBlockDigest(Box<LabelledDigest>),
     /// The record's block digest does not match the block it carries.
     #[error(
-        "The record declares the block digest `{declared}`, but its block digests as `{actual}`."
+        "the record declares the block digest `{declared}`, but its block digests as `{actual}`"
     )]
     BlockDigestMismatch {
         /// The digest the record declares.
@@ -95,12 +95,12 @@ pub enum BlockError {
         actual: Box<LabelledDigest>,
     },
     /// The payload digest is invalid for its declared algorithm, which this crate computes.
-    #[error("The payload digest `{0}` is not a digest the algorithm it names can have produced.")]
+    #[error("the payload digest `{0}` is not a digest the algorithm it names can have produced")]
     MalformedPayloadDigest(Box<LabelledDigest>),
     /// The record's payload digest does not match the payload its block carries.
     #[error(
-        "The record declares the payload digest `{declared}`, but its payload digests as \
-         `{actual}`."
+        "the record declares the payload digest `{declared}`, but its payload digests as \
+         `{actual}`"
     )]
     PayloadDigestMismatch {
         /// The digest the record declares.
@@ -109,18 +109,18 @@ pub enum BlockError {
         actual: Box<LabelledDigest>,
     },
     /// The declared payload digest cannot be checked because the HTTP message is malformed.
-    #[error("The record's payload cannot be read from its block: {0}")]
+    #[error("the record's payload cannot be read from its block: {0}")]
     Payload(#[from] payload::Error),
     /// A `revisit` record under the identical payload digest profile carries a block without
     /// declaring the truncation such a block is.
     #[error(
-        "A `revisit` record under the identical payload digest profile carries a block of {0} \
-         octets without declaring `WARC-Truncated: length`."
+        "a `revisit` record under the identical payload digest profile carries a block of {0} \
+         octets without declaring `WARC-Truncated: length`"
     )]
     UndeclaredRevisitTruncation(u64),
     /// The block could not be read as the `application/warc-fields` its record's `Content-Type`
     /// declares.
-    #[error("The record's body is not what its `Content-Type` declares: {0}")]
+    #[error("the record's body is not what its `Content-Type` declares: {0}")]
     Fields(#[from] fields::Error),
 }
 
@@ -129,10 +129,10 @@ pub enum BlockError {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Error {
     /// A field the standard makes mandatory for the record's type is missing.
-    #[error("The mandatory `{0}` field is missing.")]
+    #[error("the mandatory `{0}` field is missing")]
     MissingField(Field),
     /// A field the standard names is present on a record type it is not permitted for.
-    #[error("The `{field}` field is not permitted on a `{record_type}` record.")]
+    #[error("the `{field}` field is not permitted on a `{record_type}` record")]
     ForbiddenField {
         /// The standard record type carrying the field.
         record_type: &'static str,
@@ -141,7 +141,7 @@ pub enum Error {
     },
     /// A field the standard names is present on a record declaring a version that does not
     /// define it.
-    #[error("The `{field}` field is not defined in WARC {version}.")]
+    #[error("the `{field}` field is not defined in WARC {version}")]
     FieldNotInVersion {
         /// The field the declared version does not define.
         field: Field,
@@ -151,12 +151,12 @@ pub enum Error {
     /// A nonrepeatable standard field is written more than once.
     ///
     /// `WARC-Concurrent-To` is the only repeatable standard field.
-    #[error("The `{0}` field is written more than once.")]
+    #[error("the `{0}` field is written more than once")]
     RepeatedField(Field),
     /// A field's value is well-formed under its field's grammar but says something the standard
     /// does not permit, such as a `continuation` numbered below `2` or a WARC 1.0 date written
     /// at a precision only WARC 1.1 defines.
-    #[error("The value of the `{field}` field is not permitted: `{value}`.")]
+    #[error("the value of the `{field}` field is not permitted: `{value}`")]
     MalformedField {
         /// The field whose value the standard does not permit.
         field: Field,
@@ -164,7 +164,7 @@ pub enum Error {
         value: String,
     },
     /// A value given to a builder for a URI-valued field is not a URI.
-    #[error("The value given for the `{field}` field is not a URI: {source}")]
+    #[error("the value given for the `{field}` field is not a URI: {source}")]
     NotAUri {
         /// The field the value was given for.
         field: Field,
@@ -172,16 +172,16 @@ pub enum Error {
         source: fluent_uri::ParseError,
     },
     /// An unrecognized field has a value that cannot be preserved as UTF-8 text.
-    #[error("The value of the `{0}` field is not valid UTF-8.")]
+    #[error("the value of the `{0}` field is not valid UTF-8")]
     NonUtf8Field(String),
     /// `WARC-Type` names a type defined by neither the standard nor the extension.
-    #[error("The `{0}` record type is defined by no vocabulary in force.")]
+    #[error("the `{0}` record type is defined by no vocabulary in force")]
     UnknownRecordType(String),
     /// The extension attempts to redefine a standard record type.
-    #[error("The `{0}` record type is defined by the standard and cannot be redefined.")]
+    #[error("the `{0}` record type is defined by the standard and cannot be redefined")]
     RedefinedRecordType(String),
     /// The extension could not parse the fields it claims.
-    #[error("The extension in force could not read the record: {0}")]
+    #[error("the extension in force could not read the record: {0}")]
     Extension(String),
     /// The header block does not go with the block it was given.
     #[error(transparent)]
@@ -195,7 +195,7 @@ pub enum Error {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum RenderError {
     /// The record's declared version does not define a field it contains.
-    #[error("The `{field}` field is not defined in WARC {version}.")]
+    #[error("the `{field}` field is not defined in WARC {version}")]
     FieldNotInVersion {
         /// The field the declared version does not define.
         field: Field,
@@ -203,7 +203,7 @@ pub enum RenderError {
         version: WarcVersion,
     },
     /// The record's declared version has no spelling for a value the record carries.
-    #[error("The `{field}` value `{value}` cannot be written in WARC {version}.")]
+    #[error("the `{field}` value `{value}` cannot be written in WARC {version}")]
     ValueNotInVersion {
         /// The field carrying the value.
         field: Field,
@@ -213,7 +213,7 @@ pub enum RenderError {
         value: String,
     },
     /// A field carries a name or a value that cannot be written as a valid header line.
-    #[error("The `{name}` field cannot be written: {reason}.")]
+    #[error("the `{name}` field cannot be written: {reason}")]
     UnwritableField {
         /// The field's name, as it was given.
         name: String,
@@ -224,17 +224,17 @@ pub enum RenderError {
     ///
     /// A record of a type no version of the standard defines keeps every field as read, so it is
     /// where a name the standard defines can be written twice.
-    #[error("The `{0}` field would be written more than once.")]
+    #[error("the `{0}` field would be written more than once")]
     RepeatedField(Field),
     /// A field the record's revisit profile requires is not present.
-    #[error("The `{0}` field is required by the record's revisit profile.")]
+    #[error("the `{0}` field is required by the record's revisit profile")]
     MissingProfileField(Field),
     /// An extension or unrecognized field names a field the standard defines.
     ///
     /// A record of a standard type writes each standard field from the value its own header
     /// holds, so a field of that name carried beside it would be read back as the standard field
     /// rather than as what it was.
-    #[error("The `{0}` field is defined by the standard and cannot be written as read.")]
+    #[error("the `{0}` field is defined by the standard and cannot be written as read")]
     ReservedField(Field),
     /// The record does not go with the block it carries.
     #[error(transparent)]

@@ -220,7 +220,7 @@ mod tests {
         assert_eq!(refused.records, 0);
         assert_eq!(
             refused.errors,
-            ["record 1: The mandatory `warc-target-uri` field is missing.".to_owned()]
+            ["record 1: the mandatory `warc-target-uri` field is missing".to_owned()]
         );
     }
 
@@ -233,7 +233,7 @@ mod tests {
             let refused = outcome_of(MALFORMED_DATE, layer);
             assert_eq!(refused.records, 0, "{layer:?}");
             assert!(
-                refused.errors[0].contains("Malformed WARC-Date field"),
+                refused.errors[0].contains("malformed WARC-Date field"),
                 "{:?}",
                 refused.errors
             );

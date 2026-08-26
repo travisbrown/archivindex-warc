@@ -253,7 +253,7 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Error {
     /// A non-empty body was provided for a status that forbids one.
-    #[error("A {0} response cannot carry a body.")]
+    #[error("a {0} response cannot carry a body")]
     BodyForbidden(StatusCode),
 }
 
@@ -667,7 +667,7 @@ mod tests {
         assert_eq!(error, Error::BodyForbidden(StatusCode::NO_CONTENT));
         assert_eq!(
             error.to_string(),
-            "A 204 No Content response cannot carry a body."
+            "a 204 No Content response cannot carry a body"
         );
     }
 

@@ -7,7 +7,7 @@ use std::str::FromStr;
 ///
 /// WARC 1.0 and 1.1 are supported. The error stores only the number following `WARC/`.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("Malformed version: {0}")]
+#[error("malformed version: {0}")]
 pub struct Error(pub String);
 
 /// A version of the WARC standard supported by this crate.
