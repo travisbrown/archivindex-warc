@@ -3,13 +3,13 @@
 mod export;
 mod graph;
 
-use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
+use archivindex_cli_support::{Verbosity, plural};
 use archivindex_warc::io::write::{DEFAULT_GZIP_COMPRESSION_LEVEL, MAX_GZIP_COMPRESSION_LEVEL};
 use archivindex_warc::value::{Text, TextError};
 use archivindex_warc_ops::lint::Linter;
@@ -25,50 +25,6 @@ struct Cli {
 
     #[command(subcommand)]
     command: Command,
-}
-
-/// Logging detail: errors only with `--quiet`, warnings by default, and informational, debug,
-/// and trace diagnostics with each repetition of `-v`.
-#[derive(Debug, clap::Args)]
-struct Verbosity {
-    /// Log errors only.
-    #[arg(short, long, global = true, conflicts_with = "verbose")]
-    quiet: bool,
-
-    /// Log informational diagnostics; repeat for debug and trace.
-    #[arg(short, global = true, action = clap::ArgAction::Count)]
-    verbose: u8,
-}
-
-impl Verbosity {
-    /// The most detailed level to log.
-    const fn level(&self) -> log::LevelFilter {
-        if self.quiet {
-            log::LevelFilter::Error
-        } else {
-            match self.verbose {
-                0 => log::LevelFilter::Warn,
-                1 => log::LevelFilter::Info,
-                2 => log::LevelFilter::Debug,
-                _ => log::LevelFilter::Trace,
-            }
-        }
-    }
-
-    /// Start logging to standard error at the selected level.
-    fn init_logging(&self) {
-        let config = simplelog::ConfigBuilder::new()
-            .set_time_level(log::LevelFilter::Off)
-            .build();
-
-        simplelog::TermLogger::init(
-            self.level(),
-            config,
-            simplelog::TerminalMode::Stderr,
-            simplelog::ColorChoice::Auto,
-        )
-        .expect("invariant violation: the logger is initialized once");
-    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -224,7 +180,7 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    let quiet = cli.verbosity.quiet;
+    let quiet = cli.verbosity.is_quiet();
 
     match cli.command {
         Command::Canonicalize { input, output } => {
@@ -410,12 +366,6 @@ fn is_gzip(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
 }
 
-/// A count and its noun, pluralized by the count.
-fn plural<N: Copy + Display + From<u8> + PartialEq>(count: N, noun: &str) -> String {
-    let suffix = if count == N::from(1) { "" } else { "s" };
-    format!("{count} {noun}{suffix}")
-}
-
 #[cfg(test)]
 mod tests {
     use clap::CommandFactory;
@@ -425,30 +375,6 @@ mod tests {
     #[test]
     fn clap_definition_is_consistent() {
         Cli::command().debug_assert();
-    }
-
-    #[test]
-    fn verbosity_selects_the_documented_levels() {
-        let level = |flags: &[&str]| {
-            let mut args = vec![
-                "archivindex-warc-cli",
-                "merge",
-                "a.warc",
-                "b.warc",
-                "-o",
-                "c",
-            ];
-            args.extend_from_slice(flags);
-
-            Cli::try_parse_from(args).unwrap().verbosity.level()
-        };
-
-        assert_eq!(level(&[]), log::LevelFilter::Warn);
-        assert_eq!(level(&["--quiet"]), log::LevelFilter::Error);
-        assert_eq!(level(&["-v"]), log::LevelFilter::Info);
-        assert_eq!(level(&["-vv"]), log::LevelFilter::Debug);
-        assert_eq!(level(&["-vvv"]), log::LevelFilter::Trace);
-        assert_eq!(level(&["-vvvv"]), log::LevelFilter::Trace);
     }
 
     #[test]
@@ -617,22 +543,5 @@ mod tests {
         assert!(parse(&["--collection-id", "crawl-2026"]).is_ok());
         assert!(parse(&[]).is_err());
         assert!(parse(&["--filename", "two\nlines"]).is_err());
-    }
-
-    #[test]
-    fn quiet_and_verbose_conflict() {
-        assert!(
-            Cli::try_parse_from([
-                "archivindex-warc-cli",
-                "merge",
-                "a.warc",
-                "b.warc",
-                "-o",
-                "c",
-                "-q",
-                "-v"
-            ])
-            .is_err()
-        );
     }
 }

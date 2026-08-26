@@ -83,9 +83,3 @@ pub fn is_gzip(file: &Path) -> bool {
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
 }
-
-/// A count and its noun, pluralized by the count.
-pub fn plural(count: usize, noun: &str) -> String {
-    let suffix = if count == 1 { "" } else { "s" };
-    format!("{count} {noun}{suffix}")
-}

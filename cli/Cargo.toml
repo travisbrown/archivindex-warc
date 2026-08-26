@@ -14,9 +14,10 @@ workspace = true
 
 [dependencies]
 anyhow = "1"
+archivindex-cli-support.workspace = true
 archivindex-warc.workspace = true
 archivindex-warc-ops = { path = "../ops" }
-clap = { version = "4.5", features = ["derive"] }
+clap.workspace = true
 csv = "1"
 d2-little = "0.7.1-1"
 flate2.workspace = true
@@ -24,5 +25,4 @@ fluent-uri.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-simplelog = "0.12"
 tempfile.workspace = true

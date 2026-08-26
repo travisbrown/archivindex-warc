@@ -3,9 +3,10 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use archivindex_cli_support::plural;
 use warc::WarcReader;
 
-use crate::model::{ValidationResult, is_gzip, plural};
+use crate::model::{ValidationResult, is_gzip};
 
 pub fn run_warc(file: &Path) -> ValidationResult {
     const NAME: &str = "warc 0.4";
