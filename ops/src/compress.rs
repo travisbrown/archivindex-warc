@@ -67,25 +67,28 @@ pub fn compress<R: BufRead, W: Write>(
 mod tests {
     use std::io::Read;
 
+    use archivindex_test_support::render;
     use archivindex_warc::parse::raw;
     use flate2::bufread::GzDecoder;
 
     use super::*;
 
-    /// A WARC 1.1 resource record with the given identifier and body, framed by the body's length.
-    fn render(id: &str, body: &str) -> Vec<u8> {
-        format!(
-            "WARC/1.1\r\nWARC-Type: resource\r\nWARC-Record-ID: <urn:uuid:{id}>\r\n\
-             WARC-Date: 2024-01-01T00:00:00Z\r\nContent-Length: {}\r\n\r\n{body}\r\n\r\n",
-            body.len()
+    /// A WARC 1.1 resource record with the given identifier and body.
+    fn resource(id: &str, body: &str) -> Vec<u8> {
+        render(
+            &[
+                ("WARC-Type", "resource"),
+                ("WARC-Record-ID", &format!("<urn:uuid:{id}>")),
+                ("WARC-Date", "2024-01-01T00:00:00Z"),
+            ],
+            body,
         )
-        .into_bytes()
     }
 
     /// Two records, concatenated.
     fn archive() -> Vec<u8> {
-        let mut bytes = render("a", "first body");
-        bytes.extend(render("b", "second body"));
+        let mut bytes = resource("a", "first body");
+        bytes.extend(resource("b", "second body"));
         bytes
     }
 
@@ -127,8 +130,8 @@ mod tests {
         );
         let members = members(&output);
         assert_eq!(members.len(), 2);
-        assert_eq!(members[0], render("a", "first body"));
-        assert_eq!(members[1], render("b", "second body"));
+        assert_eq!(members[0], resource("a", "first body"));
+        assert_eq!(members[1], resource("b", "second body"));
     }
 
     #[test]

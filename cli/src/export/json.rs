@@ -76,30 +76,12 @@ fn single_line(payload: &[u8]) -> Option<&[u8]> {
 
 #[cfg(test)]
 mod tests {
+    use archivindex_test_support::render;
+
     use super::*;
 
-    /// A WARC 1.1 record with the given fields, framed by the body's length.
-    fn render(fields: &[(&str, &str)], body: &str) -> String {
-        use std::fmt::Write as _;
-
-        let mut record = String::from("WARC/1.1\r\n");
-
-        for (name, value) in fields {
-            write!(record, "{name}: {value}\r\n")
-                .expect("invariant violation: writing to a String");
-        }
-        write!(
-            record,
-            "Content-Length: {}\r\n\r\n{body}\r\n\r\n",
-            body.len()
-        )
-        .expect("invariant violation: writing to a String");
-
-        record
-    }
-
     /// A resource record whose payload is identified as `identified`.
-    fn resource(identified: &str, body: &str) -> String {
+    fn resource(identified: &str, body: &str) -> Vec<u8> {
         render(
             &[
                 ("WARC-Type", "resource"),
@@ -112,18 +94,18 @@ mod tests {
         )
     }
 
-    fn export_string(input: &str) -> Result<(usize, String)> {
+    fn export_string(input: &[u8]) -> Result<(usize, String)> {
         let mut output = Vec::new();
-        let count = export(input.as_bytes(), &mut output)?;
+        let count = export(input, &mut output)?;
         Ok((count, String::from_utf8(output).unwrap()))
     }
 
     #[test]
     fn writes_json_payloads_verbatim_and_skips_the_rest() {
         let mut input = resource("application/json", r#"{"a": [1, 2]}"#);
-        input.push_str(&resource("text/plain", "not exported"));
-        input.push_str(&resource("application/ld+json", "[1,2]\r\n"));
-        input.push_str(&render(
+        input.extend_from_slice(&resource("text/plain", "not exported"));
+        input.extend_from_slice(&resource("application/ld+json", "[1,2]\r\n"));
+        input.extend_from_slice(&render(
             &[
                 ("WARC-Type", "response"),
                 ("WARC-Record-ID", "<urn:uuid:2>"),

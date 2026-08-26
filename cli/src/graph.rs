@@ -9,14 +9,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::parse::raw;
-
-/// Header fields whose values identify another WARC record.
-const REFERENCE_FIELDS: [(&str, &str); 4] = [
-    ("WARC-Concurrent-To", "concurrent-to"),
-    ("WARC-Warcinfo-ID", "warcinfo-id"),
-    ("WARC-Refers-To", "refers-to"),
-    ("WARC-Segment-Origin-ID", "segment-origin-id"),
-];
+use archivindex_warc_ops::header::{REFERENCE_FIELDS, normalize_id};
 
 /// Stable, distinguishable colors for the standard record types.
 const TYPE_COLORS: [(&str, &str); 8] = [
@@ -59,8 +52,15 @@ struct Record {
 /// One header field pointing from its record to another record ID.
 #[derive(Debug)]
 struct Reference {
-    label: &'static str,
+    field: &'static str,
     target: Vec<u8>,
+}
+
+impl Reference {
+    /// The field name without its `WARC-` prefix, in lower case.
+    fn label(&self) -> String {
+        self.field[5..].to_ascii_lowercase()
+    }
 }
 
 /// Draw the records from `input`, writing the SVG or opening it in the default viewer.
@@ -120,9 +120,9 @@ fn read_records(path: &Path) -> Result<Vec<Record>> {
             .map(<[u8]>::to_vec);
         let references = REFERENCE_FIELDS
             .iter()
-            .flat_map(|(field, label)| {
-                header.get_all(field).map(move |target| Reference {
-                    label,
+            .flat_map(|field| {
+                header.get_all(field).map(|target| Reference {
+                    field,
                     target: normalize_id(target).to_vec(),
                 })
             })
@@ -182,14 +182,14 @@ fn source(records: &[Record]) -> (String, usize) {
                     "{} -> {}: \"{}\" {{\n  style.font-size: {EDGE_FONT_SIZE}\n}}\n",
                     node_path(source_index),
                     node_path(*target_index),
-                    reference.label
+                    reference.label()
                 )
                 .expect("invariant violation: writing to a String");
                 reference_count += 1;
             } else {
                 log::warn!(
                     "not drawing {} reference to absent record {}",
-                    reference.label,
+                    reference.label(),
                     String::from_utf8_lossy(&reference.target)
                 );
             }
@@ -300,16 +300,6 @@ fn value(header: &raw::RecordHeader, name: &str) -> Option<String> {
         .map(|value| String::from_utf8_lossy(value).into_owned())
 }
 
-/// A record identifier without surrounding white space or angle brackets.
-fn normalize_id(value: &[u8]) -> &[u8] {
-    let value = value.trim_ascii();
-
-    value
-        .strip_prefix(b"<")
-        .and_then(|inner| inner.strip_suffix(b">"))
-        .unwrap_or(value)
-}
-
 /// The UUID portion of a `urn:uuid` record ID.
 fn uuid_part(id: &[u8]) -> Option<&str> {
     let id = std::str::from_utf8(id).ok()?;
@@ -394,8 +384,8 @@ mod tests {
             id: id.map(|id| id.as_bytes().to_vec()),
             references: references
                 .iter()
-                .map(|(label, target)| Reference {
-                    label,
+                .map(|(field, target)| Reference {
+                    field,
                     target: target.as_bytes().to_vec(),
                 })
                 .collect(),
@@ -415,8 +405,8 @@ mod tests {
     #[test]
     fn source_has_colored_key_and_directed_references() {
         let records = [
-            record("request", Some(FIRST), &[("concurrent-to", SECOND)]),
-            record("response", Some(SECOND), &[("warcinfo-id", "absent")]),
+            record("request", Some(FIRST), &[("WARC-Concurrent-To", SECOND)]),
+            record("response", Some(SECOND), &[("WARC-Warcinfo-ID", "absent")]),
         ];
 
         let (source, count) = source(&records);
@@ -436,7 +426,7 @@ mod tests {
     #[test]
     fn generated_source_renders_as_svg() {
         let records = [
-            record("request", Some(FIRST), &[("concurrent-to", SECOND)]),
+            record("request", Some(FIRST), &[("WARC-Concurrent-To", SECOND)]),
             record("response", Some(SECOND), &[]),
         ];
         let (source, _) = source(&records);

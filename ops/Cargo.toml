@@ -22,4 +22,5 @@ tempfile.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+archivindex-test-support.workspace = true
 serde_json.workspace = true

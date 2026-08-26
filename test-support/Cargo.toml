@@ -1,0 +1,13 @@
+[package]
+name = "archivindex-test-support"
+description = "Test fixtures shared by this repository's packages"
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[lints]
+workspace = true
