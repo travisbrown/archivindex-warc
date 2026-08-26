@@ -5,7 +5,7 @@ mod graph;
 
 use std::fmt::Display;
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter};
+use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -16,7 +16,6 @@ use archivindex_warc::value::{Text, TextError};
 use archivindex_warc_ops::lint::{Finding, Linter};
 use archivindex_warc_ops::rewrite::WarcinfoValues;
 use clap::{Parser, Subcommand};
-use flate2::bufread::MultiGzDecoder;
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
@@ -228,7 +227,7 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
             output,
         } => compress(&input, level, &output, quiet)?,
         Command::Export { input, format } => {
-            let reader = open_input(&input)?;
+            let reader = archivindex_warc_ops::file::read(&input)?;
             let stdout = std::io::stdout().lock();
             let records = match format {
                 ExportFormat::Csv => export::csv::export(reader, stdout),
@@ -336,7 +335,7 @@ fn compress(input: &Path, level: u32, output: &Path, quiet: bool) -> Result<()> 
 
 /// Report every finding in `input`, returning the outcome the findings call for.
 fn lint(input: &Path, format: LintFormat, quiet: bool) -> Result<CommandOutcome> {
-    let mut linter = Linter::new(open_input(input)?);
+    let mut linter = Linter::new(archivindex_warc_ops::file::read(input)?);
     let mut problems = 0;
 
     while let Some(item) = linter.next() {
@@ -406,28 +405,10 @@ fn parse_text(value: &str) -> Result<Text, TextError> {
     Text::parse(value.as_bytes())
 }
 
-/// Open a WARC file for reading, decompressing a path ending in `.gz`.
-fn open_input(path: &Path) -> Result<Box<dyn BufRead>> {
-    let file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
-    let file = BufReader::new(file);
-    let reader: Box<dyn BufRead> = if is_gzip(path) {
-        Box::new(BufReader::new(MultiGzDecoder::new(file)))
-    } else {
-        Box::new(file)
-    };
-
-    Ok(reader)
-}
-
-/// Whether a path names a gzip-compressed WARC file.
-fn is_gzip(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use clap::CommandFactory;
 
     use super::*;

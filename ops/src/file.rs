@@ -10,23 +10,28 @@ use flate2::bufread::MultiGzDecoder;
 
 use crate::{Error, Result};
 
-/// Open a WARC file for reading, decompressing when the path names a gzip file.
-pub fn open(path: &Path) -> Result<WarcReader<Box<dyn BufRead>>> {
+/// Open a file for reading, decompressing when the path names a gzip file.
+pub fn read(path: &Path) -> Result<Box<dyn BufRead>> {
     let file = File::open(path).map_err(|source| Error::Open {
         path: path.to_owned(),
         source,
     })?;
     let file = BufReader::new(file);
-    let reader: Box<dyn BufRead> = if is_gzip(path) {
+
+    Ok(if is_gzip(path) {
         Box::new(BufReader::new(MultiGzDecoder::new(file)))
     } else {
         Box::new(file)
-    };
+    })
+}
 
-    Ok(WarcReader::new(reader))
+/// Open a WARC file for reading, decompressing when the path names a gzip file.
+pub fn open(path: &Path) -> Result<WarcReader<Box<dyn BufRead>>> {
+    read(path).map(WarcReader::new)
 }
 
 /// The compression to write at a path, gzip when the path names a gzip file.
+#[must_use]
 pub fn compression(path: &Path) -> Compression {
     if is_gzip(path) {
         Compression::gzip()
@@ -36,6 +41,7 @@ pub fn compression(path: &Path) -> Compression {
 }
 
 /// Whether a path names a gzip-compressed file.
+#[must_use]
 pub fn is_gzip(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())

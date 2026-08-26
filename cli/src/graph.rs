@@ -109,7 +109,7 @@ fn render(source: &str) -> Result<Vec<u8>> {
 fn read_records(path: &Path) -> Result<Vec<Record>> {
     let mut records = Vec::new();
 
-    for result in WarcReader::new(crate::open_input(path)?).iter_raw_records() {
+    for result in WarcReader::new(archivindex_warc_ops::file::read(path)?).iter_raw_records() {
         let record = result.with_context(|| format!("cannot read {}", path.display()))?;
         let header = record.header;
         let warc_type = value(&header, "WARC-Type")

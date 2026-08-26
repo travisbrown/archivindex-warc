@@ -12,7 +12,7 @@ use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::parse::raw;
 use archivindex_warc::parse::untyped::name::Field;
 
-use crate::files::{compression, open};
+use crate::file::{compression, open};
 use crate::{Error, Result};
 
 /// What was written to the canonicalized file.
