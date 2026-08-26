@@ -4,7 +4,9 @@ This standalone application provides commands for inspecting and transforming WA
 the version of [`archivindex-warc`][archivindex-warc] in this repository.
 
 A path with a `.gz` extension names a gzip-compressed file, for inputs and outputs alike. A
-compressed output holds one gzip member per record.
+compressed output holds one gzip member per record. An input of `-` is standard input, which is
+decompressed when it begins with the gzip magic number; `merge` reads each of its inputs twice, so
+it takes files only.
 
 `-q` logs errors only, the default adds warnings and normal program output, and `-v`, `-vv`,
 and `-vvv` raise the diagnostic level to informational, debug, and trace.

@@ -77,6 +77,10 @@ pub enum Error {
         path: PathBuf,
     },
 
+    /// An operation that reads its inputs twice was given standard input.
+    #[error("cannot read standard input twice")]
+    StandardInputReadTwice,
+
     /// A warcinfo record could not be rewritten.
     #[error("cannot rewrite warcinfo record {index} of {}", path.display())]
     RewriteWarcinfo {
