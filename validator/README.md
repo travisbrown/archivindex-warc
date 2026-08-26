@@ -46,8 +46,14 @@ are stored below the platform cache directory (for example,
 `~/.cache/archivindex-warc-validator/tools` on Linux). Nothing is installed globally. Use
 `--no-install` to disable this behavior or `--tools-dir` to choose another directory.
 
-The local installers currently use JWAT-Tools 0.7.1 and warcio 1.8.1; Warchaeology is selected
-from the latest published GitHub release for the current platform.
+The local installers use Warchaeology 5.0.0, JWAT-Tools 0.7.1, and warcio 1.8.1. Each download
+is checked against a SHA-256 digest recorded in the source before it is unpacked or run: the
+Warchaeology release archive for the current platform against the digest its release publishes,
+the JWAT-Tools archive against the digest of the Maven Central artifact, and the warcio and `six`
+distributions through pip's `--require-hashes`.
+
+An external validator is killed after `--timeout` seconds, 600 by default, and reported as
+unable to run.
 
 JWAT-Tools installation requires `java`. Warcio installation requires a Python interpreter with
 `venv` support. Warchaeology can be installed automatically only on platforms for which its

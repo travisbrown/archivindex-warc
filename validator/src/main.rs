@@ -10,6 +10,7 @@ mod warcat_validator;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use archivindex_cli_support::{CommandOutcome, Verbosity, exit_code};
@@ -17,7 +18,7 @@ use clap::{Parser, ValueEnum};
 use directories::ProjectDirs;
 
 use crate::archivindex_validator::{Layer, run_archivindex};
-use crate::external::{run_jwat_tools, run_warchaeology, run_warcio};
+use crate::external::{Timeout, run_jwat_tools, run_warchaeology, run_warcio};
 use crate::install::ToolResolver;
 use crate::model::{Status, ValidationResult};
 use crate::warc_validator::run_warc;
@@ -41,6 +42,10 @@ struct Cli {
     /// Directory used for locally installed validator tools.
     #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
     tools_dir: Option<PathBuf>,
+
+    /// Seconds an external validator may run before it is killed.
+    #[arg(long, value_name = "SECONDS", default_value_t = 600)]
+    timeout: u64,
 
     /// Informational diagnostics and above also show captured validator output and warcat-rs
     /// problem details.
@@ -99,6 +104,7 @@ fn run(cli: Cli) -> Result<bool> {
 
     let tools_dir = cli.tools_dir.map_or_else(default_tools_dir, Ok)?;
     let resolver = ToolResolver::new(tools_dir, !cli.no_install);
+    let timeout = Timeout(Duration::from_secs(cli.timeout));
     let mut results = Vec::new();
 
     for validator in ALL_VALIDATORS {
@@ -113,9 +119,9 @@ fn run(cli: Cli) -> Result<bool> {
             ValidatorName::ArchivindexRecord => run_archivindex(&file, Layer::Record),
             ValidatorName::Warc => run_warc(&file),
             ValidatorName::WarcatRs => run_warcat(&file),
-            ValidatorName::Warchaeology => run_warchaeology(&file, &resolver),
-            ValidatorName::JwatTools => run_jwat_tools(&file, &resolver),
-            ValidatorName::Warcio => run_warcio(&file, &resolver),
+            ValidatorName::Warchaeology => run_warchaeology(&file, &resolver, timeout),
+            ValidatorName::JwatTools => run_jwat_tools(&file, &resolver, timeout),
+            ValidatorName::Warcio => run_warcio(&file, &resolver, timeout),
         };
         results.push(result);
     }
