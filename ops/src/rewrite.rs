@@ -15,7 +15,7 @@ use archivindex_warc::record::fields::warcinfo::WarcinfoField;
 use archivindex_warc::record::{self, FieldsBlock, Record, RenderError};
 use archivindex_warc::value::{LabelledDigest, Text};
 
-use crate::files::{compression, open};
+use crate::file::{compression, open};
 use crate::{Error, Result};
 
 /// What was written to the rewritten file.
