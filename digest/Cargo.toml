@@ -33,9 +33,9 @@ serde = ["dep:serde"]
 blake2 = { version = "0.11", optional = true }
 blake3 = { version = "1.8.7", optional = true }
 data-encoding.workspace = true
-md-5 = { workspace = true, optional = true }
+md-5 = { version = "0.11", optional = true }
 serde = { workspace = true, optional = true }
-sha1 = { workspace = true, optional = true }
+sha1 = { version = "0.11", optional = true }
 sha2 = { workspace = true, optional = true }
 sha3 = { version = "0.12", optional = true }
 thiserror.workspace = true
