@@ -65,6 +65,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["gzip"]
+# Enable every supported digest algorithm.
+all-digests = ["archivindex-warc-digest/all-digests"]
 gzip = ["dep:flate2"]
 http = ["dep:http"]
 # `serde` supplies `IgnoredAny` for validating JSON without building a document.
