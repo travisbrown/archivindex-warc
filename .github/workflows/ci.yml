@@ -40,8 +40,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
-      - name: Lint workspace
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - uses: taiki-e/install-action@cargo-hack
+      # Every package on its own, with no features, its defaults, and each pair of features.
+      - name: Lint every feature combination
+        run: >-
+          cargo hack clippy --locked --workspace --feature-powerset --depth 2
+          --all-targets -- -D warnings
       - name: Lint library with all features
         run: >-
           cargo clippy --locked -p archivindex-warc
