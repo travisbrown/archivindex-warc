@@ -89,6 +89,7 @@ jobs:
           --exclude archivindex-test-support
           --exclude archivindex-warc-ops
           --exclude archivindex-warc-cli
+          --exclude archivindex-archiver-cli
 
   deny:
     name: Check the dependency policy

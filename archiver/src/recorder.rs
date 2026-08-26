@@ -5,7 +5,7 @@
 //! response verbatim, parsing only enough to find the message boundary. This preserves chunked
 //! coding, header spelling, and the reason phrase, so block digests cover bytes that crossed the
 //! wire. To archive an exchange performed by another client, use
-//! [`record::http`](crate::record::http) to reconstruct blocks from parsed parts.
+//! [`record::http`](archivindex_warc::record::http) to reconstruct blocks from parsed parts.
 //!
 //! Each fetch opens one connection for one request and response. It does not follow redirects,
 //! decode content, or reuse the connection. It adds `host` when absent and defaults a missing
@@ -14,13 +14,18 @@
 //!
 //! [`max_response_length`](Recorder::max_response_length) bounds stored response bytes. A limit,
 //! disconnect, or I/O timeout truncates the response instead of failing the fetch; the reason is
-//! available in [`CapturedExchange::truncated`]. Without a bound, response size is unlimited.
+//! available in [`CapturedExchange::truncated`]. [`Recorder::new`] bounds each connection step at
+//! [`DEFAULT_TIMEOUT`] and the response at [`DEFAULT_MAX_RESPONSE_LENGTH`]; each setter lifts its
+//! bound when given `None`.
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use archivindex_warc::record::capture::CaptureEvent;
+use archivindex_warc::record::header::truncated_type::TruncatedType;
+use archivindex_warc::record::http::{ResponseMetadata, reconstruct_request};
 use chrono::{DateTime, Utc};
 use fluent_uri::Uri;
 use http::{HeaderMap, HeaderValue, Method, Version, header};
@@ -29,9 +34,11 @@ use http::{HeaderMap, HeaderValue, Method, Version, header};
 pub use rustls;
 use rustls::pki_types::ServerName;
 
-use crate::record::capture::CaptureEvent;
-use crate::record::header::truncated_type::TruncatedType;
-use crate::record::http::{ResponseMetadata, reconstruct_request};
+/// The connection and I/O timeout of a new recorder.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The response-size bound of a new recorder, in bytes.
+pub const DEFAULT_MAX_RESPONSE_LENGTH: u64 = 256 * 1024 * 1024;
 
 const MAX_HEADER_LENGTH: usize = 64 * 1024;
 
@@ -41,16 +48,16 @@ const READ_LENGTH: usize = 8 * 1024;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The target is not an absolute HTTP or HTTPS URI.
-    #[error("The target URI must be absolute, with an `http` or `https` scheme.")]
+    #[error("the target URI must be absolute, with an `http` or `https` scheme")]
     UnsupportedScheme,
     /// The target names no host.
-    #[error("The target URI names no host.")]
+    #[error("the target URI names no host")]
     MissingHost,
     /// The target cannot be represented as a `WARC-Target-URI`.
-    #[error("The target URI is not a URI: {0}")]
+    #[error("the target URI is not a URI: {0}")]
     TargetUri(#[from] fluent_uri::ParseError),
     /// The host cannot name a TLS server.
-    #[error("The host cannot name a TLS server: {0}")]
+    #[error("the host cannot name a TLS server: {0}")]
     ServerName(#[from] rustls::pki_types::InvalidDnsNameError),
     /// The TLS session could not be created.
     #[error(transparent)]
@@ -67,25 +74,28 @@ pub enum Error {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ResponseError {
     /// The response does not begin with an HTTP status line.
-    #[error("The response does not begin with an HTTP status line.")]
+    #[error("the response does not begin with an HTTP status line")]
     MalformedStatusLine,
+    /// The server switched protocols with a `101` the request did not ask for.
+    #[error("the server switched protocols with a `101` the request did not ask for")]
+    UnsolicitedUpgrade,
     /// The connection ended before a complete header section arrived.
-    #[error("The connection ended before a complete response header section arrived.")]
+    #[error("the connection ended before a complete response header section arrived")]
     IncompleteHeaderSection,
     /// The header section exceeds the recorder's limit.
-    #[error("The response header section is longer than the recorder accepts.")]
+    #[error("the response header section exceeds the recorder's limit")]
     OversizedHeaderSection,
     /// The response declares `Content-Length` values that disagree.
-    #[error("The response declares `Content-Length` values that disagree.")]
+    #[error("the response declares `Content-Length` values that disagree")]
     ConflictingContentLength,
     /// A declared `Content-Length` is not a valid decimal length.
-    #[error("The declared `Content-Length` `{0}` is not a length.")]
+    #[error("the declared `Content-Length` `{0}` is not a valid decimal length")]
     MalformedContentLength(String),
     /// A declared chunk size is not a valid hexadecimal length.
-    #[error("The declared chunk size `{0}` is not a hexadecimal length.")]
+    #[error("the declared chunk size `{0}` is not a hexadecimal length")]
     MalformedChunkSize(String),
     /// A chunk's data is not followed by the terminating CRLF.
-    #[error("A chunk's data is not followed by CRLF.")]
+    #[error("a chunk's data is not followed by CRLF")]
     UnterminatedChunk,
 }
 
@@ -99,22 +109,31 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    /// Create a recorder using `webpki-roots`, without timeouts or a response-size bound.
+    /// Create a recorder using `webpki-roots` and `aws-lc-rs`, with [`DEFAULT_TIMEOUT`] for each
+    /// connection step and [`DEFAULT_MAX_RESPONSE_LENGTH`] for the response.
+    ///
+    /// The crypto provider is named rather than taken from the process default, which is
+    /// undefined when a dependency graph enables more than one.
+    // The aws-lc-rs provider supports every default protocol version, so the builder cannot fail.
+    #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn new() -> Self {
         let roots = rustls::RootCertStore {
             roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
         };
+        let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("the aws-lc-rs provider supports the default protocol versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
 
         Self {
-            tls: Arc::new(
-                rustls::ClientConfig::builder()
-                    .with_root_certificates(roots)
-                    .with_no_client_auth(),
-            ),
-            connect_timeout: None,
-            io_timeout: None,
-            max_response_length: None,
+            tls: Arc::new(tls),
+            connect_timeout: Some(DEFAULT_TIMEOUT),
+            io_timeout: Some(DEFAULT_TIMEOUT),
+            max_response_length: Some(DEFAULT_MAX_RESPONSE_LENGTH),
         }
     }
 
@@ -126,31 +145,32 @@ impl Recorder {
         self
     }
 
-    /// Set the connection timeout for each resolved address.
+    /// Set the connection timeout for each resolved address, or lift it with `None`.
     #[must_use]
-    pub const fn connect_timeout(mut self, timeout: Duration) -> Self {
-        self.connect_timeout = Some(timeout);
+    pub const fn connect_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.connect_timeout = timeout;
 
         self
     }
 
-    /// Set the timeout for each connection read or write.
+    /// Set the timeout for each connection read or write, or lift it with `None`.
     ///
     /// A read timeout after the header section truncates the response instead of failing.
     #[must_use]
-    pub const fn io_timeout(mut self, timeout: Duration) -> Self {
-        self.io_timeout = Some(timeout);
+    pub const fn io_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.io_timeout = timeout;
 
         self
     }
 
-    /// Set the maximum stored response length, including the header section.
+    /// Set the maximum stored response length, including the header section, or lift it with
+    /// `None`.
     ///
     /// Reaching the limit records a `length` truncation. A header section larger than the limit
     /// fails because it cannot be partially recorded.
     #[must_use]
-    pub const fn max_response_length(mut self, length: u64) -> Self {
-        self.max_response_length = Some(length);
+    pub const fn max_response_length(mut self, length: Option<u64>) -> Self {
+        self.max_response_length = length;
 
         self
     }
@@ -323,8 +343,10 @@ impl CapturedExchange {
     }
 
     /// Return the decoded response entity body.
-    pub fn entity_body(&self) -> Result<std::borrow::Cow<'_, [u8]>, crate::record::payload::Error> {
-        crate::record::payload::entity_body(&self.response)
+    pub fn entity_body(
+        &self,
+    ) -> Result<std::borrow::Cow<'_, [u8]>, archivindex_warc::record::payload::Error> {
+        archivindex_warc::record::payload::entity_body(&self.response)
     }
 
     /// Return the recorded bytes after the response header section without transfer decoding.
@@ -419,32 +441,7 @@ fn read_response(
     let header_bound = max_length.map_or(MAX_HEADER_LENGTH, |cap| {
         MAX_HEADER_LENGTH.min(usize::try_from(cap).unwrap_or(usize::MAX))
     });
-
-    // Discard interim responses so the recording begins at the final status line.
-    let (status, header_end) = loop {
-        if let Some(header_end) = find_header_end(&buffer) {
-            if header_end > header_bound {
-                return Err(ResponseError::OversizedHeaderSection.into());
-            }
-            let status = parse_status(&buffer)?;
-            if (100..200).contains(&status) {
-                buffer.drain(..header_end);
-                continue;
-            }
-
-            break (status, header_end);
-        }
-        if buffer.len() > header_bound {
-            return Err(ResponseError::OversizedHeaderSection.into());
-        }
-        match fill(source, &mut buffer)? {
-            ReadEvent::Data => {}
-            ReadEvent::Closed | ReadEvent::TimedOut => {
-                return Err(ResponseError::IncompleteHeaderSection.into());
-            }
-        }
-    };
-
+    let (status, header_end) = read_final_header_section(source, &mut buffer, header_bound)?;
     let framing = body_framing(&buffer[..header_end], head_request, status)?;
     let mut truncated = None;
 
@@ -567,6 +564,44 @@ fn find_header_end(buffer: &[u8]) -> Option<usize> {
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
         .map(|position| position + 4)
+}
+
+/// Read into `buffer` until it holds the final response's header section, returning the status
+/// and the section's length.
+///
+/// Interim responses are discarded so the recording begins at the final status line. No request
+/// asks to upgrade, so a `101` is a protocol violation after which the stream is not HTTP.
+fn read_final_header_section(
+    source: &mut impl Read,
+    buffer: &mut Vec<u8>,
+    header_bound: usize,
+) -> Result<(u16, usize), Error> {
+    loop {
+        if let Some(header_end) = find_header_end(buffer) {
+            if header_end > header_bound {
+                return Err(ResponseError::OversizedHeaderSection.into());
+            }
+            let status = parse_status(buffer)?;
+            if status == 101 {
+                return Err(ResponseError::UnsolicitedUpgrade.into());
+            }
+            if (100..200).contains(&status) {
+                buffer.drain(..header_end);
+                continue;
+            }
+
+            return Ok((status, header_end));
+        }
+        if buffer.len() > header_bound {
+            return Err(ResponseError::OversizedHeaderSection.into());
+        }
+        match fill(source, buffer)? {
+            ReadEvent::Data => {}
+            ReadEvent::Closed | ReadEvent::TimedOut => {
+                return Err(ResponseError::IncompleteHeaderSection.into());
+            }
+        }
+    }
 }
 
 fn find_crlf(buffer: &[u8]) -> Option<usize> {
@@ -845,6 +880,17 @@ mod tests {
 
         assert_eq!(recorded, b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
         assert_eq!(truncated, None);
+    }
+
+    #[test]
+    fn an_unsolicited_upgrade_is_an_error() {
+        let response = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n\x81\x02ok";
+        let result = read_response(&mut Cursor::new(response), false, None);
+
+        assert!(matches!(
+            result,
+            Err(Error::Response(ResponseError::UnsolicitedUpgrade))
+        ));
     }
 
     #[test]

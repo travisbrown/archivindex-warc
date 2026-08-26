@@ -8,10 +8,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use archivindex_archiver::recorder::{CapturedExchange, Error, Recorder, rustls};
 use archivindex_warc::record::Record;
 use archivindex_warc::record::capture::CaptureRecords;
 use archivindex_warc::record::header::truncated_type::TruncatedType;
-use archivindex_warc::recorder::{CapturedExchange, Error, Recorder, rustls};
 use http::{HeaderMap, HeaderValue, Method, Uri};
 
 /// Read one complete HTTP/1.1 request.
@@ -199,7 +199,11 @@ fn the_length_bound_truncates_the_record_and_it_still_renders() {
         b"HTTP/1.1 200 OK\r\nContent-Length: 26\r\n\r\nabcdefghijklmnopqrstuvwxyz";
     let (port, capture) = serve(response);
 
-    let captured = fetch(&Recorder::new().max_response_length(45), port, "/truncated");
+    let captured = fetch(
+        &Recorder::new().max_response_length(Some(45)),
+        port,
+        "/truncated",
+    );
     capture.join().expect("a served request");
 
     assert_eq!(captured.response, &response[..45]);
@@ -225,7 +229,7 @@ fn a_read_timeout_inside_the_body_truncates_for_reason_time() {
     let (port, capture) = serve_then(response, Duration::from_millis(500));
 
     let captured = fetch(
-        &Recorder::new().io_timeout(Duration::from_millis(100)),
+        &Recorder::new().io_timeout(Some(Duration::from_millis(100))),
         port,
         "/slow",
     );
