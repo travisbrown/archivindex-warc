@@ -29,6 +29,9 @@
 //! 9. Every `request` record's target URI has, as its host, exactly the host of the collection
 //!    identifier named by the `warcinfo` record that most closely precedes it. A request that no
 //!    well-formed collection identifier governs is not held to this rule.
+//! 10. Every `revisit` record under the identical payload digest profile that carries a block
+//!     declares it as `WARC-Truncated: length`, which clause 6.7.2 of the standard asks of the
+//!     writer.
 //!
 //! Each rule a record breaks is one [`Finding`]. A record that breaks none is reported by its
 //! identifier alone.
@@ -44,7 +47,8 @@ use archivindex_warc::record::extension::NoExtension;
 use archivindex_warc::record::fields::dcmi::DcmiTerm;
 use archivindex_warc::record::fields::metadata::MetadataField;
 use archivindex_warc::record::fields::warcinfo::WarcinfoField;
-use archivindex_warc::record::header::WarcinfoHeader;
+use archivindex_warc::record::header::truncated_type::TruncatedType;
+use archivindex_warc::record::header::{RevisitProfile, WarcinfoHeader};
 use archivindex_warc::record::{FieldsBlock, Record};
 use archivindex_warc::value::{MediaType, Text};
 use fluent_uri::Uri;
@@ -165,6 +169,12 @@ pub enum Violation {
         #[serde(serialize_with = "serialize_optional_display")]
         found: Option<Text>,
     },
+    /// A `revisit` record carries a block it does not declare truncated.
+    #[error("the revisit carries a block of {length} octets without declaring it truncated")]
+    UndeclaredRevisitTruncation {
+        /// The length of the block the record carries.
+        length: u64,
+    },
     /// A `request` record's target URI does not have the collection's host as its host.
     #[error("the target URI's host should be `{expected}`, but {}", host(found.as_deref()))]
     WrongRequestHost {
@@ -197,6 +207,7 @@ impl Violation {
             Self::MissingCollectionId => "missing_collection_id",
             Self::MalformedCollectionId { .. } => "malformed_collection_id",
             Self::WrongFilename { .. } => "wrong_filename",
+            Self::UndeclaredRevisitTruncation { .. } => "undeclared_revisit_truncation",
             Self::WrongRequestHost { .. } => "wrong_request_host",
         }
     }
@@ -511,6 +522,14 @@ impl<R: BufRead> Linter<R> {
             self.report(index, record_id, Violation::MissingBlockDigest);
         }
 
+        if let Some(length) = undeclared_revisit_truncation(record) {
+            self.report(
+                index,
+                record_id,
+                Violation::UndeclaredRevisitTruncation { length },
+            );
+        }
+
         match &record.core().content_type {
             None => {
                 if record.content_length() > 0 && !matches!(record, Record::Continuation { .. }) {
@@ -778,7 +797,23 @@ const fn is_response_slot(record: &Record) -> bool {
     matches!(record, Record::Response { .. } | Record::Revisit { .. })
 }
 
-/// Whether a record's block determines its payload, as WARC 1.1 clause 5.10 defines it.
+/// The length of a block a `revisit` record carries without declaring the truncation it is.
+///
+/// Clause 6.7.2 of the WARC 1.1 standard has a record under the identical payload digest profile
+/// carry either no block or the beginning of the response it stands for, declared as
+/// `WARC-Truncated: length`. No rule here applies to another profile.
+fn undeclared_revisit_truncation(record: &Record) -> Option<u64> {
+    let Record::Revisit { header, body } = record else {
+        return None;
+    };
+
+    (!body.is_empty()
+        && header.profile == RevisitProfile::IDENTICAL_PAYLOAD_DIGEST
+        && !matches!(header.core.truncated, Some(TruncatedType::Length)))
+    .then_some(body.len() as u64)
+}
+
+/// Whether a record's block determines its payload, as WARC 1.1 clause 5.9 defines it.
 fn has_payload(record: &Record) -> bool {
     match record {
         Record::Resource { .. } | Record::Conversion { .. } => true,
@@ -1108,6 +1143,31 @@ mod tests {
             .with("WARC-Truncated", "length");
 
         assert_eq!(findings(&records), []);
+    }
+
+    /// Clause 6.7.2 obliges the writer, so a record that omits the field is read and reported
+    /// rather than refused.
+    #[test]
+    fn a_revisit_declares_the_truncation_its_block_is() {
+        let mut records = capture();
+        records[2] = records[2]
+            .clone()
+            .set("WARC-Type", "revisit")
+            .with(
+                "WARC-Profile",
+                "http://netpreserve.org/warc/1.1/revisit/identical-payload-digest",
+            )
+            .with("WARC-Truncated", "time");
+
+        assert_eq!(
+            findings(&records),
+            [(
+                2,
+                Violation::UndeclaredRevisitTruncation {
+                    length: records[2].body.len() as u64
+                }
+            )]
+        );
     }
 
     #[test]
