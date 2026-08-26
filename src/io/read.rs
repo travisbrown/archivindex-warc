@@ -54,62 +54,6 @@ pub enum Error {
     Record(#[from] record::Error),
 }
 
-#[cfg(test)]
-mod error_tests {
-    use super::Error;
-    use crate::parse::{raw, untyped};
-
-    /// Stream errors use local messages; transparent variants use their source messages.
-    #[test]
-    fn each_error_states_its_failure() {
-        let expectations = [
-            (
-                Error::Source(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
-                "Error reading data source.",
-                true,
-            ),
-            (
-                Error::HeaderBlockTooLarge,
-                "Record header block too large.",
-                false,
-            ),
-            (
-                Error::BodyTooLarge,
-                "Record body too large to buffer.",
-                false,
-            ),
-            (Error::UnexpectedEndOfBody, "Unexpected end of body.", false),
-            (
-                Error::MalformedRecordTerminator,
-                "Malformed record terminator.",
-                false,
-            ),
-            (
-                Error::Raw(raw::Error::MissingContentLength),
-                "Missing Content-Length.",
-                false,
-            ),
-            (
-                Error::Untyped(untyped::Error {
-                    name: "WARC-Date".to_owned(),
-                    source: crate::value::Error::Date("yesterday".to_owned()),
-                }),
-                "Malformed WARC-Date field: not a timestamp: yesterday",
-                true,
-            ),
-        ];
-
-        for (error, message, has_source) in expectations {
-            assert_eq!(error.to_string(), message);
-            assert_eq!(
-                std::error::Error::source(&error).is_some(),
-                has_source,
-                "{message}"
-            );
-        }
-    }
-}
-
 /// A reader which iteratively parses WARC records from a stream.
 pub struct WarcReader<R> {
     reader: R,
@@ -712,6 +656,62 @@ impl<R: BufRead, E: Extension, F: FnMut(&record::RecordHeader<E>) -> bool> Itera
             if let Err(error) = self.reading.skip_body(expected_body_len) {
                 return Some(Err(error));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::Error;
+    use crate::parse::{raw, untyped};
+
+    /// Stream errors use local messages; transparent variants use their source messages.
+    #[test]
+    fn each_error_states_its_failure() {
+        let expectations = [
+            (
+                Error::Source(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
+                "Error reading data source.",
+                true,
+            ),
+            (
+                Error::HeaderBlockTooLarge,
+                "Record header block too large.",
+                false,
+            ),
+            (
+                Error::BodyTooLarge,
+                "Record body too large to buffer.",
+                false,
+            ),
+            (Error::UnexpectedEndOfBody, "Unexpected end of body.", false),
+            (
+                Error::MalformedRecordTerminator,
+                "Malformed record terminator.",
+                false,
+            ),
+            (
+                Error::Raw(raw::Error::MissingContentLength),
+                "Missing Content-Length.",
+                false,
+            ),
+            (
+                Error::Untyped(untyped::Error {
+                    name: "WARC-Date".to_owned(),
+                    source: crate::value::Error::Date("yesterday".to_owned()),
+                }),
+                "Malformed WARC-Date field: not a timestamp: yesterday",
+                true,
+            ),
+        ];
+
+        for (error, message, has_source) in expectations {
+            assert_eq!(error.to_string(), message);
+            assert_eq!(
+                std::error::Error::source(&error).is_some(),
+                has_source,
+                "{message}"
+            );
         }
     }
 }
