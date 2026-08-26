@@ -13,8 +13,7 @@ use archivindex_warc::record::fields::Body;
 use archivindex_warc::record::fields::dcmi::DcmiTerm;
 use archivindex_warc::record::fields::warcinfo::WarcinfoField;
 use archivindex_warc::record::{self, FieldsBlock, Record, RenderError};
-use archivindex_warc::value::{Algorithm, LabelledDigest, Text};
-use sha2::Digest as _;
+use archivindex_warc::value::{LabelledDigest, Text};
 
 use crate::files::{is_gzip, open};
 use crate::{Error, Result};
@@ -68,6 +67,13 @@ pub enum WarcinfoError {
     /// The rewritten record cannot be rendered.
     #[error(transparent)]
     Render(#[from] RenderError),
+    /// The record's block digest is under an algorithm this build cannot compute, so the rewritten
+    /// block cannot be digested again.
+    #[error("cannot compute a {label} digest")]
+    UnsupportedDigestAlgorithm {
+        /// The algorithm as the record spells it.
+        label: String,
+    },
     /// Part of a field's value was to be replaced in a record whose value does not have it.
     #[error("the {field} field has no {part} to replace")]
     MissingPart {
@@ -262,32 +268,31 @@ fn rewrite_warcinfo(
     // Rendering measures the block and adds a SHA-256 digest when none is declared.
     header.core.content_length = None;
     let mut record = Record::Warcinfo { header, body };
-    let digest = record
-        .core()
-        .block_digest
-        .as_ref()
-        .and_then(|declared| refreshed_digest(declared, &record.body_bytes()));
-    record.core_mut().block_digest = digest;
+    let declared = record.core().block_digest.clone();
+    if let Some(declared) = declared {
+        record.core_mut().block_digest = Some(refreshed_digest(&declared, &record.body_bytes())?);
+    }
 
     Ok(record.into_raw()?)
 }
 
-/// The digest of `block` under the algorithm of `declared`, or `None` for an algorithm this
-/// crate cannot compute.
-fn refreshed_digest(declared: &LabelledDigest, block: &[u8]) -> Option<LabelledDigest> {
-    Some(match declared.algorithm()? {
-        Algorithm::Md5 => LabelledDigest::from_digest(Algorithm::Md5, &md5::Md5::digest(block)),
-        Algorithm::Sha1 => LabelledDigest::from_digest(Algorithm::Sha1, &sha1::Sha1::digest(block)),
-        Algorithm::Sha256 => {
-            LabelledDigest::from_digest(Algorithm::Sha256, &sha2::Sha256::digest(block))
-        }
-        _ => return None,
-    })
+/// The digest of `block` under the algorithm `declared` names.
+fn refreshed_digest(
+    declared: &LabelledDigest,
+    block: &[u8],
+) -> std::result::Result<LabelledDigest, WarcinfoError> {
+    declared
+        .algorithm()
+        .and_then(|algorithm| LabelledDigest::compute(algorithm, block))
+        .ok_or_else(|| WarcinfoError::UnsupportedDigestAlgorithm {
+            label: declared.algorithm_as_read().into_owned(),
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use archivindex_warc::record::fields::Field as _;
+    use archivindex_warc::value::Algorithm;
 
     use super::*;
 
@@ -347,7 +352,7 @@ mod tests {
     }
 
     fn sha1(body: &str) -> LabelledDigest {
-        LabelledDigest::from_digest(Algorithm::Sha1, &sha1::Sha1::digest(body))
+        LabelledDigest::compute(Algorithm::Sha1, body.as_bytes()).expect("a SHA-1 digest")
     }
 
     fn fields_of(record: &Record<NoExtension>) -> Vec<(&str, &str)> {
@@ -616,6 +621,35 @@ mod tests {
                 source: WarcinfoError::Field(_),
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn refuses_a_block_digest_it_cannot_compute() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input.warc");
+        let output = directory.path().join("output.warc");
+        let mut headers = warcinfo_headers("<urn:uuid:1>");
+        headers.push(("WARC-Block-Digest", "crc32:1c330fb2d66be8b5"));
+        std::fs::write(&input, render(&headers, WARCINFO_BODY)).unwrap();
+
+        let error = warcinfo(
+            &input,
+            &output,
+            &WarcinfoValues {
+                software_name: Some("new".to_owned()),
+                ..WarcinfoValues::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            &error,
+            Error::RewriteWarcinfo {
+                index: 0,
+                source: WarcinfoError::UnsupportedDigestAlgorithm { label },
+                ..
+            } if label == "crc32"
         ));
     }
 }
