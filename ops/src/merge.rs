@@ -20,7 +20,7 @@ use archivindex_warc::parse::raw;
 use archivindex_warc::value::{Text, WarcDate};
 use archivindex_warc::version::WarcVersion;
 
-use crate::file::{open, transform};
+use crate::file::{is_stdin, open, transform};
 use crate::{Error, Result};
 
 /// Fields whose values are record identifiers that may point at a warcinfo record.
@@ -60,10 +60,14 @@ pub struct MergeSummary {
 ///
 /// # Errors
 ///
-/// Returns an error when the output path is also an input path, a file cannot be opened, a record
-/// cannot be read or written, a warcinfo record whose duplicates are dropped has no
-/// `WARC-Record-ID` to redirect their references to, or the output cannot be moved into place.
+/// Returns an error when the output path is also an input path, either input is standard input
+/// (the operation reads both inputs twice), a file cannot be opened, a record cannot be read or
+/// written, a duplicate's references must be redirected but the surviving warcinfo record has no
+/// `WARC-Record-ID`, or the output cannot be moved into place.
 pub fn merge(first: &Path, second: &Path, output: &Path) -> Result<MergeSummary> {
+    if is_stdin(first) || is_stdin(second) {
+        return Err(Error::StandardInputReadTwice);
+    }
     let plan = MergePlan::build(first, second)?;
 
     plan.write(first, second, output)
@@ -566,5 +570,19 @@ mod tests {
             Error::SameInputAndOutput { path } if path == &first
         ));
         assert_eq!(std::fs::read(first).unwrap(), contents);
+    }
+
+    /// Standard input cannot serve both passes, so it is refused before either.
+    #[test]
+    fn refuses_standard_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let contents = warcinfo(ID_A, "2024-05-02T00:00:00Z", "sha1:AAAA", &[]);
+        let first = write_file(directory.path(), "first.warc", &contents);
+        let output = directory.path().join("merged.warc");
+
+        let error = merge(&first, Path::new("-"), &output).unwrap_err();
+
+        assert!(matches!(error, Error::StandardInputReadTwice));
+        assert!(!output.exists());
     }
 }

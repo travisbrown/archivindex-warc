@@ -31,7 +31,8 @@ struct Cli {
 enum Command {
     /// Canonicalize standard header spelling and order across a WARC file.
     Canonicalize {
-        /// The WARC file to canonicalize; a .gz extension selects gzip decompression.
+        /// The WARC file to canonicalize, or - for standard input; a .gz extension, or the gzip
+        /// magic number on standard input, selects gzip decompression.
         #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
@@ -42,7 +43,8 @@ enum Command {
 
     /// Compress a WARC file record by record, one gzip member per record.
     Compress {
-        /// The WARC file to compress; a .gz extension selects gzip decompression.
+        /// The WARC file to compress, or - for standard input; a .gz extension, or the gzip magic
+        /// number on standard input, selects gzip decompression.
         #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
@@ -63,7 +65,8 @@ enum Command {
 
     /// Write the records of a WARC file to standard output in a chosen format.
     Export {
-        /// The WARC file to export; a .gz extension selects gzip decompression.
+        /// The WARC file to export, or - for standard input; a .gz extension, or the gzip magic
+        /// number on standard input, selects gzip decompression.
         #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
@@ -73,7 +76,8 @@ enum Command {
 
     /// Draw the records and their relationships as an SVG graph.
     Graph {
-        /// The WARC file to graph; a .gz extension selects gzip decompression.
+        /// The WARC file to graph, or - for standard input; a .gz extension, or the gzip magic
+        /// number on standard input, selects gzip decompression.
         #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
@@ -86,8 +90,9 @@ enum Command {
     ///
     /// Exits 1 when the file has findings, and 2, as every command does, when it cannot be read.
     Lint {
-        /// The WARC file to lint; a .gz extension selects gzip decompression, whose member
-        /// framing is checked as well.
+        /// The WARC file to lint, or - for standard input; a .gz extension, or the gzip magic
+        /// number on standard input, selects gzip decompression, whose member framing is checked
+        /// as well.
         #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
@@ -98,7 +103,8 @@ enum Command {
 
     /// Merge the records of two WARC files, dropping duplicate warcinfo records.
     Merge {
-        /// The WARC file whose records come first.
+        /// The WARC file whose records come first; merge reads its inputs twice, so neither can be
+        /// standard input.
         #[arg(value_name = "FIRST", value_hint = clap::ValueHint::FilePath)]
         first: PathBuf,
 
@@ -113,7 +119,8 @@ enum Command {
 
     /// Rewrite part of a WARC file, copying every other record as read.
     Rewrite {
-        /// The WARC file to rewrite; a .gz extension selects gzip decompression.
+        /// The WARC file to rewrite, or - for standard input; a .gz extension, or the gzip magic
+        /// number on standard input, selects gzip decompression.
         #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
