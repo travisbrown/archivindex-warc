@@ -32,6 +32,10 @@
 //! 10. Every `revisit` record under the identical payload digest profile that carries a block
 //!     declares it as `WARC-Truncated: length`, which clause 6.7.2 of the standard asks of the
 //!     writer.
+//! 11. Every `WARC-Block-Digest` is the digest of the block the record carries, and every
+//!     `WARC-Payload-Digest` the digest of the payload its block determines. A digest under an
+//!     algorithm this build does not compute is not checked, and neither is the payload digest of a
+//!     segment or of a record that declares its block truncated.
 //!
 //! Each rule a record breaks is one [`Finding`]. A record that breaks none is reported by its
 //! identifier alone.
@@ -49,8 +53,8 @@ use archivindex_warc::record::fields::metadata::MetadataField;
 use archivindex_warc::record::fields::warcinfo::WarcinfoField;
 use archivindex_warc::record::header::truncated_type::TruncatedType;
 use archivindex_warc::record::header::{RevisitProfile, WarcinfoHeader};
-use archivindex_warc::record::{FieldsBlock, Record};
-use archivindex_warc::value::{MediaType, Text};
+use archivindex_warc::record::{BlockError, FieldsBlock, Record};
+use archivindex_warc::value::{LabelledDigest, MediaType, Text};
 use fluent_uri::Uri;
 
 /// A rule a record breaks.
@@ -175,6 +179,42 @@ pub enum Violation {
         /// The length of the block the record carries.
         length: u64,
     },
+    /// A record's `WARC-Block-Digest` is not the digest of the block it carries.
+    #[error("`WARC-Block-Digest` is `{declared}`, but the block digests as `{computed}`")]
+    BlockDigestMismatch {
+        /// The digest the record declares.
+        #[serde(serialize_with = "serialize_display")]
+        declared: LabelledDigest,
+        /// The digest of the block it carries.
+        #[serde(serialize_with = "serialize_display")]
+        computed: LabelledDigest,
+    },
+    /// A record's `WARC-Payload-Digest` is not the digest of the payload its block determines.
+    #[error("`WARC-Payload-Digest` is `{declared}`, but the payload digests as `{computed}`")]
+    PayloadDigestMismatch {
+        /// The digest the record declares.
+        #[serde(serialize_with = "serialize_display")]
+        declared: LabelledDigest,
+        /// The digest of the payload its block determines.
+        #[serde(serialize_with = "serialize_display")]
+        computed: LabelledDigest,
+    },
+    /// A record declares a digest the algorithm it names cannot have produced.
+    #[error("`{field}` is `{found}`, which the algorithm it names cannot have produced")]
+    MalformedDigest {
+        /// The field the digest is declared in.
+        #[serde(serialize_with = "serialize_display")]
+        field: Field,
+        /// The digest the record declares.
+        #[serde(serialize_with = "serialize_display")]
+        found: LabelledDigest,
+    },
+    /// A record declares a `WARC-Payload-Digest` over a block whose payload cannot be read.
+    #[error("the payload the declared digest covers cannot be read: {reason}")]
+    UnreadablePayload {
+        /// Why the block does not yield a payload.
+        reason: String,
+    },
     /// A `request` record's target URI does not have the collection's host as its host.
     #[error("the target URI's host should be `{expected}`, but {}", host(found.as_deref()))]
     WrongRequestHost {
@@ -208,6 +248,10 @@ impl Violation {
             Self::MalformedCollectionId { .. } => "malformed_collection_id",
             Self::WrongFilename { .. } => "wrong_filename",
             Self::UndeclaredRevisitTruncation { .. } => "undeclared_revisit_truncation",
+            Self::BlockDigestMismatch { .. } => "block_digest_mismatch",
+            Self::PayloadDigestMismatch { .. } => "payload_digest_mismatch",
+            Self::MalformedDigest { .. } => "malformed_digest",
+            Self::UnreadablePayload { .. } => "unreadable_payload",
             Self::WrongRequestHost { .. } => "wrong_request_host",
         }
     }
@@ -522,6 +566,8 @@ impl<R: BufRead> Linter<R> {
             self.report(index, record_id, Violation::MissingBlockDigest);
         }
 
+        self.check_digests(index, record);
+
         if let Some(length) = undeclared_revisit_truncation(record) {
             self.report(
                 index,
@@ -550,6 +596,63 @@ impl<R: BufRead> Linter<R> {
                     );
                 }
             }
+        }
+    }
+
+    /// Check the digests a record declares against the block it carries.
+    ///
+    /// Each digest is recomputed under the algorithm the record itself names. A digest this build
+    /// cannot compute, and a payload digest the record layer does not check, yield nothing.
+    fn check_digests(&mut self, index: usize, record: &Record) {
+        let record_id = record.core().record_id.clone();
+
+        match record.incorrect_block_digest() {
+            Some(BlockError::BlockDigestMismatch { declared, actual }) => self.report(
+                index,
+                &record_id,
+                Violation::BlockDigestMismatch {
+                    declared: *declared,
+                    computed: *actual,
+                },
+            ),
+            Some(BlockError::MalformedBlockDigest(found)) => self.report(
+                index,
+                &record_id,
+                Violation::MalformedDigest {
+                    field: Field::BlockDigest,
+                    found: *found,
+                },
+            ),
+            // The block digest check reports no other failure.
+            Some(_) | None => {}
+        }
+
+        match record.incorrect_payload_digest() {
+            Some(BlockError::PayloadDigestMismatch { declared, actual }) => self.report(
+                index,
+                &record_id,
+                Violation::PayloadDigestMismatch {
+                    declared: *declared,
+                    computed: *actual,
+                },
+            ),
+            Some(BlockError::MalformedPayloadDigest(found)) => self.report(
+                index,
+                &record_id,
+                Violation::MalformedDigest {
+                    field: Field::PayloadDigest,
+                    found: *found,
+                },
+            ),
+            Some(BlockError::Payload(error)) => self.report(
+                index,
+                &record_id,
+                Violation::UnreadablePayload {
+                    reason: error.to_string(),
+                },
+            ),
+            // The payload digest check reports no other failure.
+            Some(_) | None => {}
         }
     }
 
@@ -880,6 +983,8 @@ fn fits(found: &MediaType, expected: &MediaType) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use archivindex_warc::value::Algorithm;
+
     use super::*;
 
     const WARCINFO_ID: &str = "urn:uuid:aaaaaaaa-0000-4000-8000-000000000000";
@@ -892,8 +997,9 @@ mod tests {
     const FILENAME: &str = "example.com-20240401120000.warc.gz";
     const TARGET: &str = "https://example.com/";
     const DATE: &str = "2024-04-01T12:00:00Z";
-    /// The record layer keeps declared digests without checking them, so one value serves all.
-    const DIGEST: &str = "sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ";
+    /// What a fixture writes where the digest of the field's subject belongs, which rendering
+    /// replaces with that digest. A test wanting a digest a record does not have writes its own.
+    const DIGEST: &str = "sha1:PLACEHOLDER";
     const REQUEST_BLOCK: &str = "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
     const RESPONSE_BLOCK: &str = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
 
@@ -958,6 +1064,8 @@ mod tests {
                 });
             }
             for (name, value) in headers {
+                let computed = (value == DIGEST).then(|| digest(covered(name, &self.body)));
+                let value = computed.as_deref().unwrap_or(value);
                 out.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
             }
             out.extend_from_slice(
@@ -966,6 +1074,32 @@ mod tests {
             out.extend_from_slice(self.body.as_bytes());
             out.extend_from_slice(b"\r\n\r\n");
         }
+    }
+
+    /// What a digest field covers.
+    ///
+    /// A payload digest covers the entity-body of an HTTP message, which is what follows the empty
+    /// line closing its head. A `resource` block holds no such line and is covered whole.
+    fn covered<'a>(field: &str, body: &'a str) -> &'a str {
+        if field == "WARC-Payload-Digest"
+            && let Some((_, entity_body)) = body.split_once("\r\n\r\n")
+        {
+            entity_body
+        } else {
+            body
+        }
+    }
+
+    /// A digest as a record declares it.
+    fn labelled(value: &str) -> LabelledDigest {
+        LabelledDigest::parse(value.as_bytes()).expect("a well-formed labelled digest")
+    }
+
+    /// The digest of what a field covers, written as the fixtures declare digests.
+    fn digest(content: &str) -> String {
+        LabelledDigest::compute(Algorithm::Sha1, content.as_bytes())
+            .expect("the sha1 algorithm is enabled")
+            .to_string()
     }
 
     fn warcinfo() -> TestRecord {
@@ -1309,6 +1443,89 @@ mod tests {
                 (0, Violation::MissingBlockDigest),
                 (3, Violation::MissingBlockDigest)
             ]
+        );
+    }
+
+    /// The digest of the empty block, which no fixture carries.
+    const EMPTY_DIGEST: &str = "sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ";
+
+    #[test]
+    fn a_declared_digest_is_the_digest_of_what_it_covers() {
+        let mut records = capture();
+        records[2] = records[2]
+            .clone()
+            .set("WARC-Block-Digest", EMPTY_DIGEST)
+            .set("WARC-Payload-Digest", EMPTY_DIGEST);
+
+        assert_eq!(
+            findings(&records),
+            [
+                (
+                    2,
+                    Violation::BlockDigestMismatch {
+                        declared: labelled(EMPTY_DIGEST),
+                        computed: labelled(&digest(RESPONSE_BLOCK)),
+                    }
+                ),
+                (
+                    2,
+                    Violation::PayloadDigestMismatch {
+                        declared: labelled(EMPTY_DIGEST),
+                        computed: labelled(&digest("hello")),
+                    }
+                ),
+            ]
+        );
+    }
+
+    /// A digest is checked under the algorithm the record itself names.
+    #[test]
+    fn a_digest_is_checked_under_the_algorithm_it_names() {
+        let mut records = capture();
+        records[2] = records[2].clone().set(
+            "WARC-Block-Digest",
+            &LabelledDigest::compute(Algorithm::Md5, RESPONSE_BLOCK.as_bytes())
+                .expect("the md5 algorithm is enabled")
+                .to_string(),
+        );
+
+        assert_eq!(findings(&records), []);
+    }
+
+    /// A value the algorithm cannot have produced is reported rather than compared.
+    #[test]
+    fn a_digest_the_algorithm_cannot_have_produced_is_reported() {
+        let mut records = capture();
+        records[2] = records[2].clone().set("WARC-Block-Digest", "sha1:AAAA");
+
+        assert_eq!(
+            findings(&records),
+            [(
+                2,
+                Violation::MalformedDigest {
+                    field: Field::BlockDigest,
+                    found: labelled("sha1:AAAA"),
+                }
+            )]
+        );
+    }
+
+    /// A payload digest declared over a block that is not the HTTP message it claims to be names
+    /// nothing the linter can compute.
+    #[test]
+    fn a_payload_digest_over_an_unreadable_block_is_reported() {
+        let mut records = capture();
+        records[2].body = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n".to_owned();
+
+        assert_eq!(
+            findings(&records),
+            [(
+                2,
+                Violation::UnreadablePayload {
+                    reason: "The HTTP message does not end its header section with an empty line."
+                        .to_owned(),
+                }
+            )]
         );
     }
 
@@ -1790,6 +2007,15 @@ mod tests {
                     }
                 ),
                 (1, Violation::MissingWarcinfoId),
+                // The writer digested the message body as it was framed, where clause 5.9 has the
+                // payload be the entity-body, which is that body dechunked.
+                (
+                    1,
+                    Violation::PayloadDigestMismatch {
+                        declared: labelled("sha1:b1f949b4920c773fd9c863479ae9a788b948c7ad"),
+                        computed: labelled("sha1:RBDPEPHJIOR3OAEJ7BRUKYTHPDGZH4I6"),
+                    }
+                ),
                 (1, Violation::ResponseWithoutRequest),
                 (
                     2,
