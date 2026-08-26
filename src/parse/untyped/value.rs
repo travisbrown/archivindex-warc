@@ -8,7 +8,9 @@ use std::net::IpAddr;
 use fluent_uri::Uri;
 
 use super::name::Field;
-use crate::parsing::{is_text_char, is_token, lossy, parse_content_length, unfold};
+use crate::parsing::{
+    is_text_char, is_token, lossy, parse_content_length, stray_line_break, unfold,
+};
 use crate::value::{Error, LabelledDigest, MediaType, Text, TextError, WarcDate};
 use crate::version::WarcVersion;
 
@@ -138,8 +140,18 @@ impl HeaderValue {
     ///
     /// # Errors
     ///
-    /// Returns the [`Error`] of the grammar the field selects.
+    /// Returns [`TextError::ControlCharacter`] when the value holds a line break that opens no
+    /// fold, since the bytes could then not be written back as the value they parse to, and
+    /// otherwise the [`Error`] of the grammar the field selects.
     pub fn parse(field: Option<Field>, raw: &[u8]) -> Result<Self, Error> {
+        if let Some(index) = stray_line_break(raw) {
+            return Err(TextError::ControlCharacter {
+                value: lossy(raw),
+                index,
+            }
+            .into());
+        }
+
         let content = unfold(raw);
         let form = if let Some(kind) = field.map(form_of) {
             Some(parse_form(kind, &content)?)
@@ -277,7 +289,7 @@ fn parse_uri(content: &[u8]) -> Result<ValueForm, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, Field, HeaderValue, ValueForm};
+    use super::{Error, Field, HeaderValue, TextError, ValueForm};
 
     /// A value keeps every byte it was written with, whatever its grammar makes of them.
     #[test]
@@ -389,6 +401,24 @@ mod tests {
         // `TEXT` includes linear white space, so a tab inside a value is not one of them.
         let tabbed = HeaderValue::parse(None, b" with\ttab").unwrap();
         assert_eq!(tabbed.as_bytes(), b" with\ttab");
+    }
+
+    /// A line break that opens no fold is refused, so the bytes kept always spell the form read.
+    #[test]
+    fn refuses_a_line_break_that_opens_no_fold() {
+        for value in [&b"1\r2"[..], b"1\r\n2", b"1\n2", b"1\r"] {
+            assert!(matches!(
+                HeaderValue::parse(Some(Field::ContentLength), value),
+                Err(Error::Text(TextError::ControlCharacter { index: 1, .. }))
+            ));
+            assert!(matches!(
+                HeaderValue::parse(None, value),
+                Err(Error::Text(TextError::ControlCharacter { index: 1, .. }))
+            ));
+        }
+
+        let folded = HeaderValue::parse(Some(Field::ContentLength), b"\r\n 12").unwrap();
+        assert_eq!(folded.form(), Some(&ValueForm::Digits(12)));
     }
 
     /// Bytes that are not UTF-8 fail every grammar that reads a value as text, and are kept
