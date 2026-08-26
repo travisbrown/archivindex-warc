@@ -21,15 +21,8 @@ use archivindex_warc::value::{Text, WarcDate};
 use archivindex_warc::version::WarcVersion;
 
 use crate::file::{is_stdin, open, transform};
+use crate::header::{REFERENCE_FIELDS, is_warcinfo, normalize_id};
 use crate::{Error, Result};
-
-/// Fields whose values are record identifiers that may point at a warcinfo record.
-const REFERENCE_FIELDS: [&str; 4] = [
-    "WARC-Warcinfo-ID",
-    "WARC-Refers-To",
-    "WARC-Concurrent-To",
-    "WARC-Segment-Origin-ID",
-];
 
 /// Fields that vary between otherwise identical warcinfo records: the generated identifier, the
 /// capture date, the name of the enclosing file, and the digests.
@@ -260,13 +253,6 @@ fn set_filename(header: &mut raw::RecordHeader, filename: Option<&[u8]>) {
     });
 }
 
-/// Whether a header block declares a warcinfo record.
-fn is_warcinfo(header: &raw::RecordHeader) -> bool {
-    header
-        .get("WARC-Type")
-        .is_some_and(|value| value.trim_ascii().eq_ignore_ascii_case(b"warcinfo"))
-}
-
 /// The trimmed `WARC-Record-ID` value of a record.
 fn record_id(record: &raw::Record) -> Option<&[u8]> {
     record
@@ -274,16 +260,6 @@ fn record_id(record: &raw::Record) -> Option<&[u8]> {
         .get("WARC-Record-ID")
         .map(<[u8]>::trim_ascii)
         .filter(|value| !value.is_empty())
-}
-
-/// A record identifier without its surrounding white space and angle brackets, for comparison.
-fn normalize_id(value: &[u8]) -> &[u8] {
-    let value = value.trim_ascii();
-
-    value
-        .strip_prefix(b"<")
-        .and_then(|inner| inner.strip_suffix(b">"))
-        .unwrap_or(value)
 }
 
 /// The instant a record's `WARC-Date` declares, when it can be read.
@@ -299,24 +275,13 @@ mod tests {
     use std::io::Write;
     use std::path::PathBuf;
 
+    use archivindex_test_support::render;
+
     use super::*;
 
     const ID_A: &str = "<urn:uuid:aaaaaaaa-0000-4000-8000-000000000000>";
     const ID_B: &str = "<urn:uuid:bbbbbbbb-0000-4000-8000-000000000000>";
     const ID_RESPONSE_A: &str = "<urn:uuid:cccccccc-0000-4000-8000-000000000000>";
-
-    /// A WARC 1.1 record with the given fields, framed by the body's length.
-    fn render(headers: &[(&str, &str)], body: &str) -> Vec<u8> {
-        let mut record = b"WARC/1.1\r\n".to_vec();
-        for (name, value) in headers {
-            record.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
-        }
-        record.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
-        record.extend_from_slice(body.as_bytes());
-        record.extend_from_slice(b"\r\n\r\n");
-
-        record
-    }
 
     fn warcinfo(id: &str, date: &str, digest: &str, extra: &[(&str, &str)]) -> Vec<u8> {
         let mut headers = vec![

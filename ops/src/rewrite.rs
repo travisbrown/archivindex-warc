@@ -13,6 +13,7 @@ use archivindex_warc::record::{self, FieldsBlock, Record, RenderError};
 use archivindex_warc::value::{LabelledDigest, Text, marker};
 
 use crate::file::transform;
+use crate::header::is_warcinfo;
 use crate::{Error, Result};
 
 /// What was written to the rewritten file.
@@ -184,13 +185,6 @@ pub fn warcinfo(input: &Path, output: &Path, values: &WarcinfoValues) -> Result<
     Ok(RewriteSummary { records, rewritten })
 }
 
-/// Whether a header block declares the `warcinfo` record type.
-fn is_warcinfo(header: &raw::RecordHeader) -> bool {
-    header
-        .get("WARC-Type")
-        .is_some_and(|value| value.trim_ascii().eq_ignore_ascii_case(b"warcinfo"))
-}
-
 /// Lift a warcinfo record, set `values` in its block, and render it again.
 fn rewrite_warcinfo(
     record: raw::Record,
@@ -252,6 +246,7 @@ fn refreshed_digest(
 
 #[cfg(test)]
 mod tests {
+    use archivindex_test_support::render;
     use archivindex_warc::record::fields::Field as _;
     use archivindex_warc::value::Algorithm;
 
@@ -289,19 +284,6 @@ mod tests {
             .into_iter()
             .map(|(field, value)| (field.to_owned(), value.to_owned()))
             .collect())
-    }
-
-    /// A WARC 1.1 record with the given fields, framed by the body's length.
-    fn render(headers: &[(&str, &str)], body: &str) -> Vec<u8> {
-        let mut record = b"WARC/1.1\r\n".to_vec();
-        for (name, value) in headers {
-            record.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
-        }
-        record.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
-        record.extend_from_slice(body.as_bytes());
-        record.extend_from_slice(b"\r\n\r\n");
-
-        record
     }
 
     /// The header fields every test record needs, with the given type and numbered identifier.

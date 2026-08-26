@@ -9,8 +9,9 @@ use archivindex_cli_support::plural;
 use archivindex_warc::io::read::{Error, WarcReader};
 use archivindex_warc::record::Record;
 use archivindex_warc::record::extension::NoExtension;
+use archivindex_warc_ops::file::is_gzip;
 
-use crate::model::{ValidationResult, is_gzip};
+use crate::model::ValidationResult;
 
 /// A validation layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -137,12 +137,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "archivindex-warc-ops"
+version = "0.1.0"
+dependencies = [
+ "archivindex-warc",
+ "flate2",
+ "fluent-uri",
+ "log",
+ "serde",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "archivindex-warc-validator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "archivindex-cli-support",
  "archivindex-warc",
+ "archivindex-warc-ops",
  "blake3",
  "clap",
  "directories",

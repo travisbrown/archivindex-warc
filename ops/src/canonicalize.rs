@@ -60,22 +60,11 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
 
+    use archivindex_test_support::render;
+
     use super::*;
     use crate::Error;
     use crate::file::open;
-
-    /// A WARC 1.1 record with the given fields, framed by the body's length.
-    fn render(headers: &[(&str, &str)], body: &str) -> Vec<u8> {
-        let mut record = b"WARC/1.1\r\n".to_vec();
-        for (name, value) in headers {
-            record.extend_from_slice(format!("{name}:{value}\r\n").as_bytes());
-        }
-        record.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
-        record.extend_from_slice(body.as_bytes());
-        record.extend_from_slice(b"\r\n\r\n");
-
-        record
-    }
 
     #[test]
     fn canonicalizes_every_header_without_changing_values_or_bodies() {
@@ -85,13 +74,13 @@ mod tests {
 
         let mut contents = render(
             &[
-                ("X-First", " extension one "),
-                ("warc-record-id", " <urn:uuid:first> "),
-                ("WARC-concurrent-TO", " <urn:uuid:a> "),
-                ("warc-type", " response "),
-                ("X-Second", " extension two "),
-                ("warc-CONCURRENT-to", " <urn:uuid:b> "),
-                ("warc-date", " not parsed by this operation "),
+                ("X-First", "extension one "),
+                ("warc-record-id", "<urn:uuid:first> "),
+                ("WARC-concurrent-TO", "<urn:uuid:a> "),
+                ("warc-type", "response "),
+                ("X-Second", "extension two "),
+                ("warc-CONCURRENT-to", "<urn:uuid:b> "),
+                ("warc-date", "not parsed by this operation "),
             ],
             "first body",
         );

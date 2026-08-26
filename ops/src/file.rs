@@ -239,15 +239,13 @@ mod tests {
     use std::collections::VecDeque;
     use std::io::Write;
 
+    use archivindex_test_support::render;
+
     use super::*;
 
-    /// A WARC 1.1 resource record framed by the body's length.
-    fn render(body: &str) -> Vec<u8> {
-        format!(
-            "WARC/1.1\r\nWARC-Type: resource\r\nContent-Length: {}\r\n\r\n{body}\r\n\r\n",
-            body.len()
-        )
-        .into_bytes()
+    /// A WARC 1.1 resource record with the given body.
+    fn resource(body: &str) -> Vec<u8> {
+        render(&[("WARC-Type", "resource")], body)
     }
 
     /// A file compressed record by record has a member for each record, which the framing of a
@@ -256,7 +254,7 @@ mod tests {
     fn reports_the_member_framing_of_a_gzip_input() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("input.warc.gz");
-        let records = [render("first"), render("second")];
+        let records = [resource("first"), resource("second")];
         let mut compressed = Vec::new();
         crate::compress::compress(&records.concat()[..], 1, &mut compressed).unwrap();
         std::fs::write(&path, compressed).unwrap();
@@ -281,7 +279,7 @@ mod tests {
     fn reports_no_framing_for_an_uncompressed_input() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("input.warc");
-        std::fs::write(&path, render("body")).unwrap();
+        std::fs::write(&path, resource("body")).unwrap();
 
         assert!(read_framed(&path).unwrap().1.is_none());
     }
@@ -289,7 +287,7 @@ mod tests {
     /// Standard input has no extension, so it is gzip when it begins as a gzip member does.
     #[test]
     fn reads_standard_input_as_gzip_by_its_magic_number() {
-        let record = render("body");
+        let record = resource("body");
         let mut compressed = Vec::new();
         crate::compress::compress(&record[..], 1, &mut compressed).unwrap();
 
@@ -309,7 +307,7 @@ mod tests {
     /// The bytes read to look for the magic number are read again as part of the input.
     #[test]
     fn reads_uncompressed_standard_input_from_its_first_byte() {
-        let record = render("body");
+        let record = resource("body");
 
         let (mut reader, framing) = framed_by_magic(Cursor::new(record.clone())).unwrap();
         let mut read = Vec::new();
@@ -334,7 +332,7 @@ mod tests {
     fn refuses_an_output_that_spells_an_input_differently() {
         let directory = tempfile::tempdir().unwrap();
         let input = directory.path().join("input.warc");
-        std::fs::write(&input, render("body")).unwrap();
+        std::fs::write(&input, resource("body")).unwrap();
         let output = directory.path().join(".").join("input.warc");
 
         let error = transform(&[&input], &output, |_, record| Ok(Some(record))).unwrap_err();
@@ -347,7 +345,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let input = directory.path().join("input.warc");
         let output = directory.path().join("output.warc");
-        let mut contents = render("body");
+        let mut contents = resource("body");
         contents.extend_from_slice(b"WARC/1.1\r\nWARC-Type: resource\r\n");
         std::fs::write(&input, contents).unwrap();
         std::fs::write(&output, b"previous").unwrap();
@@ -364,7 +362,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let input = directory.path().join("input.warc");
         let output = directory.path().join("output.warc");
-        std::fs::write(&input, render("body")).unwrap();
+        std::fs::write(&input, resource("body")).unwrap();
         let mut stale = File::create(partial_path(&output)).unwrap();
         stale.write_all(b"stale").unwrap();
         drop(stale);
