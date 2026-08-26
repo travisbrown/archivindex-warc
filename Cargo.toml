@@ -5,10 +5,7 @@ resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
-authors = [
-  "Reza Akhavan <reza@akhavan.me>",
-  "Travis Brown <travisrobertbrown@gmail.com>",
-]
+authors = ["Travis Brown <travisrobertbrown@gmail.com>"]
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -46,7 +43,10 @@ readme = "README.md"
 repository.workspace = true
 documentation = "https://docs.rs/crate/archivindex-warc/"
 license.workspace = true
-authors.workspace = true
+authors = [
+  "Reza Akhavan <reza@akhavan.me>",
+  "Travis Brown <travisrobertbrown@gmail.com>",
+]
 keywords = ["warc", "web", "archive"]
 categories = ["encoding", "parser-implementations"]
 edition.workspace = true
