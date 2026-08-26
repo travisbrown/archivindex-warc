@@ -10,7 +10,7 @@
 
 use http::{HeaderMap, Method, StatusCode, Uri, Version};
 
-use crate::parsing::is_token;
+use crate::parsing::{is_lws, is_token, next_line};
 
 /// Parsed fields and boundaries of a recorded HTTP response message.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -139,36 +139,39 @@ struct Head<'a> {
 
 /// Split a header section into its start line, its body offset, and its unfolded field lines.
 ///
+/// Line endings are read as they are elsewhere in this crate, so a bare `LF` terminates a line,
+/// which is what RFC 9112 section 2.2 asks of a recipient.
+///
 /// Returns `None` when the section is unterminated or a field line has no name.
 fn parse_head(message: &[u8]) -> Option<Head<'_>> {
-    let body_offset = message.windows(4).position(|bytes| bytes == b"\r\n\r\n")? + 4;
-    let line_end = message.windows(2).position(|bytes| bytes == b"\r\n")?;
-    // An unterminated start line would otherwise be read as the whole header section.
-    if line_end >= body_offset {
-        return None;
-    }
+    let start_line = next_line(message, 0)?;
+    let mut offset = start_line.next;
     let mut headers = Fields::new();
-    for line in message[line_end + 2..body_offset - 2].split(|&byte| byte == b'\n') {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if line.is_empty() {
-            continue;
+
+    loop {
+        let line = next_line(message, offset)?;
+        let content = &message[offset..line.end];
+        offset = line.next;
+
+        if content.is_empty() {
+            return Some(Head {
+                start_line: &message[..start_line.end],
+                body_offset: offset,
+                headers,
+            });
         }
-        if line.first().is_some_and(u8::is_ascii_whitespace) {
+
+        if content.first().copied().is_some_and(is_lws) {
             let (_, value) = headers.last_mut()?;
             value.push(b' ');
-            value.extend_from_slice(trim_ascii(line));
+            value.extend_from_slice(trim_ascii(content));
             continue;
         }
-        let colon = line.iter().position(|&byte| byte == b':')?;
-        let name = std::str::from_utf8(&line[..colon]).ok()?.to_owned();
-        headers.push((name, trim_ascii(&line[colon + 1..]).to_vec()));
-    }
 
-    Some(Head {
-        start_line: &message[..line_end],
-        body_offset,
-        headers,
-    })
+        let colon = content.iter().position(|&byte| byte == b':')?;
+        let name = std::str::from_utf8(&content[..colon]).ok()?.to_owned();
+        headers.push((name, trim_ascii(&content[colon + 1..]).to_vec()));
+    }
 }
 
 fn header_values<'h, 'n>(
@@ -377,6 +380,25 @@ mod tests {
         let metadata = ResponseMetadata::parse(response).unwrap();
 
         assert_eq!(metadata.header("x-test"), Some(b"one two three".as_slice()));
+    }
+
+    /// The head is framed as `payload::entity_body` frames it, bare `LF` included.
+    #[test]
+    fn response_metadata_reads_lines_ended_with_a_bare_line_feed() {
+        let response = b"HTTP/1.1 200 OK\nContent-Type: text/html\r\n\r\nhi";
+        let metadata = ResponseMetadata::parse(response).unwrap();
+
+        assert_eq!(metadata.status, 200);
+        assert_eq!(
+            metadata.header("content-type"),
+            Some(b"text/html".as_slice())
+        );
+        assert_eq!(
+            &response[metadata.body_offset..],
+            crate::record::payload::entity_body(response)
+                .unwrap()
+                .as_ref()
+        );
     }
 
     #[test]
