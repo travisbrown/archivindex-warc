@@ -22,19 +22,15 @@ pub fn add_block_digest<E: Extension>(record: &mut Record<E>, algorithm: Algorit
     }
 }
 
-/// Add a payload digest when the record is eligible and declares none.
+/// Add a payload digest when the record's payload is determined and it declares none.
 ///
 /// Records that would not receive a payload digest during rendering are unchanged.
 pub fn add_payload_digest<E: Extension>(record: &mut Record<E>, algorithm: Algorithm) {
     let digest = match record.payload() {
-        Some(headers)
-            if headers.payload_digest.is_none() && record.takes_added_payload_digest() =>
-        {
-            match record.payload_bytes() {
-                Ok(Some(payload)) => added_digest(algorithm.into(), &payload),
-                Ok(None) | Err(_) => return,
-            }
-        }
+        Some(headers) if headers.payload_digest.is_none() => match record.payload_bytes() {
+            Ok(Some(payload)) => added_digest(algorithm.into(), &payload),
+            Ok(None) | Err(_) => return,
+        },
         Some(_) | None => return,
     };
 
@@ -145,10 +141,7 @@ pub fn check_payload_digest<E: Extension>(
             verify_payload_digest(declared, &payload)?;
             Ok(None)
         }
-        None if record.takes_added_payload_digest() => {
-            Ok(added.map(|format| added_digest(format, &payload)))
-        }
-        None => Ok(None),
+        None => Ok(added.map(|format| added_digest(format, &payload))),
     }
 }
 

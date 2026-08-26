@@ -820,11 +820,6 @@ impl<E: Extension> Record<E> {
         check_payload_digest(self, None).err()
     }
 
-    /// Whether rendering should add a missing payload digest.
-    const fn takes_added_payload_digest(&self) -> bool {
-        matches!(self, Self::Response { .. } | Self::Request { .. })
-    }
-
     /// Whether this record declares an HTTP message as its block.
     ///
     /// The target URI must name HTTP or HTTPS, and the media type must be `application/http` or
@@ -884,7 +879,8 @@ impl<E: Extension> Record<E> {
     /// Render as [`into_raw`](Self::into_raw), adding the digests the record does not declare.
     ///
     /// A record declaring no `WARC-Block-Digest` is given one, and a `WARC-Payload-Digest` is
-    /// added to HTTP `response` and `request` records that are neither segments nor truncated.
+    /// added to a record whose payload [`payload_bytes`](Self::payload_bytes) determines, unless
+    /// it is a segment or truncated.
     /// The algorithm is chosen at the type level ([`Supported`]), so an algorithm this build
     /// cannot compute is a compile error. Declared digests are checked exactly as
     /// [`into_raw`](Self::into_raw) checks them.
@@ -2204,14 +2200,15 @@ mod tests {
         }
     }
 
-    /// Rendering with digests adds payload digests to requests and responses, but not
-    /// whole-block payloads.
+    /// Rendering with digests adds a payload digest to every record whose payload is determined.
     #[test]
     fn a_record_declaring_no_payload_digest_is_given_one() {
         for (record_type, block, digest) in [
             ("response", RESPONSE_BLOCK, Some(ADDED_PAYLOAD_DIGEST)),
             ("request", RESPONSE_BLOCK, Some(ADDED_PAYLOAD_DIGEST)),
-            ("resource", DIGESTED_BLOCK, None),
+            ("resource", DIGESTED_BLOCK, Some(ADDED_PAYLOAD_DIGEST)),
+            ("conversion", DIGESTED_BLOCK, Some(ADDED_PAYLOAD_DIGEST)),
+            ("metadata", DIGESTED_BLOCK, None),
         ] {
             let raw = payload_record(record_type, &[], block)
                 .into_raw_with_digests(marker::Sha256)
@@ -2655,6 +2652,7 @@ mod tests {
                 "WARC-Target-URI",
                 "WARC-Date",
                 "WARC-Record-ID",
+                "WARC-Payload-Digest",
                 "WARC-Block-Digest",
                 "Content-Length",
                 "X-First",
@@ -2692,6 +2690,7 @@ mod tests {
                 "WARC-Target-URI",
                 "WARC-Date",
                 "WARC-Record-ID",
+                "WARC-Payload-Digest",
                 "WARC-Block-Digest",
                 "Content-Length",
             ]
