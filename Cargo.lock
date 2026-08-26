@@ -98,6 +98,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "archivindex-test-support"
+version = "0.1.0"
+
+[[package]]
 name = "archivindex-warc"
 version = "0.1.0"
 dependencies = [
@@ -130,6 +134,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "archivindex-cli-support",
+ "archivindex-test-support",
  "archivindex-warc",
  "archivindex-warc-ops",
  "clap",
@@ -164,6 +169,7 @@ dependencies = [
 name = "archivindex-warc-ops"
 version = "0.1.0"
 dependencies = [
+ "archivindex-test-support",
  "archivindex-warc",
  "flate2",
  "fluent-uri",

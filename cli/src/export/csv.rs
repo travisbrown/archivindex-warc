@@ -58,27 +58,9 @@ fn record_uuid(uri: &Uri<String>) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use archivindex_test_support::render;
+
     use super::*;
-
-    /// A WARC 1.1 record with the given fields, framed by the body's length.
-    fn render(fields: &[(&str, &str)], body: &str) -> String {
-        use std::fmt::Write as _;
-
-        let mut record = String::from("WARC/1.1\r\n");
-
-        for (name, value) in fields {
-            write!(record, "{name}: {value}\r\n")
-                .expect("invariant violation: writing to a String");
-        }
-        write!(
-            record,
-            "Content-Length: {}\r\n\r\n{body}\r\n\r\n",
-            body.len()
-        )
-        .expect("invariant violation: writing to a String");
-
-        record
-    }
 
     #[test]
     fn writes_a_header_and_one_row_per_record() {
@@ -91,7 +73,7 @@ mod tests {
             ],
             "",
         );
-        input.push_str(&render(
+        input.extend_from_slice(&render(
             &[
                 ("WARC-Type", "resource"),
                 ("WARC-Record-ID", "<https://example.com/ids/2>"),
@@ -102,7 +84,7 @@ mod tests {
         ));
         let mut output = Vec::new();
 
-        let count = export(input.as_bytes(), &mut output).unwrap();
+        let count = export(input.as_slice(), &mut output).unwrap();
 
         assert_eq!(count, 2);
         assert_eq!(
