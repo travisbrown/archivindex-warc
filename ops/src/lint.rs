@@ -53,7 +53,8 @@ use fluent_uri::Uri;
 ///
 /// The module documentation lists the rules. The fields carry what the rule expected and what the
 /// record had, where that is not obvious from the variant.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, thiserror::Error)]
+#[serde(tag = "rule", rename_all = "snake_case")]
 pub enum Violation {
     /// Two adjacent fields appear in the opposite of canonical order.
     #[error("`{following}` should appear before `{preceding}`")]
@@ -77,8 +78,10 @@ pub enum Violation {
     #[error("`WARC-Warcinfo-ID` names {found}, but {}", preceding_warcinfo(expected.as_ref()))]
     WrongWarcinfoId {
         /// The `warcinfo` record that most closely precedes this one, or `None` if none does.
+        #[serde(serialize_with = "serialize_optional_display")]
         expected: Option<Uri<String>>,
         /// The record the field names.
+        #[serde(serialize_with = "serialize_display")]
         found: Uri<String>,
     },
     /// A record whose block determines its payload carries no `WARC-Payload-Digest`.
@@ -94,8 +97,10 @@ pub enum Violation {
     #[error("`Content-Type` should be `{expected}`, but is `{found}`")]
     WrongContentType {
         /// The media type the record's type calls for.
+        #[serde(serialize_with = "serialize_display")]
         expected: MediaType,
         /// The media type the record declares.
+        #[serde(serialize_with = "serialize_display")]
         found: MediaType,
     },
     /// A `request` record is not immediately followed by its `response` or `revisit` record.
@@ -120,16 +125,20 @@ pub enum Violation {
     )]
     WrongConcurrentTo {
         /// The record the field should name.
+        #[serde(serialize_with = "serialize_display")]
         expected: Uri<String>,
         /// The records the field names.
+        #[serde(serialize_with = "serialize_display_sequence")]
         found: Vec<Uri<String>>,
     },
     /// A capture record's `WARC-Target-URI` is not the request's.
     #[error("`WARC-Target-URI` should be {expected}, but {}", target_uri(found.as_ref()))]
     WrongTargetUri {
         /// The request's target URI.
+        #[serde(serialize_with = "serialize_display")]
         expected: Uri<String>,
         /// The record's target URI, or `None` if it carries none.
+        #[serde(serialize_with = "serialize_optional_display")]
         found: Option<Uri<String>>,
     },
     /// A capture's `metadata` record carries no `fetchTimeMs` field.
@@ -153,6 +162,7 @@ pub enum Violation {
         /// The file name the collection identifier calls for.
         expected: String,
         /// The record's file name, or `None` if it carries none.
+        #[serde(serialize_with = "serialize_optional_display")]
         found: Option<Text>,
     },
     /// A `request` record's target URI does not have the collection's host as its host.
@@ -163,6 +173,71 @@ pub enum Violation {
         /// The target URI's host, or `None` if it has none.
         found: Option<String>,
     },
+}
+
+impl Violation {
+    /// The name of the rule this breaks, as the serialized form writes it.
+    #[must_use]
+    pub const fn rule(&self) -> &'static str {
+        match self {
+            Self::NonCanonicalHeaderOrder { .. } => "non_canonical_header_order",
+            Self::FirstRecordNotWarcinfo { .. } => "first_record_not_warcinfo",
+            Self::MissingWarcinfoId => "missing_warcinfo_id",
+            Self::WrongWarcinfoId { .. } => "wrong_warcinfo_id",
+            Self::MissingPayloadDigest => "missing_payload_digest",
+            Self::MissingBlockDigest => "missing_block_digest",
+            Self::MissingContentType => "missing_content_type",
+            Self::WrongContentType { .. } => "wrong_content_type",
+            Self::RequestWithoutResponse { .. } => "request_without_response",
+            Self::ResponseWithoutRequest => "response_without_request",
+            Self::ResponseWithoutMetadata { .. } => "response_without_metadata",
+            Self::WrongConcurrentTo { .. } => "wrong_concurrent_to",
+            Self::WrongTargetUri { .. } => "wrong_target_uri",
+            Self::MissingFetchTime => "missing_fetch_time",
+            Self::MissingCollectionId => "missing_collection_id",
+            Self::MalformedCollectionId { .. } => "malformed_collection_id",
+            Self::WrongFilename { .. } => "wrong_filename",
+            Self::WrongRequestHost { .. } => "wrong_request_host",
+        }
+    }
+}
+
+/// A value serialized as its printed form.
+struct AsDisplay<'a, T>(&'a T);
+
+impl<T: Display> serde::Serialize for AsDisplay<'_, T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self.0)
+    }
+}
+
+/// Serialize a value as its printed form.
+fn serialize_display<T: Display, S: serde::Serializer>(
+    value: &T,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(value)
+}
+
+/// Serialize a value that may be absent as its printed form.
+// `serialize_with` hands the field over as it is declared, so this takes a reference to the option.
+#[allow(clippy::ref_option)]
+fn serialize_optional_display<T: Display, S: serde::Serializer>(
+    value: &Option<T>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match value {
+        Some(value) => serializer.collect_str(value),
+        None => serializer.serialize_none(),
+    }
+}
+
+/// Serialize values as a sequence of their printed forms.
+fn serialize_display_sequence<T: Display, S: serde::Serializer>(
+    values: &[T],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(values.iter().map(AsDisplay))
 }
 
 /// Describe the `warcinfo` record a record should have named.
@@ -218,13 +293,18 @@ fn host(found: Option<&str>) -> String {
 }
 
 /// One rule one record breaks.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+///
+/// The serialized form is one flat object: the position, the identifier, the rule's name, and
+/// whatever the rule reports.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, thiserror::Error)]
 pub struct Finding {
     /// The record's zero-based position in the file, counting records that failed to read.
     pub index: usize,
     /// The record's `WARC-Record-ID`.
+    #[serde(serialize_with = "serialize_display")]
     pub record_id: Uri<String>,
     /// The rule the record breaks.
+    #[serde(flatten)]
     #[source]
     pub violation: Violation,
 }
@@ -878,12 +958,27 @@ mod tests {
     }
 
     /// The findings of a lint pass, by position.
+    ///
+    /// Each finding's rule name is checked against its serialized form here, so every test
+    /// expecting a finding checks that pairing too.
     fn findings(records: &[TestRecord]) -> Vec<(usize, Violation)> {
         lint(records)
             .into_iter()
             .filter_map(Result::err)
-            .map(|finding| (finding.index, finding.violation))
+            .map(|finding| {
+                assert_eq!(serialized_rule(&finding), finding.violation.rule());
+
+                (finding.index, finding.violation)
+            })
             .collect()
+    }
+
+    /// The rule name the serialized form of a finding writes.
+    fn serialized_rule(finding: &Finding) -> String {
+        serde_json::to_value(finding).expect("a finding serializes")["rule"]
+            .as_str()
+            .expect("a serialized finding names its rule")
+            .to_owned()
     }
 
     #[test]
@@ -1557,6 +1652,26 @@ mod tests {
                 (2, Violation::MissingPayloadDigest),
                 (2, Violation::RequestWithoutResponse { found: None }),
             ]
+        );
+    }
+
+    /// A finding serializes as one flat object naming the rule it reports.
+    #[test]
+    fn serializes_a_finding_as_a_flat_object() {
+        let finding = Finding {
+            index: 2,
+            record_id: uri(RESPONSE_ID),
+            violation: Violation::WrongTargetUri {
+                expected: uri(TARGET),
+                found: None,
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_string(&finding).expect("a finding serializes"),
+            format!(
+                r#"{{"index":2,"record_id":"{RESPONSE_ID}","rule":"wrong_target_uri","expected":"{TARGET}","found":null}}"#
+            )
         );
     }
 }
