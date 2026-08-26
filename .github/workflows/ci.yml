@@ -177,9 +177,9 @@ jobs:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
-      - name: Generate library coverage
+      - name: Generate workspace coverage
         run: >-
-          cargo llvm-cov -p archivindex-warc --all-features --lcov
+          cargo llvm-cov --locked --workspace --all-features --lcov
           --output-path lcov.info
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
