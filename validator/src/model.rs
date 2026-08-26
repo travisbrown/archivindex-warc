@@ -9,7 +9,7 @@ pub enum Status {
 }
 
 impl Status {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Passed => "passed",
             Self::Failed => "failed",

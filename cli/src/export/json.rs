@@ -80,14 +80,21 @@ mod tests {
 
     /// A WARC 1.1 record with the given fields, framed by the body's length.
     fn render(fields: &[(&str, &str)], body: &str) -> String {
+        use std::fmt::Write as _;
+
         let mut record = String::from("WARC/1.1\r\n");
+
         for (name, value) in fields {
-            record.push_str(&format!("{name}: {value}\r\n"));
+            write!(record, "{name}: {value}\r\n")
+                .expect("invariant violation: writing to a String");
         }
-        record.push_str(&format!(
+        write!(
+            record,
             "Content-Length: {}\r\n\r\n{body}\r\n\r\n",
             body.len()
-        ));
+        )
+        .expect("invariant violation: writing to a String");
+
         record
     }
 

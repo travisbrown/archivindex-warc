@@ -87,14 +87,14 @@ fn drain_problems(verifier: &mut Verifier, destination: &mut Vec<Problem>) {
 }
 
 fn compression_format(file: &Path) -> Format {
-    let name = file
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if name.ends_with(".gz") {
+    let extension = file
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+
+    if extension.eq_ignore_ascii_case("gz") {
         Format::Gzip
-    } else if name.ends_with(".zst") || name.ends_with(".zstd") {
+    } else if extension.eq_ignore_ascii_case("zst") || extension.eq_ignore_ascii_case("zstd") {
         Format::Zstandard
     } else {
         Format::Identity

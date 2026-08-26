@@ -30,14 +30,14 @@ enum Launcher {
 }
 
 impl ResolvedCommand {
-    fn direct(program: PathBuf) -> Self {
+    const fn direct(program: PathBuf) -> Self {
         Self {
             program,
             launcher: Launcher::Direct,
         }
     }
 
-    fn script(program: PathBuf) -> Self {
+    const fn script(program: PathBuf) -> Self {
         let launcher = if cfg!(windows) {
             Launcher::Cmd
         } else {
@@ -83,7 +83,7 @@ pub struct ToolResolver {
 }
 
 impl ToolResolver {
-    pub fn new(tools_dir: PathBuf, install: bool) -> Self {
+    pub const fn new(tools_dir: PathBuf, install: bool) -> Self {
         Self { tools_dir, install }
     }
 
@@ -183,7 +183,10 @@ impl ToolResolver {
         fs::create_dir_all(&destination)?;
         let temporary = tempdir_in(&destination)?;
 
-        if asset.name.ends_with(".zip") {
+        if Path::new(&asset.name)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+        {
             extract_zip(&archive, temporary.path())?;
         } else {
             extract_tar_gz(&archive, temporary.path())?;

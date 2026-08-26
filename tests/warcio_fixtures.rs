@@ -1,3 +1,5 @@
+//! Fixture checks over the archives warcio's own tests exercise.
+
 #![cfg(feature = "gzip")]
 
 mod support;

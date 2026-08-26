@@ -25,6 +25,13 @@ fn fixture_path(set: &str, name: &str) -> PathBuf {
         .join(name)
 }
 
+/// Whether a fixture name carries the gzip extension.
+fn is_gzip(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
+}
+
 /// Read a fixture into memory, decompressing it if it is gzip-compressed.
 ///
 /// This is what the round-trip suites compare over: reading the bytes directly keeps a crate's path
@@ -34,7 +41,7 @@ pub fn fixture_bytes(set: &str, name: &str) -> Result<Vec<u8>, String> {
     let mut source = BufReader::new(File::open(path).map_err(|error| error.to_string())?);
     let mut bytes = Vec::new();
 
-    if name.ends_with(".gz") {
+    if is_gzip(name) {
         MultiGzDecoder::new(source)
             .read_to_end(&mut bytes)
             .map_err(|error| error.to_string())?;
@@ -174,7 +181,7 @@ impl FixtureSet {
 
     pub fn read(self, name: &str) -> Result<Vec<RawRecord>, String> {
         let path = self.path(name);
-        if name.ends_with(".gz") || name.ends_with(".gz.bad") {
+        if is_gzip(name) || name.ends_with(".gz.bad") {
             collect_records(WarcReader::from_path_gzip(path).map_err(|error| error.to_string())?)
         } else {
             collect_records(WarcReader::from_path(path).map_err(|error| error.to_string())?)
