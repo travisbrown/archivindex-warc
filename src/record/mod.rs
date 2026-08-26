@@ -819,7 +819,8 @@ impl<E: Extension> Record<E> {
 
     /// Whether this record declares an HTTP message as its block.
     ///
-    /// A missing media type is accepted when the target URI uses HTTP or HTTPS.
+    /// The target URI must name HTTP or HTTPS, and the media type must be `application/http` or
+    /// absent.
     fn holds_http_message(&self) -> bool {
         const HTTP: &Scheme = Scheme::new_or_panic("http");
         const HTTPS: &Scheme = Scheme::new_or_panic("https");
