@@ -20,7 +20,7 @@ use archivindex_warc::parse::raw;
 use archivindex_warc::value::{Text, WarcDate};
 use archivindex_warc::version::WarcVersion;
 
-use crate::file::{is_stdin, open, transform};
+use crate::file::{compression, is_stdin, open, transform};
 use crate::header::{REFERENCE_FIELDS, is_warcinfo, normalize_id};
 use crate::{Error, Result};
 
@@ -154,30 +154,38 @@ impl MergePlan {
         let mut actions = actions.into_iter();
         let mut merged = 0;
         let filename = output_filename(output);
-        let records = transform(&[first, second], output, |_, mut record| {
-            if is_warcinfo(&record.header) {
-                match actions.next().ok_or(Error::WarcinfoRecordsChanged)? {
-                    WarcinfoAction::Emit(kept) => record = kept,
-                    WarcinfoAction::Skip => {
-                        log::debug!(
-                            "dropping the duplicate warcinfo record {}",
-                            String::from_utf8_lossy(record_id(&record).unwrap_or_default())
-                        );
-                        merged += 1;
+        let summary = transform(
+            &[first, second],
+            output,
+            compression(output),
+            |_, mut record| {
+                if is_warcinfo(&record.header) {
+                    match actions.next().ok_or(Error::WarcinfoRecordsChanged)? {
+                        WarcinfoAction::Emit(kept) => record = kept,
+                        WarcinfoAction::Skip => {
+                            log::debug!(
+                                "dropping the duplicate warcinfo record {}",
+                                String::from_utf8_lossy(record_id(&record).unwrap_or_default())
+                            );
+                            merged += 1;
 
-                        return Ok(None);
+                            return Ok(None);
+                        }
                     }
+
+                    set_filename(&mut record.header, filename.as_deref());
                 }
 
-                set_filename(&mut record.header, filename.as_deref());
-            }
+                redirect_references(&mut record.header, &redirects);
 
-            redirect_references(&mut record.header, &redirects);
+                Ok(Some(record))
+            },
+        )?;
 
-            Ok(Some(record))
-        })?;
-
-        Ok(MergeSummary { records, merged })
+        Ok(MergeSummary {
+            records: summary.records,
+            merged,
+        })
     }
 }
 
@@ -418,8 +426,8 @@ mod tests {
             "second.warc",
             &warcinfo(ID_B, "2024-05-02T00:00:00Z", "sha1:BBBB", &[]),
         );
-        // A name opening with a quote is read as a quoted string, which it does not close.
-        let output = directory.path().join("\"merged.warc");
+        // DEL is a control character, which no platform forbids in a file name.
+        let output = directory.path().join("merged\u{7f}.warc");
 
         merge(&first, &second, &output).unwrap();
 

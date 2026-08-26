@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use archivindex_archiver::recorder::{CapturedExchange, Error, Recorder, rustls};
 use archivindex_warc::record::Record;
@@ -237,6 +237,63 @@ fn a_read_timeout_inside_the_body_truncates_for_reason_time() {
     assert_eq!(captured.response, response);
     assert_eq!(captured.truncated, Some(TruncatedType::Time));
     capture.join().expect("a served request");
+}
+
+#[test]
+fn a_deadline_inside_the_body_truncates_for_reason_time() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
+    let port = listener.local_addr().expect("a bound address").port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("one connection");
+        read_request(&mut stream);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
+            .expect("writable head");
+        // A byte within every read timeout, until the client hangs up.
+        while stream.write_all(b"x").is_ok() {
+            thread::sleep(Duration::from_millis(20));
+        }
+    });
+    let target: Uri = format!("http://127.0.0.1:{port}/trickle")
+        .parse()
+        .expect("a target");
+
+    let captured = Recorder::new()
+        .io_timeout(Some(Duration::from_secs(5)))
+        .fetch_by(
+            &Method::GET,
+            &target,
+            &HeaderMap::new(),
+            None,
+            Instant::now() + Duration::from_millis(200),
+        )
+        .expect("a recorded exchange");
+
+    assert_eq!(captured.truncated, Some(TruncatedType::Time));
+    assert!(
+        captured.fetch_time < Duration::from_secs(5),
+        "{:?}",
+        captured.fetch_time
+    );
+    server.join().expect("a served request");
+}
+
+#[test]
+fn a_passed_deadline_fails_before_connecting() {
+    let target: Uri = "http://127.0.0.1:9/".parse().expect("a target");
+
+    let result = Recorder::new().fetch_by(
+        &Method::GET,
+        &target,
+        &HeaderMap::new(),
+        None,
+        Instant::now(),
+    );
+
+    assert!(matches!(
+        result,
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut
+    ));
 }
 
 #[test]

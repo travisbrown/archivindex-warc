@@ -163,19 +163,33 @@ struct ConfigOptions {
     #[arg(long, value_name = "VALUE")]
     user_agent: Option<String>,
 
-    /// The timeout in seconds for each request (defaults to 30).
+    /// The idle timeout in seconds for connecting and for each socket read or write (defaults to
+    /// 30).
     #[arg(long, value_name = "SECONDS")]
     timeout: Option<u64>,
+
+    /// The maximum time in seconds spent capturing one URL, including its redirect hops (defaults
+    /// to 600; a response still arriving at the limit is archived truncated rather than failed).
+    #[arg(long, value_name = "SECONDS")]
+    max_capture_time: Option<u64>,
+
+    /// Capture every URL to completion, however long it takes.
+    #[arg(long, conflicts_with = "max_capture_time")]
+    unbounded_capture_time: bool,
 
     /// The maximum number of redirects followed for each URL (defaults to 10). Answering a
     /// challenge is not a redirect.
     #[arg(long, value_name = "COUNT")]
     max_redirects: Option<usize>,
 
-    /// The maximum number of response bytes stored for one fetch (unbounded when unset; a response
+    /// The maximum number of response bytes stored for one fetch (defaults to 256 MiB; a response
     /// reaching the limit is archived truncated rather than failed).
     #[arg(long, value_name = "BYTES")]
     max_response_length: Option<u64>,
+
+    /// Store every response whole, however large.
+    #[arg(long, conflicts_with = "max_response_length")]
+    unbounded_response_length: bool,
 }
 
 impl ConfigOptions {
@@ -186,9 +200,21 @@ impl ConfigOptions {
         Config {
             user_agent: self.user_agent.unwrap_or(defaults.user_agent),
             timeout: self.timeout.map_or(defaults.timeout, Duration::from_secs),
+            max_capture_time: if self.unbounded_capture_time {
+                None
+            } else {
+                self.max_capture_time
+                    .map_or(defaults.max_capture_time, |seconds| {
+                        Some(Duration::from_secs(seconds))
+                    })
+            },
             max_redirects: self.max_redirects.unwrap_or(defaults.max_redirects),
             concurrency: concurrency.unwrap_or(defaults.concurrency),
-            max_response_length: self.max_response_length,
+            max_response_length: if self.unbounded_response_length {
+                None
+            } else {
+                self.max_response_length.or(defaults.max_response_length)
+            },
             gzip_warc: self.gzip,
         }
     }
@@ -198,7 +224,7 @@ impl ConfigOptions {
 mod tests {
     use clap::{CommandFactory, Parser};
 
-    use super::{Cli, Command};
+    use super::{Cli, Command, Config};
 
     #[test]
     fn clap_definition_is_consistent() {
@@ -229,5 +255,76 @@ mod tests {
         let Command::Archive(options) = cli.command;
 
         assert!(!options.config.gzip);
+    }
+
+    #[test]
+    fn archive_bounds_captures_by_default() {
+        let cli = Cli::try_parse_from([
+            "archivindex-archiver",
+            "archive",
+            "--output",
+            "capture.warc",
+        ])
+        .expect("valid options");
+
+        let Command::Archive(options) = cli.command;
+        let config = options.config.into_config(None);
+
+        assert_eq!(
+            config.max_response_length,
+            Some(archivindex_archiver::recorder::DEFAULT_MAX_RESPONSE_LENGTH)
+        );
+        assert_eq!(
+            config.max_capture_time,
+            Some(Config::DEFAULT_MAX_CAPTURE_TIME)
+        );
+    }
+
+    #[test]
+    fn archive_lifts_the_capture_time_bound_on_request() {
+        let cli = Cli::try_parse_from([
+            "archivindex-archiver",
+            "archive",
+            "--output",
+            "capture.warc",
+            "--unbounded-capture-time",
+        ])
+        .expect("valid options");
+
+        let Command::Archive(options) = cli.command;
+
+        assert_eq!(options.config.into_config(None).max_capture_time, None);
+    }
+
+    #[test]
+    fn archive_can_lift_the_response_bound() {
+        let cli = Cli::try_parse_from([
+            "archivindex-archiver",
+            "archive",
+            "--output",
+            "capture.warc",
+            "--unbounded-response-length",
+        ])
+        .expect("valid options");
+
+        let Command::Archive(options) = cli.command;
+        let config = options.config.into_config(None);
+
+        assert_eq!(config.max_response_length, None);
+    }
+
+    #[test]
+    fn archive_refuses_a_bound_that_is_also_lifted() {
+        let result = Cli::try_parse_from([
+            "archivindex-archiver",
+            "archive",
+            "--output",
+            "capture.warc",
+            "--max-response-length",
+            "1024",
+            "--unbounded-response-length",
+        ]);
+
+        assert!(result.is_err());
     }
 }

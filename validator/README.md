@@ -53,7 +53,10 @@ the JWAT-Tools archive against the digest of the Maven Central artifact, and the
 distributions through pip's `--require-hashes`.
 
 An external validator is killed after `--timeout` seconds, 600 by default, and reported as
-unable to run.
+unable to run. The warcat-rs 0.3.4 decoder never returns on a CR that no LF follows in a header
+block, on input that ends inside a record, or on a gzip member that ends inside a record, so a
+file with any of these is reported as an error without running it (a later warcat-rs release may
+make this unnecessary).
 
 JWAT-Tools installation requires `java`. Warcio installation requires a Python interpreter with
 `venv` support. Warchaeology can be installed automatically only on platforms for which its

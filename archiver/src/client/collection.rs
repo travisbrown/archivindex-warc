@@ -238,6 +238,23 @@ impl Collection {
             }
         }
 
+        self.flush_spool()
+    }
+
+    /// Record the completed hops of a capture that was cancelled before it finished.
+    ///
+    /// The summary does not describe the capture, since it neither completed nor failed.
+    pub fn record_abandoned(
+        &mut self,
+        exchanges: Vec<Exchange>,
+        via: Option<&str>,
+    ) -> Result<(), Error> {
+        self.record_exchanges(exchanges, None, via)?;
+        self.flush_spool()
+    }
+
+    /// Flush a spooled WARC so that its partial file holds every completed capture.
+    fn flush_spool(&mut self) -> Result<(), Error> {
         if self.spool_path.is_some() {
             self.warc.flush()?;
         }

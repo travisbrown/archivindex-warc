@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
+use std::time::Instant;
 
 use archivindex_warc::record::http::combined_field;
 use archivindex_warc::value::marker::Sha256;
@@ -46,6 +47,29 @@ impl CaptureOutcome {
         match self {
             Self::Captured { exchanges, .. } | Self::Failed { exchanges, .. } => {
                 Self::Failed { exchanges, error }
+            }
+        }
+    }
+
+    /// Put the completed exchanges of earlier attempts ahead of this outcome's.
+    pub fn preceded_by(self, mut earlier: Vec<Exchange>) -> Self {
+        match self {
+            Self::Captured {
+                exchanges,
+                redirects,
+            } => {
+                earlier.extend(exchanges);
+                Self::Captured {
+                    exchanges: earlier,
+                    redirects,
+                }
+            }
+            Self::Failed { exchanges, error } => {
+                earlier.extend(exchanges);
+                Self::Failed {
+                    exchanges: earlier,
+                    error,
+                }
             }
         }
     }
@@ -260,8 +284,12 @@ impl Archiver {
     ///
     /// Redirects are followed up to the configured maximum and challenges are answered up to
     /// [`MAX_CHALLENGE_ANSWERS`], each counted on its own, so that answering a challenge does not
-    /// spend the redirect budget.
+    /// spend the redirect budget. The whole chain shares the configured capture time.
     pub(crate) fn capture(&self, url: &str, revalidate: Option<&Collection>) -> CaptureOutcome {
+        let deadline = self
+            .config
+            .max_capture_time
+            .map(|limit| Instant::now() + limit);
         let mut exchanges = Vec::new();
         let mut redirects = 0;
         let mut answered = 0;
@@ -276,7 +304,7 @@ impl Archiver {
         };
 
         loop {
-            let (exchange, follow_up) = match self.fetch(&current, revalidate) {
+            let (exchange, follow_up) = match self.fetch(&current, revalidate, deadline) {
                 Ok(fetched) => fetched,
                 Err(error) => return CaptureOutcome::Failed { exchanges, error },
             };
@@ -289,7 +317,7 @@ impl Archiver {
                 }
                 Some(FollowUp::Challenge(challenge)) if answered < MAX_CHALLENGE_ANSWERS => {
                     // A challenge is answered by repeating the request that met it.
-                    match self.answer(&current, challenge, &mut exchanges) {
+                    match self.answer(&current, challenge, &mut exchanges, deadline) {
                         Ok(true) => answered += 1,
                         Ok(false) => break,
                         Err(error) => return CaptureOutcome::Failed { exchanges, error },
@@ -310,6 +338,7 @@ impl Archiver {
         &self,
         url: &Url,
         revalidate: Option<&Collection>,
+        deadline: Option<Instant>,
     ) -> Result<(Exchange, Option<FollowUp>), Error> {
         if !url.username().is_empty() || url.password().is_some() {
             return Err(Error::CredentialedUrl(redact_credentials(url)));
@@ -346,9 +375,9 @@ impl Archiver {
         if let Some(cookie) = cookie {
             headers.to_mut().insert(COOKIE, cookie);
         }
-        let captured = self
-            .recorder
-            .fetch(&http::Method::GET, &target, &headers, None)?;
+        let captured =
+            self.recorder
+                .fetch_within(&http::Method::GET, &target, &headers, None, deadline)?;
         let status = captured.response_metadata.status;
         let location = captured
             .response_metadata
