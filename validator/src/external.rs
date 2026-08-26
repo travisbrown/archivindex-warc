@@ -1,5 +1,8 @@
+use std::io::{self, Read};
 use std::path::Path;
-use std::process::Output;
+use std::process::{Command, Output, Stdio};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use archivindex_cli_support::plural;
 use tempfile::tempdir;
@@ -7,7 +10,15 @@ use tempfile::tempdir;
 use crate::install::ToolResolver;
 use crate::model::ValidationResult;
 
-pub fn run_warchaeology(file: &Path, resolver: &ToolResolver) -> ValidationResult {
+/// How long an external validator is waited for.
+#[derive(Clone, Copy, Debug)]
+pub struct Timeout(pub Duration);
+
+pub fn run_warchaeology(
+    file: &Path,
+    resolver: &ToolResolver,
+    timeout: Timeout,
+) -> ValidationResult {
     const NAME: &str = "Warchaeology";
     let program = match resolver.warchaeology() {
         Ok(program) => program,
@@ -19,8 +30,8 @@ pub fn run_warchaeology(file: &Path, resolver: &ToolResolver) -> ValidationResul
     };
     let index_dir = scratch.path().join("index");
 
-    let output = match program
-        .command()
+    let mut command = program.command();
+    command
         .arg("validate")
         .arg("--log-format")
         .arg("json")
@@ -28,9 +39,8 @@ pub fn run_warchaeology(file: &Path, resolver: &ToolResolver) -> ValidationResul
         .arg(index_dir)
         .arg("--tmp-dir")
         .arg(scratch.path())
-        .arg(file)
-        .output()
-    {
+        .arg(file);
+    let output = match run_with_timeout(command, timeout) {
         Ok(output) => output,
         Err(error) => return ValidationResult::error(NAME, error),
     };
@@ -61,7 +71,7 @@ pub fn run_warchaeology(file: &Path, resolver: &ToolResolver) -> ValidationResul
     }
 }
 
-pub fn run_jwat_tools(file: &Path, resolver: &ToolResolver) -> ValidationResult {
+pub fn run_jwat_tools(file: &Path, resolver: &ToolResolver, timeout: Timeout) -> ValidationResult {
     const NAME: &str = "JWAT-Tools";
     let program = match resolver.jwat_tools() {
         Ok(program) => program,
@@ -72,15 +82,14 @@ pub fn run_jwat_tools(file: &Path, resolver: &ToolResolver) -> ValidationResult 
         Err(error) => return ValidationResult::error(NAME, error),
     };
 
-    let output = match program
-        .command()
+    let mut command = program.command();
+    command
         .env("JAVA_OPTS", "-Xms64m -Xmx1024m")
         .current_dir(scratch.path())
         .arg("test")
         .arg("-e")
-        .arg(file)
-        .output()
-    {
+        .arg(file);
+    let output = match run_with_timeout(command, timeout) {
         Ok(output) => output,
         Err(error) => return ValidationResult::error(NAME, error),
     };
@@ -111,14 +120,16 @@ pub fn run_jwat_tools(file: &Path, resolver: &ToolResolver) -> ValidationResult 
     }
 }
 
-pub fn run_warcio(file: &Path, resolver: &ToolResolver) -> ValidationResult {
+pub fn run_warcio(file: &Path, resolver: &ToolResolver, timeout: Timeout) -> ValidationResult {
     const NAME: &str = "warcio";
     let program = match resolver.warcio() {
         Ok(program) => program,
         Err(error) => return ValidationResult::unavailable(NAME, format!("{error:#}")),
     };
 
-    let output = match program.command().arg("check").arg(file).output() {
+    let mut command = program.command();
+    command.arg("check").arg(file);
+    let output = match run_with_timeout(command, timeout) {
         Ok(output) => output,
         Err(error) => return ValidationResult::error(NAME, error),
     };
@@ -136,6 +147,60 @@ pub fn run_warcio(file: &Path, resolver: &ToolResolver) -> ValidationResult {
     } else {
         ValidationResult::failed(NAME, plural(findings, "reported finding"), details)
     }
+}
+
+/// Run a validator to completion, killing it when the timeout elapses.
+fn run_with_timeout(mut command: Command, Timeout(timeout): Timeout) -> io::Result<Output> {
+    const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let stdout = read_in_background(child.stdout.take());
+    let stderr = read_in_background(child.stderr.take());
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            child.wait()?;
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "validator did not finish within {} seconds",
+                    timeout.as_secs()
+                ),
+            ));
+        }
+        thread::sleep(POLL_INTERVAL);
+    };
+    Ok(Output {
+        status,
+        stdout: join_reader(stdout)?,
+        stderr: join_reader(stderr)?,
+    })
+}
+
+fn read_in_background<R: Read + Send + 'static>(
+    pipe: Option<R>,
+) -> JoinHandle<io::Result<Vec<u8>>> {
+    thread::spawn(move || {
+        let mut buffer = Vec::new();
+        if let Some(mut pipe) = pipe {
+            pipe.read_to_end(&mut buffer)?;
+        }
+        Ok(buffer)
+    })
+}
+
+fn join_reader(reader: JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
+    reader
+        .join()
+        .map_err(|_| io::Error::other("the validator output reader panicked"))?
 }
 
 fn jwat_payload_mismatch_count(output: &str) -> Option<usize> {
