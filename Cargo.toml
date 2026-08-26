@@ -1,6 +1,6 @@
 [workspace]
 members = [".", "cli", "ops"]
-default-members = [".", "ops"]
+default-members = [".", "cli", "ops"]
 resolver = "3"
 
 [workspace.package]
