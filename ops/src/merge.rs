@@ -20,7 +20,7 @@ use archivindex_warc::parse::raw;
 use archivindex_warc::value::WarcDate;
 use archivindex_warc::version::WarcVersion;
 
-use crate::files::{is_gzip, open};
+use crate::files::{compression, open};
 use crate::{Error, Result};
 
 /// Fields whose values are record identifiers that may point at a warcinfo record.
@@ -152,12 +152,12 @@ impl MergePlan {
     /// Stream both files into the output, applying the plan.
     fn write(self, first: &Path, second: &Path, output: &Path) -> Result<MergeSummary> {
         let Self { actions, redirects } = self;
-        let gzip = is_gzip(output);
         let file = File::create(output).map_err(|source| Error::Create {
             path: output.to_owned(),
             source,
         })?;
-        let mut writer = WarcWriter::new(BufWriter::new(file));
+        let mut writer =
+            WarcWriter::new(BufWriter::new(file)).with_compression(compression(output));
         let mut actions = actions.into_iter();
         let mut summary = MergeSummary {
             records: 0,
@@ -188,12 +188,7 @@ impl MergePlan {
 
                 redirect_references(&mut record.header, &redirects);
 
-                let written = if gzip {
-                    writer.write_gzip(&record)
-                } else {
-                    writer.write(&record)
-                }
-                .map_err(|source| Error::Write {
+                let written = writer.write(&record).map_err(|source| Error::Write {
                     path: output.to_owned(),
                     source,
                 })?;

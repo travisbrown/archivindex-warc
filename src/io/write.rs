@@ -5,18 +5,18 @@ use std::path::Path;
 use std::{fs, io};
 
 #[cfg(feature = "gzip")]
-use flate2::{GzBuilder, write::GzEncoder as GzipWriter};
+use flate2::GzBuilder;
 
 use crate::io::MB;
 use crate::parse::raw;
 use crate::value::{Algorithm, Hasher, LabelledDigest, Supported, marker};
 
-/// The default gzip compression level used by [`WarcWriter::write_gzip`].
+/// The default gzip compression level used by [`Compression::gzip`].
 #[cfg(feature = "gzip")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gzip")))]
 pub const DEFAULT_GZIP_COMPRESSION_LEVEL: u32 = 6;
 
-/// The greatest gzip compression level accepted by [`WarcWriter::write_gzip_with_level`].
+/// The greatest gzip compression level accepted by [`Compression::gzip_with_level`].
 #[cfg(feature = "gzip")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gzip")))]
 pub const MAX_GZIP_COMPRESSION_LEVEL: u32 = 9;
@@ -66,6 +66,48 @@ mod error_tests {
     }
 }
 
+/// How each record is compressed as it is written.
+///
+/// Compression is per record: a gzip writer stores every record as its own gzip member, so a
+/// member boundary is always a record boundary and any record can be located and decompressed on
+/// its own. This is the convention WARC 1.1 Annex B.1 describes, and the only framing this crate
+/// writes.
+///
+/// A level is checked when the setting is built, so a [`WarcWriter`] cannot hold an invalid one.
+#[cfg(feature = "gzip")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gzip")))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Compression(Option<u32>);
+
+#[cfg(feature = "gzip")]
+impl Compression {
+    /// Write records uncompressed.
+    pub const NONE: Self = Self(None);
+
+    /// Write each record as an independent gzip member at
+    /// [`DEFAULT_GZIP_COMPRESSION_LEVEL`].
+    #[must_use]
+    pub const fn gzip() -> Self {
+        Self(Some(DEFAULT_GZIP_COMPRESSION_LEVEL))
+    }
+
+    /// Write each record as an independent gzip member at `level`.
+    ///
+    /// Levels range from 0 (no compression) through 9 (best compression).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidGzipCompressionLevel`] when `level` is greater than
+    /// [`MAX_GZIP_COMPRESSION_LEVEL`].
+    pub const fn gzip_with_level(level: u32) -> Result<Self, Error> {
+        if level > MAX_GZIP_COMPRESSION_LEVEL {
+            return Err(Error::InvalidGzipCompressionLevel(level));
+        }
+
+        Ok(Self(Some(level)))
+    }
+}
+
 /// The location, length, and optional digest of a written record.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Written {
@@ -85,6 +127,8 @@ pub struct WarcWriter<W> {
     writer: W,
     position: u64,
     digests: Option<Algorithm>,
+    #[cfg(feature = "gzip")]
+    compression: Compression,
 }
 
 impl<W> WarcWriter<W> {
@@ -105,6 +149,19 @@ impl<W> WarcWriter<W> {
     #[must_use]
     pub fn with_digest_algorithm<A: Supported>(mut self, _algorithm: A) -> Self {
         self.digests = Some(A::ALGORITHM);
+        self
+    }
+
+    /// Compress each record as it is written.
+    ///
+    /// A gzip setting makes every record an independent gzip member, as read by
+    /// [`WarcReader::from_path_gzip`](crate::io::read::WarcReader::from_path_gzip). Reported
+    /// offsets then frame the compressed member.
+    #[cfg(feature = "gzip")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "gzip")))]
+    #[must_use]
+    pub const fn with_compression(mut self, compression: Compression) -> Self {
+        self.compression = compression;
         self
     }
 
@@ -147,6 +204,8 @@ impl<W: Write> WarcWriter<W> {
             writer: w,
             position: 0,
             digests: None,
+            #[cfg(feature = "gzip")]
+            compression: Compression::NONE,
         }
     }
 
@@ -157,6 +216,10 @@ impl<W: Write> WarcWriter<W> {
 
     /// Write a single record.
     ///
+    /// Under a gzip [`Compression`] setting the record becomes a complete, independently
+    /// decompressible member, finished before this method returns, and the returned [`Written`]
+    /// frames the compressed member.
+    ///
     /// Validation happens before writing, so an invalid record leaves the output unchanged. A
     /// sink error can leave a partial record; the tracked position includes any bytes the sink
     /// accepted.
@@ -166,8 +229,32 @@ impl<W: Write> WarcWriter<W> {
     /// Returns [`Error::Sink`] when the output stream refuses the bytes, or [`Error::Raw`]
     /// carrying the reason the record cannot be written.
     pub fn write(&mut self, record: &raw::Record) -> Result<Written, Error> {
+        #[cfg(feature = "gzip")]
+        if let Compression(Some(level)) = self.compression {
+            // An encoder emits a gzip header even for an empty stream when it is finished or
+            // dropped, so a record this writer will reject must be rejected before that point.
+            record.validate()?;
+
+            return self.tapped(|writer| write_member(writer, record, level));
+        }
+
+        self.tapped(|writer| {
+            record.write_to(writer)?;
+
+            Ok(())
+        })
+    }
+
+    /// Write through a tap, then advance the position by what the tap counted.
+    ///
+    /// The frame is taken whether or not the write succeeded, since a sink that failed partway
+    /// has still consumed the bytes it accepted.
+    fn tapped(
+        &mut self,
+        write: impl FnOnce(&mut TapWriter<&mut W>) -> Result<(), Error>,
+    ) -> Result<Written, Error> {
         let mut tap = TapWriter::new(&mut self.writer, self.digests);
-        let result = record.write_to(&mut tap);
+        let result = write(&mut tap);
         let finished = tap.finish();
         let written = self.frame(finished);
         result?;
@@ -191,28 +278,12 @@ impl<W: Write> WarcWriter<W> {
 impl<W: Write> WarcWriter<BufWriter<W>> {
     /// Flush the buffered writer, then consume it and return its inner writer.
     ///
-    /// # Finishing compressed streams
+    /// Every record is finished as it is written, gzip members included, so there is no further
+    /// stream to close.
     ///
-    /// For gzip output, this flushes only the outer buffer. Call `finish` on the returned gzip
-    /// stream to write its trailer.
-    #[cfg_attr(
-        feature = "gzip",
-        doc = r#"
-
-```
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let dir = tempfile::tempdir()?;
-let writer =
-    archivindex_warc::io::write::WarcWriter::from_path_gzip(dir.path().join("example.warc.gz"))?;
-// ... write records ...
-let gzip_stream = writer
-    .finish()
-    .map_err(std::io::IntoInnerError::into_error)?;
-gzip_stream.finish()?;
-# Ok(())
-# }
-```"#
-    )]
+    /// # Errors
+    ///
+    /// Returns the [`std::io::IntoInnerError`] carrying the buffered writer when its flush fails.
     pub fn finish(self) -> Result<W, std::io::IntoInnerError<BufWriter<W>>> {
         self.writer.into_inner()
     }
@@ -243,69 +314,16 @@ impl WarcWriter<BufWriter<fs::File>> {
     }
 }
 
-#[cfg(feature = "gzip")]
-impl<W: Write> WarcWriter<W> {
-    /// Write a single record as an independent gzip member.
-    ///
-    /// This follows the record-at-a-time compression convention for gzip WARC files. Each
-    /// record becomes a complete member that can be indexed and decompressed independently;
-    /// consecutive calls produce a valid multi-member stream (as read by
-    /// [`WarcReader::from_path_gzip`](crate::io::read::WarcReader::from_path_gzip)). The returned
-    /// [`Written`] frames the compressed member. The member is finished before this method
-    /// returns, so no separate finishing step is needed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Sink`] when the output stream refuses the bytes, or [`Error::Raw`]
-    /// carrying the reason the record cannot be written.
-    pub fn write_gzip(&mut self, record: &raw::Record) -> Result<Written, Error> {
-        self.write_gzip_with_level(record, DEFAULT_GZIP_COMPRESSION_LEVEL)
-    }
-
-    /// Write a single record as an independent gzip member at `level`.
-    ///
-    /// Levels range from 0 (no compression) through 9 (best compression). The gzip header is
-    /// reproducible across platforms: `MTIME` is zero, `OS` is 255, and no optional header fields
-    /// are present.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidGzipCompressionLevel`] when `level` is greater than 9,
-    /// [`Error::Sink`] when the output stream refuses the bytes, or [`Error::Raw`] carrying the
-    /// reason the record cannot be written.
-    pub fn write_gzip_with_level(
-        &mut self,
-        record: &raw::Record,
-        level: u32,
-    ) -> Result<Written, Error> {
-        if level > MAX_GZIP_COMPRESSION_LEVEL {
-            return Err(Error::InvalidGzipCompressionLevel(level));
-        }
-
-        // Validate before constructing the encoder: an encoder emits a gzip header even for
-        // an empty stream when it is finished or dropped, and a rejected record must leave no
-        // bytes in the output.
-        record.validate()?;
-
-        // Indexes frame the compressed member, so measure the encoder's output.
-        let mut tap = TapWriter::new(&mut self.writer, self.digests);
-        let result = write_member(&mut tap, record, level);
-        let finished = tap.finish();
-        let written = self.frame(finished);
-        result?;
-
-        Ok(written)
-    }
-}
-
 /// Compress one record as a complete gzip member.
+///
+/// Writing directly avoids nesting another [`WarcWriter`] around the encoder.
 #[cfg(feature = "gzip")]
 fn write_member<W: Write>(writer: W, record: &raw::Record, level: u32) -> Result<(), Error> {
     let mut encoder = GzBuilder::new()
         .mtime(0)
         .operating_system(255)
         .write(writer, flate2::Compression::new(level));
-    WarcWriter::new(&mut encoder).write(record)?;
+    record.write_to(&mut encoder)?;
     // `finish` flushes the data and writes the gzip trailer.
     encoder.finish()?;
 
@@ -567,30 +585,18 @@ mod write_tests {
 }
 
 #[cfg(feature = "gzip")]
-impl WarcWriter<BufWriter<GzipWriter<std::fs::File>>> {
-    /// Create a new writer which writes to a GZIP-compressed file.
+#[cfg_attr(docsrs, doc(cfg(feature = "gzip")))]
+impl WarcWriter<BufWriter<fs::File>> {
+    /// Create a writer that appends gzip-compressed records to a file.
     ///
-    /// The file is created if it does not exist and appended to if it does: existing
-    /// records are never overwritten, and the appended records form a new gzip member,
-    /// which is valid in a compressed WARC file and is what `WarcReader::from_path_gzip`
-    /// reads. To overwrite an existing file with a fresh archive instead, create the file
-    /// with [`std::fs::File::create`], wrap it in a gzip encoder, and pass it to
-    /// [`WarcWriter::new`].
+    /// Each record is stored as an independent gzip member at
+    /// [`DEFAULT_GZIP_COMPRESSION_LEVEL`], so reported offsets frame the compressed member and
+    /// locate the record in the file. Use [`Self::with_compression`] to choose another level.
     ///
-    /// Records written through this writer share one compression stream. Reported offsets count
-    /// uncompressed input and therefore do not locate records in the compressed file. To frame
-    /// records individually, use [`Self::write_gzip`] with a plain sink.
+    /// The file is created if it does not exist and appended to if it does, on the same terms as
+    /// [`Self::from_path`].
     pub fn from_path_gzip<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .create(true)
-            .truncate(false)
-            .append(true)
-            .open(&path)?;
-        let gzip_stream = GzipWriter::new(file, flate2::Compression::default());
-        let writer = BufWriter::with_capacity(MB, gzip_stream);
-
-        Ok(Self::new(writer))
+        Ok(Self::from_path(path)?.with_compression(Compression::gzip()))
     }
 }
 
@@ -647,40 +653,56 @@ mod from_path_tests {
         assert_eq!(second_written.offset, first_written.length);
     }
 
+    /// Each record written to a gzip file is a member of its own, whether or not the writer that
+    /// wrote it also wrote the ones before, and the reported offsets locate them in the file.
     #[cfg(feature = "gzip")]
     #[test]
-    fn reopening_an_existing_gzip_file_appends_a_new_member() {
+    fn gzip_records_are_independent_members_across_reopenings() {
         let first_body = b"the-first-record-written".to_vec();
         let second_body = b"appended-later".to_vec();
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("append.warc.gz");
+        let mut frames = Vec::new();
 
         for body in [&first_body, &second_body] {
             let mut writer = WarcWriter::from_path_gzip(&path).unwrap();
-            writer.write(&record_with_body(body)).unwrap();
-            // The compression stream must be finish()ed, or the member will be truncated.
-            let gzip_stream = writer
-                .finish()
-                .map_err(std::io::IntoInnerError::into_error)
-                .unwrap();
-            gzip_stream.finish().unwrap();
+            frames.push(writer.write(&record_with_body(body)).unwrap());
+            writer.finish().unwrap();
         }
 
-        let reader = crate::io::read::WarcReader::from_path_gzip(&path).unwrap();
-        let bodies: Vec<Vec<u8>> = reader
-            .iter_raw_records()
-            .map(|record| record.unwrap().body)
-            .collect();
-        assert_eq!(bodies, vec![first_body, second_body]);
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(frames[0].offset, 0);
+        assert_eq!(frames[1].offset, frames[0].length);
+        assert_eq!(frames[0].length + frames[1].length, bytes.len() as u64);
+
+        for (frame, body) in frames.iter().zip([&first_body, &second_body]) {
+            let start = usize::try_from(frame.offset).unwrap();
+            let end = start + usize::try_from(frame.length).unwrap();
+            let mut decoded = Vec::new();
+            std::io::Read::read_to_end(
+                &mut flate2::read::GzDecoder::new(&bytes[start..end]),
+                &mut decoded,
+            )
+            .unwrap();
+            assert_eq!(
+                crate::io::read::WarcReader::new(decoded.as_slice())
+                    .iter_raw_records()
+                    .map(|record| record.unwrap().body)
+                    .collect::<Vec<_>>(),
+                vec![body.clone()]
+            );
+        }
     }
 }
 
 #[cfg(all(test, feature = "gzip"))]
-mod write_gzip_tests {
+mod gzip_tests {
     use std::io::{BufReader, Read};
 
-    use super::{DEFAULT_GZIP_COMPRESSION_LEVEL, Error, WarcWriter};
+    use super::{
+        Compression, DEFAULT_GZIP_COMPRESSION_LEVEL, Error, MAX_GZIP_COMPRESSION_LEVEL, WarcWriter,
+    };
     use crate::io::test_record;
     use crate::parse::raw;
     use crate::version::WarcVersion;
@@ -709,9 +731,9 @@ mod write_gzip_tests {
             b"the second payload",
         );
 
-        let mut writer = WarcWriter::new(Vec::new());
-        let first_written = writer.write_gzip(&first).unwrap();
-        let second_written = writer.write_gzip(&second).unwrap();
+        let mut writer = WarcWriter::new(Vec::new()).with_compression(Compression::gzip());
+        let first_written = writer.write(&first).unwrap();
+        let second_written = writer.write(&second).unwrap();
         let bytes = writer.into_inner();
 
         // The frames tile the output exactly, as an index requires.
@@ -764,8 +786,9 @@ mod write_gzip_tests {
         );
 
         for (level, xfl) in [(0, 4), (1, 4), (DEFAULT_GZIP_COMPRESSION_LEVEL, 0), (9, 2)] {
-            let mut writer = WarcWriter::new(Vec::new());
-            writer.write_gzip_with_level(&record, level).unwrap();
+            let compression = Compression::gzip_with_level(level).unwrap();
+            let mut writer = WarcWriter::new(Vec::new()).with_compression(compression);
+            writer.write(&record).unwrap();
             let member = writer.into_inner();
             assert_reproducible_header(&member, xfl);
 
@@ -777,29 +800,32 @@ mod write_gzip_tests {
         }
     }
 
-    /// An invalid compression level is rejected before a header or any other bytes are emitted.
+    /// An invalid compression level is rejected when the setting is built, so no writer can hold
+    /// one.
     #[test]
-    fn invalid_gzip_compression_level_writes_no_bytes() {
-        let record = test_record(WarcVersion::V1_1, &[("WARC-Type", "resource")], b"body");
-        let mut writer = WarcWriter::new(Vec::new());
-
+    fn invalid_gzip_compression_level_is_rejected() {
         assert!(matches!(
-            writer.write_gzip_with_level(&record, 10),
+            Compression::gzip_with_level(10),
             Err(Error::InvalidGzipCompressionLevel(10))
         ));
-        assert!(writer.get_ref().is_empty());
+        assert_eq!(
+            Compression::gzip_with_level(MAX_GZIP_COMPRESSION_LEVEL).unwrap(),
+            Compression(Some(MAX_GZIP_COMPRESSION_LEVEL))
+        );
     }
 
     /// A gzip member's digest covers the compressed bytes in its reported frame.
     #[test]
-    fn write_gzip_digests_the_compressed_member() {
+    fn gzip_digests_cover_the_compressed_member() {
         let first = test_record(WarcVersion::V1_1, &[("WARC-Type", "resource")], b"one");
         let second = test_record(WarcVersion::V1_1, &[("WARC-Type", "resource")], b"two");
 
-        let mut writer = WarcWriter::new(Vec::new()).with_digests();
+        let mut writer = WarcWriter::new(Vec::new())
+            .with_digests()
+            .with_compression(Compression::gzip());
         let frames = [
-            writer.write_gzip(&first).unwrap(),
-            writer.write_gzip(&second).unwrap(),
+            writer.write(&first).unwrap(),
+            writer.write(&second).unwrap(),
         ];
         let bytes = writer.into_inner();
 
@@ -824,9 +850,9 @@ mod write_gzip_tests {
             .headers
             .push(("WARC-Record-ID".to_owned(), b" <urn:a>\r\nevil: x".to_vec()));
 
-        let mut writer = WarcWriter::new(Vec::new());
+        let mut writer = WarcWriter::new(Vec::new()).with_compression(Compression::gzip());
         let error = writer
-            .write_gzip(&record)
+            .write(&record)
             .expect_err("injection should be rejected");
 
         assert!(

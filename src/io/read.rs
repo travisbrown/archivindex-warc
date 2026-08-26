@@ -1661,7 +1661,7 @@ mod iter_records_tests {
 mod gzip_tests {
     use super::WarcReader;
     use crate::io::test_record;
-    use crate::io::write::WarcWriter;
+    use crate::io::write::{Compression, WarcWriter};
     use crate::parse::raw;
     use crate::version::WarcVersion;
 
@@ -1703,8 +1703,8 @@ mod gzip_tests {
         );
     }
 
-    /// A file whose records were each compressed as an independent member with `write_gzip` reads
-    /// as a whole archive.
+    /// A file whose records were each compressed as an independent member reads as a whole
+    /// archive.
     #[test]
     fn reads_records_written_as_independent_members() {
         let dir = tempfile::tempdir().unwrap();
@@ -1713,12 +1713,12 @@ mod gzip_tests {
             .join("reads_records_written_as_independent_members.warc.gz");
 
         let file = std::fs::File::create(&path).unwrap();
-        let mut writer = WarcWriter::new(file);
+        let mut writer = WarcWriter::new(file).with_compression(Compression::gzip());
         writer
-            .write_gzip(&record("http://example.com/first", b"first"))
+            .write(&record("http://example.com/first", b"first"))
             .unwrap();
         writer
-            .write_gzip(&record("http://example.com/second", b"second"))
+            .write(&record("http://example.com/second", b"second"))
             .unwrap();
         writer.flush().unwrap();
 
