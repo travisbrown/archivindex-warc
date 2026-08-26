@@ -37,6 +37,7 @@ documentation = "https://docs.rs/crate/archivindex-warc/"
 license.workspace = true
 authors.workspace = true
 keywords = ["warc", "web", "archive"]
+categories = ["encoding", "parser-implementations"]
 edition.workspace = true
 rust-version.workspace = true
 
