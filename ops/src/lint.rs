@@ -726,13 +726,15 @@ fn collection_host(collection: &str) -> Option<&str> {
     (!host.is_empty()).then_some(host)
 }
 
-/// Report a target URI whose host is not exactly the expected one.
+/// Report a target URI whose host is not the expected one, which RFC 3986 clause 3.2.2 compares
+/// without regard to ASCII case.
 fn wrong_host(expected: &str, target_uri: &Uri<String>) -> Option<Violation> {
     let host = target_uri.authority().map(|authority| authority.host());
-    (host != Some(expected)).then(|| Violation::WrongRequestHost {
-        expected: expected.to_owned(),
-        found: host.map(ToOwned::to_owned),
-    })
+    host.is_none_or(|host| !host.eq_ignore_ascii_case(expected))
+        .then(|| Violation::WrongRequestHost {
+            expected: expected.to_owned(),
+            found: host.map(ToOwned::to_owned),
+        })
 }
 
 /// Whether a record can stand in the response position of a capture.
@@ -1430,12 +1432,16 @@ mod tests {
         );
     }
 
+    /// A host is compared without regard to case, so the first capture's differently spelled one
+    /// is not a finding.
     #[test]
     fn requests_target_the_collection_host() {
         let mut records = capture();
-        records[1] = records[1]
-            .clone()
-            .set("WARC-Target-URI", "https://Example.COM/");
+        for record in &mut records[1..] {
+            *record = record
+                .clone()
+                .set("WARC-Target-URI", "https://Example.COM/");
+        }
         let mut other = capture()[1..].to_vec();
         for record in &mut other {
             *record = record
@@ -1455,27 +1461,6 @@ mod tests {
         assert_eq!(
             findings(&records),
             [
-                (
-                    1,
-                    Violation::WrongRequestHost {
-                        expected: HOST.to_owned(),
-                        found: Some("Example.COM".to_owned())
-                    }
-                ),
-                (
-                    2,
-                    Violation::WrongTargetUri {
-                        expected: uri("https://Example.COM/"),
-                        found: Some(uri(TARGET))
-                    }
-                ),
-                (
-                    3,
-                    Violation::WrongTargetUri {
-                        expected: uri("https://Example.COM/"),
-                        found: Some(uri(TARGET))
-                    }
-                ),
                 (
                     4,
                     Violation::WrongRequestHost {
