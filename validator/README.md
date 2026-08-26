@@ -65,8 +65,10 @@ Use `--validator` more than once to select a subset (`archivindex-raw`, `archivi
 `warcat-rs` problem data. `-q` logs errors only, the default adds warnings and the summary, and
 `-v`, `-vv`, and `-vvv` raise the diagnostic level to informational, debug, and trace.
 
-The process exits with status 1 if a validator rejects the file or cannot run, and with status 0
-only when every selected validator completes successfully.
+The process exits with status 0 only when every selected validator completes successfully, with
+status 1 when one of them rejects the file or cannot run, and with status 2 when the command
+itself cannot do its work, such as when the file cannot be opened. The repository's other
+command-line applications use the same three statuses.
 
 [archivindex-warc]: https://github.com/travisbrown/archivindex-warc
 [jWAT-Tools]: https://github.com/netarchivesuite/jwat-tools

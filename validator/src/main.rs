@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use archivindex_cli_support::Verbosity;
+use archivindex_cli_support::{CommandOutcome, Verbosity, exit_code};
 use clap::{Parser, ValueEnum};
 use directories::ProjectDirs;
 
@@ -79,14 +79,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     cli.verbosity.init_logging();
 
-    match run(cli) {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::FAILURE,
-        Err(error) => {
-            log::error!("{error:#}");
-            ExitCode::FAILURE
-        }
-    }
+    exit_code(run(cli).map(|passed| CommandOutcome::from_reported_problems(!passed)))
 }
 
 fn run(cli: Cli) -> Result<bool> {
