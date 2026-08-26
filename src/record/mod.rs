@@ -38,8 +38,10 @@ pub mod http;
 #[cfg(feature = "payload-identification")]
 #[cfg_attr(docsrs, doc(cfg(feature = "payload-identification")))]
 pub mod identify;
+mod lift;
 pub mod payload;
 pub mod record_type;
+mod render;
 
 use std::borrow::Cow;
 use std::net::IpAddr;
@@ -48,25 +50,22 @@ use fluent_uri::Uri;
 use fluent_uri::component::Scheme;
 
 use crate::parse::untyped::name::{Field, HeaderName};
-use crate::parse::untyped::value::{HeaderValue, ValueForm};
 use crate::parse::{raw, untyped};
-use crate::parsing::{is_token, unfold};
 use crate::record::digest::{check_block_digest, check_payload_digest, verify_block_digest};
-use crate::record::extension::{
-    Extension, ExtensionFields, ExtensionRecordType, NoExtension, Unclaimed,
-};
+use crate::record::extension::{Extension, ExtensionRecordType, NoExtension};
 use crate::record::fields::metadata::MetadataField;
 use crate::record::fields::warcinfo::WarcinfoField;
 use crate::record::header::truncated_type::TruncatedType;
 use crate::record::header::{
     ContinuationHeader, ConversionHeader, CoreHeaders, MetadataHeader, OtherHeader, PayloadHeaders,
-    RequestHeader, ResourceHeader, ResponseHeader, RevisitHeader, RevisitProfile, SegmentNumber,
-    WarcinfoHeader,
+    RequestHeader, ResourceHeader, ResponseHeader, RevisitHeader, RevisitProfile, WarcinfoHeader,
 };
+use crate::record::lift::Lifter;
 use crate::record::record_type::RecordType;
+use crate::record::render::Renderer;
 use crate::value::{
-    Algorithm, DigestFormat, LabelledDigest, MediaType, Supported, Text, WarcDate,
-    WarcDatePrecision, marker,
+    Algorithm, DigestFormat, LabelledDigest, MediaType, Supported, WarcDate, WarcDatePrecision,
+    marker,
 };
 use crate::version::WarcVersion;
 
@@ -1360,443 +1359,6 @@ impl<E: Extension> TryFrom<untyped::Record> for Record<E> {
     }
 }
 
-/// The unclaimed fields of a record being lifted.
-struct Lifter {
-    version: WarcVersion,
-    fields: Vec<(HeaderName, HeaderValue)>,
-}
-
-/// Take a field whose grammar maps to one [`ValueForm`] variant.
-macro_rules! take_form {
-    ($name:ident, $variant:ident, $value:ty, $rule:literal) => {
-        #[doc = concat!("Remove `field`, whose value is ", $rule, ".")]
-        fn $name(&mut self, field: Field) -> Option<$value> {
-            match self.take_form(field)? {
-                ValueForm::$variant(value) => Some(value),
-                form => unreachable!("invariant violation: {field} was read as {form:?}"),
-            }
-        }
-    };
-}
-
-impl Lifter {
-    take_form!(take_digest, Digest, LabelledDigest, "a labelled digest");
-    take_form!(take_media_type, MediaType, MediaType, "a media type");
-    take_form!(take_text, Text, Text, "text");
-    take_form!(take_token, Token, Box<str>, "a token");
-    take_form!(take_digits, Digits, u64, "a count");
-
-    /// Reject a nonrepeatable standard field written more than once.
-    fn check_repetition(&self) -> Result<(), Error> {
-        repeated_field(self.fields.iter().map(|(name, _)| name))
-            .map_or(Ok(()), |field| Err(Error::RepeatedField(field)))
-    }
-
-    /// Reject a standard field the declared version does not define.
-    ///
-    /// The grammar admits the union of the two versions' fields, so this is where a record is
-    /// held to the version it declares. Rendering checks the same rule, since a record can also
-    /// be assembled or edited after it is read.
-    fn check_version(&self) -> Result<(), Error> {
-        if let Some(field) = self
-            .fields
-            .iter()
-            .filter_map(|(name, _)| name.field())
-            .find(|field| !field.defined_in(self.version))
-        {
-            return Err(Error::FieldNotInVersion {
-                field,
-                version: self.version,
-            });
-        }
-
-        Ok(())
-    }
-
-    /// Remove and return the first value for `field`.
-    fn take_form(&mut self, field: Field) -> Option<ValueForm> {
-        let position = self
-            .fields
-            .iter()
-            .position(|(name, _)| name.field() == Some(field))?;
-
-        Some(
-            self.fields
-                .remove(position)
-                .1
-                .into_form()
-                .expect("invariant violation: a defined field was read without its form"),
-        )
-    }
-
-    /// Remove `field`, whose value is a URI.
-    fn take_uri(&mut self, field: Field) -> Option<Uri<String>> {
-        match self.take_form(field)? {
-            // Whether the URI was written in the angle brackets of the `"<" uri ">"` rule is
-            // the grammar's record of how it arrived. It is written back as the declared
-            // version requires rather than as it was read, so it is dropped here.
-            ValueForm::Uri { uri, .. } => Some(uri),
-            form => unreachable!("invariant violation: {field} was read as {form:?}"),
-        }
-    }
-
-    /// Remove `field`, whose presence the record's type makes mandatory, as a URI.
-    fn take_required_uri(&mut self, field: Field) -> Result<Uri<String>, Error> {
-        self.take_uri(field).ok_or(Error::MissingField(field))
-    }
-
-    /// Remove `field`, whose presence the record's type makes mandatory, as a token.
-    fn take_required_token(&mut self, field: Field) -> Result<Box<str>, Error> {
-        self.take_token(field).ok_or(Error::MissingField(field))
-    }
-
-    /// Remove `WARC-IP-Address`.
-    fn take_ip_address(&mut self) -> Option<IpAddr> {
-        match self.take_form(Field::IPAddress)? {
-            ValueForm::IpAddress(address) => Some(address),
-            form => unreachable!("invariant violation: WARC-IP-Address was read as {form:?}"),
-        }
-    }
-
-    /// Remove `field` and validate its date against the declared WARC version.
-    fn take_date(&mut self, field: Field) -> Result<Option<WarcDate>, Error> {
-        let Some(form) = self.take_form(field) else {
-            return Ok(None);
-        };
-        let ValueForm::Date(date) = form else {
-            unreachable!("invariant violation: {field} was read as {form:?}")
-        };
-
-        if !date_fits_version(date, self.version) {
-            return Err(Error::MalformedField {
-                field,
-                value: date.to_string(),
-            });
-        }
-
-        Ok(Some(date))
-    }
-
-    /// Remove every `WARC-Concurrent-To` line, in order.
-    fn take_concurrent_to(&mut self) -> Vec<Uri<String>> {
-        let mut concurrent_to = Vec::new();
-        while let Some(uri) = self.take_uri(Field::ConcurrentTo) {
-            concurrent_to.push(uri);
-        }
-
-        concurrent_to
-    }
-
-    /// Remove the fields describing the record's payload.
-    fn take_payload(&mut self) -> PayloadHeaders {
-        PayloadHeaders {
-            payload_digest: self.take_digest(Field::PayloadDigest),
-            identified_payload_type: self.take_media_type(Field::IdentifiedPayloadType),
-        }
-    }
-
-    /// Remove and validate `WARC-Segment-Number` from an origin record.
-    fn take_segment_origin(&mut self) -> Result<bool, Error> {
-        match self.take_digits(Field::SegmentNumber) {
-            None => Ok(false),
-            Some(1) => Ok(true),
-            Some(number) => Err(Error::MalformedField {
-                field: Field::SegmentNumber,
-                value: number.to_string(),
-            }),
-        }
-    }
-
-    /// Remove and validate the required segment number of a continuation.
-    fn take_segment_number(&mut self) -> Result<SegmentNumber, Error> {
-        let number = self
-            .take_digits(Field::SegmentNumber)
-            .ok_or(Error::MissingField(Field::SegmentNumber))?;
-
-        SegmentNumber::new(number).ok_or_else(|| Error::MalformedField {
-            field: Field::SegmentNumber,
-            value: number.to_string(),
-        })
-    }
-
-    /// Reject remaining standard fields, then offer the rest to the extension.
-    fn finish<F: ExtensionFields>(
-        self,
-        record_type: &'static str,
-    ) -> Result<(F, Vec<(String, String)>), Error> {
-        if let Some(field) = self.fields.iter().find_map(|(name, _)| name.field()) {
-            return Err(Error::ForbiddenField { record_type, field });
-        }
-
-        let mut unclaimed = self.finish_unconstrained()?;
-        let other = F::from_unclaimed(&mut Unclaimed::new(&mut unclaimed))?;
-        Ok((other, unclaimed))
-    }
-
-    /// Keep every remaining field for an extension record type.
-    ///
-    /// Values are kept as text, with folds resolved and surrounding white space removed.
-    fn finish_unconstrained(self) -> Result<Vec<(String, String)>, Error> {
-        self.fields
-            .into_iter()
-            .map(|(name, value)| {
-                let content = unfold(value.as_bytes()).into_owned();
-                let content = String::from_utf8(content)
-                    .map_err(|_| Error::NonUtf8Field(name.name().to_owned()))?;
-
-                Ok((name.into_name(), content))
-            })
-            .collect()
-    }
-}
-
-/// Fields being rendered under a declared WARC version.
-struct Renderer {
-    version: WarcVersion,
-    /// Whether the record's type is one no version of the standard defines.
-    ///
-    /// Such a record is under no constraint about which fields it carries, so it keeps standard
-    /// names as read rather than being held to what the standard says about them.
-    unconstrained: bool,
-    headers: Vec<(HeaderName, HeaderValue)>,
-}
-
-/// Push required or optional fields represented by one [`ValueForm`] variant.
-macro_rules! push_form {
-    ($push:ident, $push_optional:ident, $variant:ident, $value:ty) => {
-        fn $push(&mut self, field: Field, value: $value) -> Result<(), RenderError> {
-            self.push(field, ValueForm::$variant(value))
-        }
-
-        fn $push_optional(
-            &mut self,
-            field: Field,
-            value: Option<$value>,
-        ) -> Result<(), RenderError> {
-            value.map_or(Ok(()), |value| self.$push(field, value))
-        }
-    };
-}
-
-impl Renderer {
-    push_form!(push_digest, push_optional_digest, Digest, LabelledDigest);
-    push_form!(
-        push_media_type,
-        push_optional_media_type,
-        MediaType,
-        MediaType
-    );
-    push_form!(push_text, push_optional_text, Text, Text);
-    push_form!(push_digits, push_optional_digits, Digits, u64);
-
-    /// An empty block declaring `version`.
-    const fn new(version: WarcVersion, unconstrained: bool) -> Self {
-        Self {
-            version,
-            unconstrained,
-            headers: Vec::new(),
-        }
-    }
-
-    /// Reject a field the declared version does not define.
-    const fn check_version(&self, field: Field) -> Result<(), RenderError> {
-        if field.defined_in(self.version) {
-            Ok(())
-        } else {
-            Err(RenderError::FieldNotInVersion {
-                field,
-                version: self.version,
-            })
-        }
-    }
-
-    /// Append a field holding the given form.
-    fn push(&mut self, field: Field, form: ValueForm) -> Result<(), RenderError> {
-        self.check_version(field)?;
-        self.headers
-            .push((HeaderName::new(field), HeaderValue::from(form)));
-
-        Ok(())
-    }
-
-    /// Whether the declared version writes `field` inside URI angle brackets.
-    ///
-    /// WARC 1.0 brackets every URI-valued field. WARC 1.1 brackets only the five whose value is a
-    /// record identifier, and writes the rest bare.
-    const fn brackets(&self, field: Field) -> bool {
-        matches!(self.version, WarcVersion::V1_0)
-            || matches!(
-                field,
-                Field::ConcurrentTo
-                    | Field::RecordID
-                    | Field::RefersTo
-                    | Field::SegmentOriginID
-                    | Field::WarcinfoID
-            )
-    }
-
-    /// Append a URI-valued field, bracketed or bare as the declared version requires.
-    fn push_uri(&mut self, field: Field, uri: Uri<String>) -> Result<(), RenderError> {
-        let bracketed = self.brackets(field);
-        self.push(field, ValueForm::Uri { uri, bracketed })
-    }
-
-    /// Append a URI-valued field when the record carries one.
-    fn push_optional_uri(
-        &mut self,
-        field: Field,
-        uri: Option<Uri<String>>,
-    ) -> Result<(), RenderError> {
-        uri.map_or(Ok(()), |uri| self.push_uri(field, uri))
-    }
-
-    /// Append a date, refusing one the declared version has no spelling for.
-    fn push_date(&mut self, field: Field, date: WarcDate) -> Result<(), RenderError> {
-        if !date_fits_version(date, self.version) {
-            return Err(RenderError::ValueNotInVersion {
-                field,
-                version: self.version,
-                value: date.to_string(),
-            });
-        }
-
-        self.push(field, ValueForm::Date(date))
-    }
-
-    /// Append a token-valued field, rejecting a token an extension spelled in a way the
-    /// grammar does not admit.
-    fn push_token(&mut self, field: Field, token: &str) -> Result<(), RenderError> {
-        if !is_token(token.as_bytes()) {
-            return Err(RenderError::UnwritableField {
-                name: field.name().to_owned(),
-                reason: format!("`{token}` is not a token"),
-            });
-        }
-
-        self.push(field, ValueForm::Token(token.into()))
-    }
-
-    /// Append `WARC-Profile`, validating custom profile URIs.
-    fn push_profile(&mut self, profile: &RevisitProfile) -> Result<(), RenderError> {
-        let uri = Uri::parse(profile.as_str())
-            .map_err(|error| RenderError::UnwritableField {
-                name: Field::Profile.name().to_owned(),
-                reason: error.to_string(),
-            })?
-            .to_owned();
-
-        self.push_uri(Field::Profile, uri)
-    }
-
-    /// Append the fields describing the record's payload.
-    fn push_payload(&mut self, payload: PayloadHeaders) -> Result<(), RenderError> {
-        self.push_optional_digest(Field::PayloadDigest, payload.payload_digest)?;
-        self.push_optional_media_type(
-            Field::IdentifiedPayloadType,
-            payload.identified_payload_type,
-        )
-    }
-
-    /// Append `WARC-IP-Address` when the record carries one.
-    fn push_ip_address(&mut self, ip_address: Option<IpAddr>) -> Result<(), RenderError> {
-        ip_address.map_or(Ok(()), |address| {
-            self.push(Field::IPAddress, ValueForm::IpAddress(address))
-        })
-    }
-
-    /// Append one `WARC-Concurrent-To` line per referenced record.
-    fn push_concurrent_to(&mut self, concurrent_to: Vec<Uri<String>>) -> Result<(), RenderError> {
-        for record_id in concurrent_to {
-            self.push_uri(Field::ConcurrentTo, record_id)?;
-        }
-
-        Ok(())
-    }
-
-    /// Append `WARC-Segment-Number` with the value `1`, the only value the standard permits on
-    /// a record that is not a `continuation`, when the record is the origin of a series.
-    fn push_segment_origin(&mut self, segment_origin: bool) -> Result<(), RenderError> {
-        if segment_origin {
-            self.push_digits(Field::SegmentNumber, 1)?;
-        }
-
-        Ok(())
-    }
-
-    /// Append a field after validating that its name and value can be read back.
-    ///
-    /// A record of a type the standard defines writes every standard field from the value its own
-    /// header holds, so a name the standard defines is refused here rather than written beside
-    /// the field it names.
-    fn push_as_read(&mut self, name: &str, value: &str) -> Result<(), RenderError> {
-        if !is_token(name.as_bytes()) {
-            return Err(RenderError::UnwritableField {
-                name: name.to_owned(),
-                reason: "the name is not a token".to_owned(),
-            });
-        }
-        // A value is held here with its folds already resolved, so a line break in one is a
-        // header line the caller wrote into it rather than a fold, and would be read back as a
-        // field of its own.
-        if value.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
-            return Err(RenderError::UnwritableField {
-                name: name.to_owned(),
-                reason: "the value holds a line break".to_owned(),
-            });
-        }
-
-        let name = HeaderName::as_read(name);
-        if let Some(field) = name.field() {
-            if !self.unconstrained {
-                return Err(RenderError::ReservedField(field));
-            }
-            self.check_version(field)?;
-        }
-        // A value is written after the colon exactly as it is given, so one that does not open
-        // with the linear white space the convention puts there is given a single space.
-        let spelled = match value.as_bytes().first() {
-            Some(b' ' | b'\t') => Cow::Borrowed(value),
-            _ => Cow::Owned(format!(" {value}")),
-        };
-        let value = HeaderValue::parse(name.field(), spelled.as_bytes()).map_err(|error| {
-            RenderError::UnwritableField {
-                name: name.name().to_owned(),
-                reason: error.to_string(),
-            }
-        })?;
-
-        self.headers.push((name, value));
-        Ok(())
-    }
-
-    /// Reject a nonrepeatable standard field written more than once.
-    ///
-    /// A block is checked once it is complete: the fields every record carries are written after
-    /// the fields of its own type, so one written by the extension or kept as read can only be
-    /// seen to repeat one of them at the end.
-    fn check_repetition(&self) -> Result<(), RenderError> {
-        repeated_field(self.headers.iter().map(|(name, _)| name))
-            .map_or(Ok(()), |field| Err(RenderError::RepeatedField(field)))
-    }
-
-    /// Append and validate the extension's fields.
-    fn push_extension<F: ExtensionFields>(&mut self, other: &F) -> Result<(), RenderError> {
-        let mut fields = Vec::new();
-        other.append_to(&mut fields);
-        for (name, value) in fields {
-            self.push_as_read(&name, &value)?;
-        }
-
-        Ok(())
-    }
-
-    /// Put standard fields in conventional order, followed by extension fields.
-    fn canonical_order(&mut self) {
-        self.headers
-            .sort_by_key(|(name, _)| name.field().map_or(usize::MAX, Field::canonical_rank));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::Ipv4Addr;
@@ -1805,9 +1367,10 @@ mod tests {
     use test_strategy::proptest;
 
     use super::*;
-    use crate::record::extension::{ExtensionTruncatedReason, Never};
-    use crate::value::{Encoding, Text, marker};
+    use crate::record::extension::{ExtensionFields, ExtensionTruncatedReason, Never, Unclaimed};
+    use crate::record::header::SegmentNumber;
     use crate::strategies;
+    use crate::value::{Encoding, Text, marker};
 
     const RECORD_ID: &str = "urn:uuid:00000000-0000-0000-0000-000000000001";
     const DATE: &str = "2020-07-08T02:52:55Z";
