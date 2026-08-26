@@ -3,8 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::fs;
-use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -65,25 +64,17 @@ struct Reference {
 }
 
 /// Draw the records from `input`, writing the SVG or opening it in the default viewer.
+///
+/// The viewer reads the SVG after this returns, so without `output` the SVG is written to
+/// [`viewer_path`], which each invocation replaces.
 pub fn graph(input: &Path, output: Option<&Path>) -> Result<GraphSummary> {
     let records = read_records(input)?;
     let (source, references) = source(&records);
     let svg = render(&source)?;
+    let path = output.map_or_else(viewer_path, Path::to_path_buf);
 
-    if let Some(output) = output {
-        fs::write(output, svg).with_context(|| format!("cannot write {}", output.display()))?;
-    } else {
-        let mut temporary = tempfile::Builder::new()
-            .prefix("archivindex-warc-")
-            .suffix(".svg")
-            .tempfile()
-            .context("cannot create a temporary SVG")?;
-        temporary
-            .write_all(&svg)
-            .context("cannot write the temporary SVG")?;
-        let (_, path) = temporary
-            .keep()
-            .context("cannot preserve the temporary SVG for the viewer")?;
+    fs::write(&path, svg).with_context(|| format!("cannot write {}", path.display()))?;
+    if output.is_none() {
         open(&path)?;
     }
 
@@ -91,6 +82,14 @@ pub fn graph(input: &Path, output: Option<&Path>) -> Result<GraphSummary> {
         records: records.len(),
         references,
     })
+}
+
+/// The SVG file opened in a viewer: one per user, in the runtime directory where the platform
+/// has one and the temporary directory otherwise.
+fn viewer_path() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join("archivindex-warc-graph.svg")
 }
 
 /// Render D2 source with enough viewport padding to keep it away from a browser window's edges.
@@ -139,12 +138,13 @@ fn read_records(path: &Path) -> Result<Vec<Record>> {
     Ok(records)
 }
 
-/// Turn the records into D2 source and count the relationships that resolve within the file.
+/// Turn the records into D2 source, one column of records in file order, and count the
+/// relationships that resolve within the file.
 fn source(records: &[Record]) -> (String, usize) {
     let labels = labels(records);
     let colors = colors(records);
     let mut source =
-        String::from("grid-rows: 1\ngrid-gap: 60\nrecords: {\n  label: \"\"\n  direction: down\n");
+        String::from("grid-rows: 1\ngrid-gap: 60\nrecords: {\n  label: \"\"\n  grid-columns: 1\n");
 
     for (index, record) in records.iter().enumerate() {
         let color = colors
@@ -154,13 +154,6 @@ fn source(records: &[Record]) -> (String, usize) {
             source,
             "  record_{index}: \"{}\" {{\n    style.fill: \"{color}\"\n    style.font-size: {GRAPH_FONT_SIZE}\n  }}\n",
             escape(&labels[index])
-        )
-        .expect("invariant violation: writing to a String");
-    }
-    for index in 1..records.len() {
-        write!(
-            source,
-            "  record_0 -> record_{index}: {{\n    style.opacity: 0\n  }}\n"
         )
         .expect("invariant violation: writing to a String");
     }
@@ -431,8 +424,8 @@ mod tests {
         assert!(source.contains("records: {\n  label: \"\""));
         assert!(source.contains("key: {\n  label: \"\""));
         assert!(source.starts_with("grid-rows: 1"));
-        assert!(source.contains("records: {\n  label: \"\"\n  direction: down"));
-        assert!(source.contains("record_0 -> record_1: {\n    style.opacity: 0"));
+        assert!(source.contains("records: {\n  label: \"\"\n  grid-columns: 1"));
+        assert!(!source.contains("style.opacity"));
         assert!(source.contains("\"request\" {\n    style.fill: \"#90BE6D\""));
         assert!(source.contains("\"response\" {\n    style.fill: \"#8ECAE6\""));
         assert!(source.contains("records.record_0 -> records.record_1: \"concurrent-to\""));
