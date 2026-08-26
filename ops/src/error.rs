@@ -50,9 +50,19 @@ pub enum Error {
         source: write::Error,
     },
 
-    /// Buffered output could not be flushed.
+    /// Buffered output could not be flushed to disk.
     #[error("cannot write to {}", path.display())]
     Flush {
+        /// The output path.
+        path: PathBuf,
+        /// The file-system failure.
+        #[source]
+        source: io::Error,
+    },
+
+    /// A completed output could not be moved into place.
+    #[error("cannot replace {}", path.display())]
+    Publish {
         /// The output path.
         path: PathBuf,
         /// The file-system failure.

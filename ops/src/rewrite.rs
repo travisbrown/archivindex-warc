@@ -158,13 +158,14 @@ impl TwoPartField {
 /// recomputed, the digest under its declared algorithm when this crate knows it and as SHA-256
 /// otherwise; its other header fields keep their values. Records of other types are copied as
 /// read. A path with a `.gz` extension names a gzip-compressed file; a compressed output holds
-/// one gzip member per record.
+/// one gzip member per record. A temporary file beside `output` is moved into place after the
+/// last record is written.
 ///
 /// # Errors
 ///
 /// Returns an error when the input and output paths are the same, a file cannot be opened, a
 /// record cannot be read or written, a warcinfo record cannot be rewritten, or the output cannot
-/// be flushed.
+/// be flushed or moved into place.
 pub fn warcinfo(input: &Path, output: &Path, values: &WarcinfoValues) -> Result<RewriteSummary> {
     let mut rewritten = 0;
     let records = transform(&[input], output, |index, mut record| {
