@@ -71,6 +71,23 @@ jobs:
       - name: Run examples
         run: ./examples/run.sh
 
+  package:
+    name: Package the publishable crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+      # Exclude unpublished packages because their path dependencies cannot meet Cargo's packaging
+      # requirements. Skip verification because the workspace packages are not yet on the registry.
+      - name: Package
+        run: >-
+          cargo package --locked --workspace --no-verify
+          --exclude archivindex-warc-ops
+          --exclude archivindex-warc-cli
+
   validator:
     name: Build, test, and lint the validator
     runs-on: ubuntu-latest
