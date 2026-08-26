@@ -104,6 +104,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "archivindex-cli-support"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "log",
+ "simplelog",
+]
+
+[[package]]
 name = "archivindex-warc"
 version = "0.1.0"
 dependencies = [
@@ -122,6 +131,7 @@ name = "archivindex-warc-validator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "archivindex-cli-support",
  "archivindex-warc",
  "blake3",
  "clap",
@@ -130,7 +140,6 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
- "simplelog",
  "tar",
  "tempfile",
  "ureq",

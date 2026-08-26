@@ -1,10 +1,11 @@
 use std::path::Path;
 use std::process::Output;
 
+use archivindex_cli_support::plural;
 use tempfile::tempdir;
 
 use crate::install::ToolResolver;
-use crate::model::{ValidationResult, plural};
+use crate::model::ValidationResult;
 
 pub fn run_warchaeology(file: &Path, resolver: &ToolResolver) -> ValidationResult {
     const NAME: &str = "Warchaeology";

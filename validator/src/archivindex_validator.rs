@@ -5,11 +5,12 @@
 use std::io::{self, BufRead};
 use std::path::Path;
 
+use archivindex_cli_support::plural;
 use archivindex_warc::io::read::{Error, WarcReader};
 use archivindex_warc::record::Record;
 use archivindex_warc::record::extension::NoExtension;
 
-use crate::model::{ValidationResult, is_gzip, plural};
+use crate::model::{ValidationResult, is_gzip};
 
 /// A validation layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
