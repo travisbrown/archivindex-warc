@@ -8,6 +8,8 @@
 //! A provided body is framed by `content-length` after any `Transfer-Encoding` is removed. Reading
 //! the block with [`payload::entity_body`](crate::record::payload::entity_body) recovers that body.
 
+use std::borrow::Cow;
+
 use http::{HeaderMap, Method, StatusCode, Uri, Version};
 
 use crate::parsing::{is_lws, is_token, next_line};
@@ -57,6 +59,14 @@ impl ResponseMetadata {
     /// them with a comma (RFC 9110 section 5.3). `Vary` in particular is often split this way.
     pub fn headers<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a [u8]> {
         header_values(&self.headers, name)
+    }
+
+    /// Return the response header value with this name as one combined line.
+    ///
+    /// See [`combined_field`].
+    #[must_use]
+    pub fn combined_header(&self, name: &str) -> Option<Cow<'_, str>> {
+        combined_field(header_values(&self.headers, name))
     }
 }
 
@@ -120,11 +130,49 @@ impl RequestMetadata {
     }
 
     /// Return every request header value with this name, in the order received.
-    ///
-    /// Matching a request against a `Vary` field uses the comma-joined value of its lines.
     pub fn headers<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a [u8]> {
         header_values(&self.headers, name)
     }
+
+    /// Return the request header value with this name as one combined line.
+    ///
+    /// Matching a request against a `Vary` field compares the selecting fields as combined
+    /// values (RFC 9111 section 4.1). See [`combined_field`].
+    #[must_use]
+    pub fn combined_header(&self, name: &str) -> Option<Cow<'_, str>> {
+        combined_field(header_values(&self.headers, name))
+    }
+}
+
+/// Combine the lines of one field into the value a recipient reads (RFC 9110 section 5.3).
+///
+/// A field sent as one line is borrowed; one sent as several is joined with a comma and a space.
+/// Returns `None` when the field was not sent or a line is not UTF-8.
+///
+/// # Examples
+///
+/// ```
+/// use std::borrow::Cow;
+///
+/// use archivindex_warc::record::http::combined_field;
+///
+/// let lines = [b"gzip".as_slice(), b"br".as_slice()];
+/// assert_eq!(combined_field(lines), Some(Cow::Owned("gzip, br".to_owned())));
+/// assert_eq!(combined_field([]), None);
+/// ```
+pub fn combined_field<'a>(lines: impl IntoIterator<Item = &'a [u8]>) -> Option<Cow<'a, str>> {
+    let mut lines = lines.into_iter();
+    let first = std::str::from_utf8(lines.next()?).ok()?;
+    let Some(second) = lines.next() else {
+        return Some(Cow::Borrowed(first));
+    };
+    let mut combined = first.to_owned();
+    for line in std::iter::once(second).chain(lines) {
+        combined.push_str(", ");
+        combined.push_str(std::str::from_utf8(line).ok()?);
+    }
+
+    Some(Cow::Owned(combined))
 }
 
 /// The field lines of a message head, in the order received, with their names as sent.
@@ -361,6 +409,8 @@ fn write_headers_and_body(message: &mut Vec<u8>, headers: &HeaderMap, body: Opti
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use http::header::{HeaderName, HeaderValue};
     use http::{HeaderMap, Method, StatusCode, Uri, Version};
 
@@ -454,6 +504,34 @@ mod tests {
         assert_eq!(
             metadata.headers("Accept-Encoding").collect::<Vec<_>>(),
             [b"gzip".as_slice(), b"br".as_slice()]
+        );
+    }
+
+    /// The lines of a repeated field combine into the value a `Vary` selection compares.
+    #[test]
+    fn combined_header_joins_the_lines_of_a_repeated_field() {
+        let request = b"GET / HTTP/1.1\r\nAccept-Language: en\r\naccept-language: de\r\n\
+                        User-Agent: Bot/1.0\r\nX-Binary: \xff\r\n\r\n";
+        let metadata = RequestMetadata::parse(request).unwrap();
+
+        assert_eq!(
+            metadata.combined_header("accept-language"),
+            Some(Cow::Owned("en, de".to_owned()))
+        );
+        assert_eq!(
+            metadata.combined_header("user-agent"),
+            Some(Cow::Borrowed("Bot/1.0"))
+        );
+        assert_eq!(metadata.combined_header("x-binary"), None);
+        assert_eq!(metadata.combined_header("accept"), None);
+
+        let response = b"HTTP/1.1 200 OK\r\nVary: Accept-Encoding\r\n\
+                         vary: User-Agent\r\n\r\n";
+        let metadata = ResponseMetadata::parse(response).unwrap();
+
+        assert_eq!(
+            metadata.combined_header("vary"),
+            Some(Cow::Owned("Accept-Encoding, User-Agent".to_owned()))
         );
     }
 
