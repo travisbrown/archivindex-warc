@@ -225,11 +225,9 @@ fn read_line_bounded<R: BufRead>(
         }
 
         let allowance = limit - buffer.len();
-        if let Some(index) = available
-            .iter()
-            .take(allowance)
-            .position(|&byte| byte == b'\n')
-        {
+        // This runs over every header byte of every record, so the scan is vectorized.
+        let bounded = &available[..available.len().min(allowance)];
+        if let Some(index) = memchr::memchr(b'\n', bounded) {
             buffer.extend_from_slice(&available[..=index]);
             reader.consume(index + 1);
             return Ok(LineRead::Line(appended + index + 1));
