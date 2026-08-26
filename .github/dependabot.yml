@@ -1,0 +1,35 @@
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    # One pull request for the workspace, since every job builds it as a whole.
+    groups:
+      cargo:
+        patterns: ["*"]
+    ignore:
+      # Pinned exactly: `warc_crate_roundtrip` asserts the behavior of this one release.
+      - dependency-name: warc
+
+  - package-ecosystem: cargo
+    directory: /validator
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+    ignore:
+      # Pinned exactly: the validator compares this crate against its own reading of a file.
+      - dependency-name: warc
+      # Pinned exactly: warcat 0.3.4 needs this release of blake3.
+      - dependency-name: blake3
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
