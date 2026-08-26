@@ -356,8 +356,11 @@ fn parse_version_line(line: &[u8]) -> Result<WarcVersion, Error> {
 }
 
 /// Read a `Content-Length` value, which the grammar surrounds with optional linear white space.
+///
+/// The standard's `LWS` opens with an optional `CRLF`, so the digits may stand on a continuation
+/// line.
 fn parse_length(value: &[u8]) -> Result<u64, Error> {
-    std::str::from_utf8(value)
+    std::str::from_utf8(&crate::parsing::unfold(value))
         .ok()
         .and_then(parse_content_length)
         .ok_or_else(|| Error::MalformedContentLength(lossy(value)))
@@ -479,9 +482,25 @@ mod tests {
         ));
     }
 
-    /// A line naming a version is reported as the version it names, so the fault a caller reads
-    /// is the version number alone. A line naming none is reported as the line, since there is
-    /// no version in it to report.
+    /// `LWS` opens with an optional `CRLF`, so a folded length frames the record like any other.
+    #[test]
+    fn frames_a_record_by_a_folded_length() {
+        let (header, length) = RecordHeader::parse(
+            b"WARC/1.1\r\nWARC-Type: resource\r\nContent-Length:\r\n 5\r\n\r\n",
+        )
+        .unwrap();
+
+        assert_eq!(length, 5);
+        assert_eq!(header.get("content-length"), Some(&b"\r\n 5"[..]));
+        assert!(matches!(
+            RecordHeader::parse(b"WARC/1.1\r\nContent-Length: 5\r\n 5\r\n\r\n"),
+            Err(Error::MalformedContentLength(_))
+        ));
+    }
+
+    /// A line naming a version is reported as the version it names, so the fault a caller reads is
+    /// the version number alone. A line naming none is reported as the line, since there is no
+    /// version in it to report.
     #[test]
     fn rejects_a_malformed_version_line() {
         assert_eq!(
