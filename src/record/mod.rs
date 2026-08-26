@@ -287,6 +287,9 @@ const fn check_declared_length(declared: Option<u64>, actual: u64) -> Result<(),
 /// Clause 6.7.2 of the WARC 1.1 standard has a record under the identical payload digest profile
 /// carry either no block or the beginning of the response it stands for, which is a truncation
 /// the record declares as `WARC-Truncated: length`. No rule here applies to another profile.
+///
+/// The clause obliges the writer, so this is checked when a record is written and not when one is
+/// read. A record read from a writer that omits the field is reported by the `lint` operation.
 const fn check_revisit_block<E: Extension>(
     header: &RevisitHeader<E>,
     content_length: u64,
@@ -1019,19 +1022,14 @@ impl<E: Extension> RecordHeader<E> {
     /// # Errors
     ///
     /// Returns [`BlockError::ContentLengthMismatch`] if the header block declares a
-    /// `Content-Length` the given block does not have, [`BlockError::Fields`] if the block is
-    /// declared `application/warc-fields`, is not, and is not declared truncated, and
-    /// [`BlockError::UndeclaredRevisitTruncation`] if a `revisit` record under the identical
-    /// payload digest profile carries a block without declaring it truncated.
+    /// `Content-Length` the given block does not have, and [`BlockError::Fields`] if the block is
+    /// declared `application/warc-fields`, is not, and is not declared truncated.
     pub fn with_body(mut self, body: Vec<u8>) -> Result<Record<E>, BlockError> {
         // A block is held in memory, so its length is a `usize` that fits a `u64` on every
         // platform this crate builds for.
         let content_length = body.len() as u64;
         check_declared_length(self.core().content_length, content_length)?;
         self.core_mut().content_length = Some(content_length);
-        if let Self::Revisit(header) = &self {
-            check_revisit_block(header, content_length)?;
-        }
 
         let record = match self {
             Self::Warcinfo(header) => {
@@ -3493,27 +3491,23 @@ mod tests {
     }
 
     /// A block under this profile is the beginning of the response the record stands for, so a
-    /// record carrying one and not saying it is truncated is not read.
+    /// record carrying one and not saying it is truncated is not written. Clause 6.7.2 obliges
+    /// the writer, so such a record is still read, and archives that hold one can be opened.
     #[test]
     fn an_identical_payload_digest_revisit_declares_the_truncation_its_block_is() {
-        let refused = lift_grammar(identical_payload_digest_revisit(&[], b"HTTP/1.1 200 OK"));
+        // The second record declares a reason saying its block is something other than the
+        // truncation this profile has it be.
+        for lines in [&[][..], &[("WARC-Truncated", "time")][..]] {
+            let record = lift_grammar(identical_payload_digest_revisit(lines, b"HTTP/1.1 200 OK"))
+                .expect("a record a writer left undeclared is readable");
 
-        assert_eq!(
-            refused,
-            Err(Error::Block(BlockError::UndeclaredRevisitTruncation(15)))
-        );
-
-        // Another reason says the block is something other than the truncation this profile
-        // has it be.
-        let refused = lift_grammar(identical_payload_digest_revisit(
-            &[("WARC-Truncated", "time")],
-            b"HTTP/1.1 200 OK",
-        ));
-
-        assert_eq!(
-            refused,
-            Err(Error::Block(BlockError::UndeclaredRevisitTruncation(15)))
-        );
+            assert_eq!(
+                record.into_raw(),
+                Err(RenderError::Block(BlockError::UndeclaredRevisitTruncation(
+                    15
+                )))
+            );
+        }
     }
 
     /// A record that declares the truncation, and one that carries no block at all, are both
