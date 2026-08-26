@@ -49,6 +49,34 @@ struct Record {
     references: Vec<Reference>,
 }
 
+impl Record {
+    /// The graph's view of a record, taken from its header block alone.
+    fn from_header(header: &raw::RecordHeader) -> Self {
+        let warc_type = value(header, "WARC-Type")
+            .map_or_else(|| "unknown".to_owned(), |value| value.to_ascii_lowercase());
+        let id = header
+            .get("WARC-Record-ID")
+            .map(normalize_id)
+            .filter(|id| !id.is_empty())
+            .map(<[u8]>::to_vec);
+        let references = REFERENCE_FIELDS
+            .iter()
+            .flat_map(|field| {
+                header.get_all(field).map(|target| Reference {
+                    field,
+                    target: normalize_id(target).to_vec(),
+                })
+            })
+            .collect();
+
+        Self {
+            warc_type,
+            id,
+            references,
+        }
+    }
+}
+
 /// One header field pointing from its record to another record ID.
 #[derive(Debug)]
 struct Reference {
@@ -105,34 +133,19 @@ fn render(source: &str) -> Result<Vec<u8>> {
 }
 
 /// Read the records and retain just the header fields needed by the graph.
+///
+/// Every record is taken from its header block and then refused, so no body is buffered and
+/// the iteration yields only read errors.
 fn read_records(path: &Path) -> Result<Vec<Record>> {
     let mut records = Vec::new();
-
-    for result in WarcReader::new(archivindex_warc_ops::file::read(path)?).iter_raw_records() {
-        let record = result.with_context(|| format!("cannot read {}", path.display()))?;
-        let header = record.header;
-        let warc_type = value(&header, "WARC-Type")
-            .map_or_else(|| "unknown".to_owned(), |value| value.to_ascii_lowercase());
-        let id = header
-            .get("WARC-Record-ID")
-            .map(normalize_id)
-            .filter(|id| !id.is_empty())
-            .map(<[u8]>::to_vec);
-        let references = REFERENCE_FIELDS
-            .iter()
-            .flat_map(|field| {
-                header.get_all(field).map(|target| Reference {
-                    field,
-                    target: normalize_id(target).to_vec(),
-                })
-            })
-            .collect();
-
-        records.push(Record {
-            warc_type,
-            id,
-            references,
+    let refused =
+        WarcReader::new(archivindex_warc_ops::file::read(path)?).filter_raw_records(|header| {
+            records.push(Record::from_header(header));
+            false
         });
+
+    for result in refused {
+        result.with_context(|| format!("cannot read {}", path.display()))?;
     }
 
     Ok(records)
@@ -210,13 +223,16 @@ fn labels(records: &[Record]) -> Vec<String> {
         .iter()
         .map(|record| record.id.as_deref().and_then(uuid_part))
         .collect();
+    let mut sorted: Vec<&str> = uuid_parts.iter().flatten().copied().collect();
+    sorted.sort_unstable();
+    sorted.dedup();
 
     records
         .iter()
         .enumerate()
         .map(
             |(index, record)| match (uuid_parts[index], record.id.as_deref()) {
-                (Some(uuid), _) => unique_prefix(uuid, index, &uuid_parts).to_owned(),
+                (Some(uuid), _) => unique_prefix(uuid, &sorted).to_owned(),
                 (None, Some(id)) => shorten(&String::from_utf8_lossy(id)),
                 (None, None) => format!("record {} (no ID)", index + 1),
             },
@@ -224,20 +240,28 @@ fn labels(records: &[Record]) -> Vec<String> {
         .collect()
 }
 
-/// The shortest prefix of at least eight characters that no other record's UUID begins with.
-fn unique_prefix<'uuid>(uuid: &'uuid str, index: usize, uuids: &[Option<&str>]) -> &'uuid str {
-    let mut length = uuid.len().min(8);
-
-    while length < uuid.len()
-        && uuids.iter().enumerate().any(|(other_index, other)| {
-            other_index != index
-                && other.is_some_and(|other| other != uuid && other.starts_with(&uuid[..length]))
+/// The shortest prefix of at least eight characters that no other UUID begins with.
+///
+/// `sorted` holds every UUID once, in order, so the UUIDs sharing the longest prefix with `uuid`
+/// are its neighbors there.
+fn unique_prefix<'uuid>(uuid: &'uuid str, sorted: &[&str]) -> &'uuid str {
+    let position = sorted
+        .binary_search(&uuid)
+        .expect("invariant violation: every UUID is in the sorted list");
+    let shared = [position.checked_sub(1), Some(position + 1)]
+        .into_iter()
+        .flatten()
+        .filter_map(|neighbor| sorted.get(neighbor))
+        .map(|other| {
+            uuid.bytes()
+                .zip(other.bytes())
+                .take_while(|(left, right)| left == right)
+                .count()
         })
-    {
-        length += 1;
-    }
+        .max()
+        .unwrap_or(0);
 
-    &uuid[..length]
+    &uuid[..uuid.len().min((shared + 1).max(8))]
 }
 
 /// A color for every record type present, in key order.
@@ -400,6 +424,16 @@ mod tests {
         ];
 
         assert_eq!(labels(&records), ["12345678-a", "12345678-b"]);
+    }
+
+    #[test]
+    fn repeated_uuids_do_not_expand_each_other() {
+        let records = [
+            record("request", Some(FIRST), &[]),
+            record("response", Some(FIRST), &[]),
+        ];
+
+        assert_eq!(labels(&records), ["12345678", "12345678"]);
     }
 
     #[test]
