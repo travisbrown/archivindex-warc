@@ -42,7 +42,7 @@ payload identified as JSON, one value per line.
 ## graph
 
 ```console
-cargo run --manifest-path cli/Cargo.toml -- graph --input archive.warc.gz --output archive.svg
+cargo run --manifest-path cli/Cargo.toml -- graph archive.warc.gz --output archive.svg
 ```
 
 Draws every record as a color-coded node and record-ID relationships as directed arrows. The graph
@@ -51,8 +51,10 @@ includes a key for the record-type colors. `WARC-Concurrent-To`, `WARC-Warcinfo-
 UUID record IDs are labeled with a short, distinguishing prefix from the part after `urn:uuid:`.
 Other long IDs retain shortened forms of both ends.
 
-Without `--output`, the command writes the SVG to a temporary file and opens it in a separate
-Firefox window when Firefox is available, falling back to the platform's default SVG viewer.
+Without `--output`, the command writes the SVG to `archivindex-warc-graph.svg` in the runtime
+directory (`$XDG_RUNTIME_DIR`, or the temporary directory without one), replacing the previous
+graph, and opens it in a separate Firefox window when Firefox is available, falling back to the
+platform's default SVG viewer.
 
 ## lint
 

@@ -74,7 +74,7 @@ enum Command {
     /// Draw the records and their relationships as an SVG graph.
     Graph {
         /// The WARC file to graph; a .gz extension selects gzip decompression.
-        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
         /// The SVG file to write; without this option, open the graph in a window.
@@ -434,14 +434,13 @@ mod tests {
         let with_output = Cli::try_parse_from([
             "archivindex-warc-cli",
             "graph",
-            "--input",
             "a.warc.gz",
             "--output",
             "a.svg",
         ])
         .unwrap();
         let without_output =
-            Cli::try_parse_from(["archivindex-warc-cli", "graph", "-i", "a.warc"]).unwrap();
+            Cli::try_parse_from(["archivindex-warc-cli", "graph", "a.warc"]).unwrap();
 
         assert!(matches!(
             with_output.command,
