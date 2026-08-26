@@ -1,44 +1,33 @@
 //! Digest calculation and validation for record blocks and payloads.
 
-// The three digest crates re-export the same `Digest` trait, so one import serves all of them.
-use sha1::Digest as _;
-
 use crate::record::extension::Extension;
 use crate::record::{BlockError, Record, payload};
-use crate::value::{DigestAlgorithm, LabelledDigest};
+use crate::value::{Algorithm, LabelledDigest};
 
-/// Compute the default digest for a block or payload.
-///
-/// The result uses SHA-256 and lowercase Base16.
-pub fn added_digest(content: &[u8]) -> LabelledDigest {
-    LabelledDigest::from_digest(DigestAlgorithm::Sha256, &sha2::Sha256::digest(content))
+/// Compute a digest using the algorithm's recommended label and encoding.
+pub fn added_digest(algorithm: Algorithm, content: &[u8]) -> LabelledDigest {
+    LabelledDigest::compute(algorithm, content)
+        .expect("invariant violation: added-digest algorithms come from `Supported` witnesses")
 }
 
-/// Compute a SHA-1 digest in unpadded uppercase Base32.
-///
-/// This format is widely used by existing WARC tools.
-pub fn sha_1_digest(content: &[u8]) -> LabelledDigest {
-    LabelledDigest::from_digest(DigestAlgorithm::Sha1, &sha1::Sha1::digest(content))
-}
-
-/// Add a SHA-1 block digest unless the record already declares one.
-pub fn add_sha_1_block_digest<E: Extension>(record: &mut Record<E>) {
+/// Add a block digest unless the record already declares one.
+pub fn add_block_digest<E: Extension>(record: &mut Record<E>, algorithm: Algorithm) {
     if record.core().block_digest.is_none() {
-        let digest = sha_1_digest(&record.body_bytes());
+        let digest = added_digest(algorithm, &record.body_bytes());
         record.core_mut().block_digest = Some(digest);
     }
 }
 
-/// Add a SHA-1 payload digest when the record is eligible and declares none.
+/// Add a payload digest when the record is eligible and declares none.
 ///
 /// Records that would not receive a payload digest during rendering are unchanged.
-pub fn add_sha_1_payload_digest<E: Extension>(record: &mut Record<E>) {
+pub fn add_payload_digest<E: Extension>(record: &mut Record<E>, algorithm: Algorithm) {
     let digest = match record.payload() {
         Some(headers)
             if headers.payload_digest.is_none() && record.takes_added_payload_digest() =>
         {
             match record.payload_bytes() {
-                Ok(Some(payload)) => sha_1_digest(&payload),
+                Ok(Some(payload)) => added_digest(algorithm, &payload),
                 Ok(None) | Err(_) => return,
             }
         }
@@ -47,16 +36,6 @@ pub fn add_sha_1_payload_digest<E: Extension>(record: &mut Record<E>) {
 
     if let Some(headers) = record.payload_mut() {
         headers.payload_digest = Some(digest);
-    }
-}
-
-/// Compute a digest for a supported algorithm.
-fn digest_content(algorithm: &DigestAlgorithm, content: &[u8]) -> Option<Vec<u8>> {
-    match algorithm {
-        DigestAlgorithm::Md5 => Some(md5::Md5::digest(content).to_vec()),
-        DigestAlgorithm::Sha1 => Some(sha1::Sha1::digest(content).to_vec()),
-        DigestAlgorithm::Sha256 => Some(sha2::Sha256::digest(content).to_vec()),
-        DigestAlgorithm::Other(_) => None,
     }
 }
 
@@ -70,15 +49,15 @@ enum Fault {
 
 /// Compare a declared digest with the supplied content.
 ///
-/// Unsupported algorithms are not checked.
+/// Digests under disabled algorithms are not checked.
 fn compare_digest(declared: &LabelledDigest, content: &[u8]) -> Option<Fault> {
-    let digest = digest_content(declared.algorithm(), content)?;
+    let algorithm = declared.algorithm()?;
+    let digest = algorithm.digest(content)?;
 
     match declared.decoded() {
         None => Some(Fault::Malformed),
-        Some(value) if value != digest => Some(Fault::Mismatch(LabelledDigest::from_digest(
-            declared.algorithm().clone(),
-            &digest,
+        Some(value) if value != *digest => Some(Fault::Mismatch(LabelledDigest::from_digest(
+            algorithm, &digest,
         ))),
         Some(_) => None,
     }
@@ -98,18 +77,19 @@ pub fn verify_block_digest(declared: &LabelledDigest, block: &[u8]) -> Result<()
 
 /// Return the block digest to render, validating a declared digest if present.
 ///
-/// If no digest is declared, the default digest is added.
+/// If absent, compute one with `added` when provided.
 pub fn check_block_digest(
     declared: Option<LabelledDigest>,
     block: &[u8],
-) -> Result<LabelledDigest, BlockError> {
+    added: Option<Algorithm>,
+) -> Result<Option<LabelledDigest>, BlockError> {
     let Some(declared) = declared else {
-        return Ok(added_digest(block));
+        return Ok(added.map(|algorithm| added_digest(algorithm, block)));
     };
 
     verify_block_digest(&declared, block)?;
 
-    Ok(declared)
+    Ok(Some(declared))
 }
 
 /// Validate a declared payload digest.
@@ -128,11 +108,13 @@ pub fn verify_payload_digest(declared: &LabelledDigest, payload: &[u8]) -> Resul
 
 /// Validate a declared payload digest or compute one to add during rendering.
 ///
-/// Returns the digest to add, and `None` where there is none to add (a declared digest that
-/// validates, a segment or truncated record, or a payload this crate does not determine). A
-/// malformed HTTP message is an error only when the record declares a payload digest.
+/// Returns a newly computed digest only when the record needs one and `added` supplies an
+/// algorithm. A valid declared digest, a segment or truncated record, an undetermined payload, or
+/// a `None` algorithm yields `None`. A malformed HTTP message is an error only when a payload
+/// digest is declared.
 pub fn check_payload_digest<E: Extension>(
     record: &Record<E>,
+    added: Option<Algorithm>,
 ) -> Result<Option<LabelledDigest>, BlockError> {
     let Some(headers) = record.payload() else {
         return Ok(None);
@@ -159,14 +141,16 @@ pub fn check_payload_digest<E: Extension>(
             verify_payload_digest(declared, &payload)?;
             Ok(None)
         }
-        None if record.takes_added_payload_digest() => Ok(Some(added_digest(&payload))),
+        None if record.takes_added_payload_digest() => {
+            Ok(added.map(|algorithm| added_digest(algorithm, &payload)))
+        }
         None => Ok(None),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{added_digest, sha_1_digest};
+    use super::{Algorithm, added_digest};
 
     /// The input used by the digest-format tests.
     const CONTENT: &[u8] = b"hello";
@@ -174,15 +158,15 @@ mod tests {
     #[test]
     fn adds_a_sha_256_digest_in_lower_case_base16() {
         assert_eq!(
-            added_digest(CONTENT).to_string(),
+            added_digest(Algorithm::Sha256, CONTENT).to_string(),
             "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
         );
     }
 
     #[test]
-    fn writes_a_sha_1_digest_in_unpadded_upper_case_base32() {
+    fn adds_a_sha_1_digest_in_unpadded_upper_case_base32() {
         assert_eq!(
-            sha_1_digest(CONTENT).to_string(),
+            added_digest(Algorithm::Sha1, CONTENT).to_string(),
             "sha1:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N"
         );
     }

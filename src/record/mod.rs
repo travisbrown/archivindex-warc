@@ -63,7 +63,9 @@ use crate::record::header::{
     WarcinfoHeader,
 };
 use crate::record::record_type::RecordType;
-use crate::value::{LabelledDigest, MediaType, Text, WarcDate, WarcDatePrecision};
+use crate::value::{
+    Algorithm, LabelledDigest, MediaType, Supported, Text, WarcDate, WarcDatePrecision, marker,
+};
 use crate::version::WarcVersion;
 
 /// The ways a header block and its content block can fail to go together.
@@ -812,7 +814,7 @@ impl<E: Extension> Record<E> {
     /// payload is recomputed on every call.
     #[must_use]
     pub fn incorrect_payload_digest(&self) -> Option<BlockError> {
-        check_payload_digest(self).err()
+        check_payload_digest(self, None).err()
     }
 
     /// Whether rendering should add a missing payload digest.
@@ -873,12 +875,44 @@ impl<E: Extension> Record<E> {
     /// [`RenderError::RepeatedField`] if a record of an extension type names one twice. Returns
     /// [`BlockError::MalformedPayloadDigest`], [`BlockError::PayloadDigestMismatch`], or
     /// [`BlockError::Payload`] where the payload digest fails as the block digest does.
-    pub fn into_raw(mut self) -> Result<raw::Record, RenderError> {
+    pub fn into_raw(self) -> Result<raw::Record, RenderError> {
+        self.into_raw_added(Some(marker::Sha256::ALGORITHM))
+    }
+
+    /// Render as [`into_raw`](Self::into_raw), using the given algorithm for added digests.
+    ///
+    /// The algorithm is chosen at the type level ([`Supported`]), so an algorithm this build
+    /// cannot compute is a compile error. Declared digests are checked exactly as
+    /// [`into_raw`](Self::into_raw) checks them.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`into_raw`](Self::into_raw).
+    pub fn into_raw_with_digests<A: Supported>(
+        self,
+        _algorithm: A,
+    ) -> Result<raw::Record, RenderError> {
+        self.into_raw_added(Some(A::ALGORITHM))
+    }
+
+    /// Render without adding missing digests.
+    ///
+    /// Declared digests are still validated and preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`into_raw`](Self::into_raw).
+    pub fn into_raw_without_digests(self) -> Result<raw::Record, RenderError> {
+        self.into_raw_added(None)
+    }
+
+    /// Render, optionally adding block and payload digests.
+    fn into_raw_added(mut self, added: Option<Algorithm>) -> Result<raw::Record, RenderError> {
         // Resolve the payload digest before rendering the header fields.
-        if let Some(added) = check_payload_digest(&self)?
+        if let Some(digest) = check_payload_digest(&self, added)?
             && let Some(headers) = self.payload_mut()
         {
-            headers.payload_digest = Some(added);
+            headers.payload_digest = Some(digest);
         }
 
         // Read before the record is consumed, since the version and the record type come from
@@ -894,13 +928,15 @@ impl<E: Extension> Record<E> {
         // A record can also be assembled directly by naming its variant, so the declared length
         // is checked here as well as where a header block and a body are paired.
         check_declared_length(core.content_length, content_length)?;
-        let block_digest = check_block_digest(core.block_digest, &body)?;
+        let block_digest = check_block_digest(core.block_digest, &body, added)?;
 
         renderer.push_token(Field::WarcType, record_type.as_str())?;
         renderer.push_uri(Field::RecordID, core.record_id)?;
         renderer.push_date(Field::Date, core.date)?;
         renderer.push_digits(Field::ContentLength, content_length)?;
-        renderer.push_digest(Field::BlockDigest, block_digest)?;
+        if let Some(block_digest) = block_digest {
+            renderer.push_digest(Field::BlockDigest, block_digest)?;
+        }
         renderer.push_optional_media_type(Field::ContentType, core.content_type)?;
         if let Some(truncated) = &core.truncated {
             renderer.push_token(Field::Truncated, truncated.as_str())?;
@@ -1800,12 +1836,15 @@ mod tests {
     ///
     /// Used when comparing a value before and after a rendering round trip.
     pub(super) fn as_rendered<E: Extension>(mut record: Record<E>) -> Record<E> {
+        use crate::value::Algorithm;
+
         if record.core().block_digest.is_none() {
-            let digest = crate::record::digest::added_digest(&record.body_bytes());
+            let digest =
+                crate::record::digest::added_digest(Algorithm::Sha256, &record.body_bytes());
             record.core_mut().block_digest = Some(digest);
         }
 
-        if let Ok(Some(digest)) = check_payload_digest(&record)
+        if let Ok(Some(digest)) = check_payload_digest(&record, Some(Algorithm::Sha256))
             && let Some(headers) = record.payload_mut()
         {
             headers.payload_digest = Some(digest);
@@ -2303,6 +2342,40 @@ mod tests {
         );
     }
 
+    /// Digest options do not skip validation of declared digests.
+    #[test]
+    fn added_digests_follow_the_rendering_the_caller_chose() {
+        let record = || {
+            lift_grammar(grammar_of(
+                WarcVersion::V1_1,
+                "response",
+                &[("WARC-Target-URI", "http://example.com/")],
+                DIGESTED_BLOCK,
+            ))
+            .expect("liftable record")
+        };
+
+        let sha_1 = record()
+            .into_raw_with_digests(marker::Sha1)
+            .expect("renderable record");
+        assert_eq!(
+            written(&sha_1, "WARC-Block-Digest").as_deref(),
+            Some("sha1:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N")
+        );
+
+        let undigested = record()
+            .into_raw_without_digests()
+            .expect("renderable record");
+        assert_eq!(written(&undigested, "WARC-Block-Digest"), None);
+
+        // A declared digest the block does not have is still an error without added digests.
+        assert!(
+            declaring_digest("md5:00000000000000000000000000000000")
+                .into_raw_without_digests()
+                .is_err()
+        );
+    }
+
     /// Valid block digests are checked in their declared format and preserved as read.
     #[test]
     fn a_block_digest_the_block_has_is_written_as_read() {
@@ -2400,14 +2473,17 @@ mod tests {
         ));
     }
 
-    /// Valid, absent, and unsupported digests do not report a failure.
+    /// A label naming no algorithm this crate knows, whatever the build enables.
+    const UNKNOWN_DIGEST: &str = "crc32:1c330fb2d66be8b5";
+
+    /// Valid, absent, and uncheckable digests do not report a failure.
     #[test]
     fn a_record_declaring_a_digest_it_has_reports_nothing() {
         for value in [
             "sha1:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N",
             "md5:5d41402abc4b2a76b9719d911017c592",
-            "xxh3:1c330fb2d66be8b5",
-            "blake3:not-a-digest",
+            UNKNOWN_DIGEST,
+            "crc32:not-a-digest",
         ] {
             let record = declaring_digest(value);
 
@@ -2421,10 +2497,10 @@ mod tests {
         assert_eq!(record.incorrect_payload_digest(), None);
     }
 
-    /// Digests using unsupported algorithms are preserved without validation.
+    /// Unknown algorithms are preserved without validation.
     #[test]
     fn a_block_digest_under_an_unknown_algorithm_is_not_checked() {
-        for value in ["xxh3:1c330fb2d66be8b5", "blake3:not-a-digest"] {
+        for value in [UNKNOWN_DIGEST, "crc32:not-a-digest"] {
             let raw = declaring_digest(value)
                 .into_raw()
                 .expect("renderable record");
@@ -2435,6 +2511,36 @@ mod tests {
                 "{value}"
             );
         }
+    }
+
+    /// Disabled algorithms are preserved without validation.
+    ///
+    /// Which algorithms a build can compute follows from the features of
+    /// `archivindex-warc-digest`, so one it cannot is chosen at run time rather than named here.
+    /// A build enabling every algorithm leaves nothing to check.
+    #[test]
+    fn a_digest_under_a_disabled_algorithm_is_not_checked() {
+        use crate::value::Algorithm;
+
+        let Some(algorithm) = Algorithm::ALL
+            .into_iter()
+            .find(|algorithm| !algorithm.is_supported())
+        else {
+            return;
+        };
+        // The value is never decoded, since the digest to compare it with cannot be computed.
+        let value = format!("{}:1c330fb2d66be8b5", algorithm.label());
+        let record = declaring_digest(&value);
+
+        assert_eq!(record.incorrect_block_digest(), None, "{value}");
+        assert_eq!(record.incorrect_payload_digest(), None, "{value}");
+
+        let raw = record.into_raw().expect("renderable record");
+
+        assert_eq!(
+            written(&raw, "WARC-Block-Digest").as_deref(),
+            Some(value.as_str())
+        );
     }
 
     /// [`RESPONSE_BLOCK`] with a chunked entity-body.

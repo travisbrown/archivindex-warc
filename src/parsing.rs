@@ -5,29 +5,7 @@
 
 use std::borrow::Cow;
 
-/// Whether a byte is allowed by the field name token grammar.
-pub const fn is_token_char(byte: u8) -> bool {
-    !matches!(byte, 0..=31
-        | 127..=255
-        | b'('
-        | b')'
-        | b'<'
-        | b'>'
-        | b'@'
-        | b','
-        | b';'
-        | b':'
-        | b'"'
-        | b'/'
-        | b'['
-        | b']'
-        | b'?'
-        | b'='
-        | b'{'
-        | b'}'
-        | b' '
-        | b'\\')
-}
+pub use archivindex_warc_digest::token::{is_token, is_token_char};
 
 /// Whether a byte is linear white space (`SP` or `HT`).
 pub const fn is_lws(byte: u8) -> bool {
@@ -91,11 +69,6 @@ pub fn split_field_line(line: &[u8]) -> Option<(&[u8], usize)> {
     }
 
     (line.get(colon) == Some(&b':')).then_some((&line[..name_end], colon))
-}
-
-/// Whether every byte of a value is a `token` character, and there is at least one.
-pub fn is_token(value: &[u8]) -> bool {
-    !value.is_empty() && value.iter().copied().all(is_token_char)
 }
 
 /// Whether every byte of a value is `TEXT`.
