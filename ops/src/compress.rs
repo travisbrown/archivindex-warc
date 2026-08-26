@@ -6,7 +6,7 @@
 use std::io::{BufRead, Write};
 
 use archivindex_warc::io::read::{self, WarcReader};
-use archivindex_warc::io::write::{self, MAX_GZIP_COMPRESSION_LEVEL, WarcWriter};
+use archivindex_warc::io::write::{self, Compression, WarcWriter};
 
 /// A failure while compressing a WARC file.
 #[derive(Debug, thiserror::Error)]
@@ -46,15 +46,12 @@ pub fn compress<R: BufRead, W: Write>(
     level: u32,
     output: W,
 ) -> Result<CompressSummary, Error> {
-    if level > MAX_GZIP_COMPRESSION_LEVEL {
-        return Err(write::Error::InvalidGzipCompressionLevel(level).into());
-    }
-
-    let mut writer = WarcWriter::new(output);
+    let compression = Compression::gzip_with_level(level)?;
+    let mut writer = WarcWriter::new(output).with_compression(compression);
     let mut records = 0;
 
     for result in WarcReader::new(input).iter_raw_records() {
-        writer.write_gzip_with_level(&result?, level)?;
+        writer.write(&result?)?;
         records += 1;
     }
 
