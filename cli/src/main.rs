@@ -4,7 +4,6 @@ mod export;
 mod graph;
 
 use std::fmt::Display;
-use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -313,12 +312,6 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
 
 /// Compress `input` record by record into the gzip WARC at `output`.
 fn compress(input: &Path, level: u32, output: &Path, quiet: bool) -> Result<()> {
-    if input == output {
-        bail!(
-            "input and output must be different files: {}",
-            input.display()
-        );
-    }
     if !archivindex_warc_ops::file::is_gzip(output) {
         bail!(
             "a compressed output must be named with a .gz extension: {}",
@@ -326,12 +319,7 @@ fn compress(input: &Path, level: u32, output: &Path, quiet: bool) -> Result<()> 
         );
     }
 
-    let reader = archivindex_warc_ops::file::read(input)?;
-    let writer = BufWriter::new(
-        File::create(output).with_context(|| format!("cannot create {}", output.display()))?,
-    );
-    let summary = archivindex_warc_ops::compress::compress(reader, level, writer)
-        .with_context(|| format!("cannot compress {}", input.display()))?;
+    let summary = archivindex_warc_ops::compress::compress_path(input, level, output)?;
 
     if !quiet {
         println!(
