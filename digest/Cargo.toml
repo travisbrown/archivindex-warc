@@ -28,7 +28,7 @@ xxh3 = ["dep:xxhash-rust"]
 all-digests = ["md5", "sha1", "sha2", "sha3", "blake2", "blake3", "xxh3"]
 
 [dependencies]
-blake2 = { version = "0.11.0-rc.6", optional = true }
+blake2 = { version = "0.11", optional = true }
 blake3 = { version = "1.8.7", optional = true }
 data-encoding.workspace = true
 md-5 = { version = "0.11", optional = true }
