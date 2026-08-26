@@ -15,7 +15,7 @@
 //!
 //! [`io::read::WarcReader`] reads any of these representations and can skip content blocks after
 //! inspecting their headers. [`io::read::WarcReader`] and [`io::write::WarcWriter`] both support
-//! gzip-compressed WARC files.
+//! gzip-compressed WARC files, and locate each record by the gzip member holding it.
 //!
 //! Errors are reported at the level that finds them. [`value::Error`] reports field-value grammar
 //! violations through [`value::TextError`], [`value::MediaTypeError`], and
