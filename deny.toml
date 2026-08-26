@@ -1,0 +1,41 @@
+# The dependency policy, checked in continuous integration by `cargo deny check`.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+ignore = [
+  # It reaches the unpublished command-line tools through `d2-little`, which renders the record
+  # graph, and no release of that crate replaces it.
+  { id = "RUSTSEC-2026-0192", reason = "`ttf-parser` is unmaintained" },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# A path dependency on a package that is never published cannot carry a version requirement.
+allow-wildcard-paths = true
+
+[licenses]
+version = 2
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

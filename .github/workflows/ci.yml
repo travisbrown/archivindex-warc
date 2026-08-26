@@ -88,6 +88,19 @@ jobs:
           --exclude archivindex-warc-ops
           --exclude archivindex-warc-cli
 
+  deny:
+    name: Check the dependency policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-deny
+      - name: Check the workspace
+        run: cargo deny --workspace check
+      # The validator resolves on its own, so its tree is checked against the same policy.
+      - name: Check the validator
+        run: cargo deny --manifest-path validator/Cargo.toml --config deny.toml check
+
   validator:
     name: Build, test, and lint the validator
     runs-on: ubuntu-latest
