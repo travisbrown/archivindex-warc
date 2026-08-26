@@ -48,6 +48,9 @@ pub enum Error {
 impl Text {
     /// Read a `TEXT` or `quoted-string` value.
     ///
+    /// A quoted string is held as its content, so a redundant escape is not kept: `"a\<TAB>b"`
+    /// reads as the content `a<TAB>b` and [`to_bytes`](Self::to_bytes) writes it back unescaped.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::ControlCharacter`] when the value holds a control character other than
@@ -107,8 +110,9 @@ impl Text {
 
     /// The octets that spell this value, quoted and escaped when it was read that way.
     ///
-    /// This is what a field carrying the value is written with. [`Display`] spells the same
-    /// value, but replaces any octet that is not valid UTF-8.
+    /// Only a quote and a backslash are escaped, so a value read with a redundant escape is
+    /// written without it. [`Display`] spells the same value, but replaces any octet that is not
+    /// valid UTF-8.
     #[must_use]
     pub fn to_bytes(&self) -> Cow<'_, [u8]> {
         if !self.quoted {
