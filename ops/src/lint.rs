@@ -38,6 +38,9 @@
 //!     segment or of a record that declares its block truncated.
 //! 12. No two records share a `WARC-Record-ID`, which clause 5.2 of the standard requires to be
 //!     globally unique. Concatenating files record by record is what usually breaks this.
+//! 13. Every record of a gzip file lies in a gzip member of its own, which is what lets a record be
+//!     found and decompressed without reading the ones before it. A file read without its member
+//!     framing, as an uncompressed file is, is not held to this rule.
 //!
 //! Each rule a record breaks is one [`Finding`]. A record that breaks none is reported by its
 //! identifier alone.
@@ -58,6 +61,8 @@ use archivindex_warc::record::header::{RevisitProfile, WarcinfoHeader};
 use archivindex_warc::record::{BlockError, FieldsBlock, Record};
 use archivindex_warc::value::{LabelledDigest, MediaType, Text};
 use fluent_uri::Uri;
+
+use crate::gzip::Framing;
 
 /// A rule a record breaks.
 ///
@@ -223,6 +228,18 @@ pub enum Violation {
         /// The position of the record that used the identifier first.
         first: usize,
     },
+    /// A record is not alone in its gzip member.
+    #[error("the record shares its gzip member with record {first}")]
+    SharedGzipMember {
+        /// The position of the other record in the member.
+        first: usize,
+    },
+    /// A record's octets are spread over several gzip members.
+    #[error("the record is spread over {members} gzip members")]
+    SplitGzipMember {
+        /// The number of members the record lies in.
+        members: usize,
+    },
     /// A `request` record's target URI does not have the collection's host as its host.
     #[error("the target URI's host should be `{expected}`, but {}", host(found.as_deref()))]
     WrongRequestHost {
@@ -261,6 +278,8 @@ impl Violation {
             Self::MalformedDigest { .. } => "malformed_digest",
             Self::UnreadablePayload { .. } => "unreadable_payload",
             Self::DuplicateRecordId { .. } => "duplicate_record_id",
+            Self::SharedGzipMember { .. } => "shared_gzip_member",
+            Self::SplitGzipMember { .. } => "split_gzip_member",
             Self::WrongRequestHost { .. } => "wrong_request_host",
         }
     }
@@ -391,6 +410,16 @@ impl Display for Finding {
 /// keep the common case small.
 pub type Checked = Result<Uri<String>, Box<Finding>>;
 
+/// Where a record sat in the gzip members of a file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Placement {
+    /// The position of the record held first by the member the record begins in, which is the
+    /// record's own position when the record begins that member.
+    first: usize,
+    /// The number of members the record's octets lie in.
+    members: usize,
+}
+
 /// The record a capture's next record must name and agree with.
 #[derive(Debug)]
 struct Pending {
@@ -434,6 +463,14 @@ pub struct Linter<R> {
     clean: Option<Uri<String>>,
     /// Where each identifier the file has used was used first.
     record_ids: HashMap<Uri<String>, usize>,
+    /// Where the gzip members of the file end, when its framing is checked.
+    framing: Option<Framing>,
+    /// Where the record read last ended in the decompressed stream.
+    read_through: u64,
+    /// The ends of members reached but not yet attributed to a record.
+    boundaries: VecDeque<u64>,
+    /// The position of the record the gzip member being read holds first.
+    member_first: usize,
     /// Results not yet yielded, since one record can produce several.
     queue: VecDeque<Checked>,
     /// A read error to yield once the results queued before it have been.
@@ -451,9 +488,24 @@ impl<R: BufRead> Linter<R> {
             pending: None,
             clean: None,
             record_ids: HashMap::new(),
+            framing: None,
+            read_through: 0,
+            boundaries: VecDeque::new(),
+            member_first: 0,
             queue: VecDeque::new(),
             deferred: None,
         }
+    }
+
+    /// Check the gzip framing of the file, which `framing` reports as the reader reads.
+    ///
+    /// `framing` must be the handle of the [`MemberReader`](crate::gzip::MemberReader) given to
+    /// [`new`](Self::new), from which nothing has been read yet.
+    #[must_use]
+    pub fn checking_gzip_framing(mut self, framing: Framing) -> Self {
+        self.framing = Some(framing);
+
+        self
     }
 
     /// The number of records consumed so far, counting unreadable ones.
@@ -464,8 +516,49 @@ impl<R: BufRead> Linter<R> {
         self.index
     }
 
+    /// Where the record just read sat in the gzip members of the file.
+    ///
+    /// A record ends where the next begins, so a member ending there opens the member the next
+    /// record begins in. Nothing is reported for a file whose framing is not checked.
+    fn placement(&mut self) -> Option<Placement> {
+        let index = self.index;
+        let framing = self.framing.as_ref()?;
+        let start = self.read_through;
+        let end = framing.position();
+        self.read_through = end;
+        framing.take_boundaries(&mut self.boundaries);
+
+        let mut begins_member = index == 0;
+        let mut members = 1;
+        while let Some(at) = self.boundaries.front().copied().filter(|at| *at < end) {
+            self.boundaries.pop_front();
+            if at == start {
+                begins_member = true;
+            } else {
+                members += 1;
+            }
+        }
+
+        let first = if begins_member {
+            index
+        } else {
+            self.member_first
+        };
+        // A record whose octets are split ends the member the record after it begins in.
+        if begins_member || members > 1 {
+            self.member_first = index;
+        }
+
+        Some(Placement { first, members })
+    }
+
     /// Check one record against every rule and queue what it yields.
-    fn check(&mut self, record: &Record, order_violation: Option<Violation>) {
+    fn check(
+        &mut self,
+        record: &Record,
+        order_violation: Option<Violation>,
+        placement: Option<Placement>,
+    ) {
         let index = self.index;
         self.index += 1;
 
@@ -478,7 +571,7 @@ impl<R: BufRead> Linter<R> {
         if let Some(violation) = order_violation {
             self.report(index, &record.core().record_id, violation);
         }
-        self.check_record(index, record);
+        self.check_record(index, record, placement);
         self.check_capture(index, record, expected);
         if self.queue.len() == mark {
             self.clean = Some(record.core().record_id.clone());
@@ -526,8 +619,17 @@ impl<R: BufRead> Linter<R> {
     }
 
     /// Check the rules that look at one record at a time.
-    fn check_record(&mut self, index: usize, record: &Record) {
+    fn check_record(&mut self, index: usize, record: &Record, placement: Option<Placement>) {
         let record_id = &record.core().record_id;
+
+        if let Some(Placement { first, members }) = placement {
+            if first != index {
+                self.report(index, record_id, Violation::SharedGzipMember { first });
+            }
+            if members > 1 {
+                self.report(index, record_id, Violation::SplitGzipMember { members });
+            }
+        }
 
         if index == 0 && !matches!(record, Record::Warcinfo { .. }) {
             self.report(
@@ -847,13 +949,17 @@ impl<R: BufRead> Iterator for Linter<R> {
 
             match self.records.next() {
                 Some(Ok(untyped)) => {
+                    let placement = self.placement();
                     let order_violation = canonical_order_violation(&untyped.header);
                     match Record::<NoExtension>::try_from(untyped) {
-                        Ok(record) => self.check(&record, order_violation),
+                        Ok(record) => self.check(&record, order_violation, placement),
                         Err(error) => self.skip(error.into()),
                     }
                 }
-                Some(Err(error)) => self.skip(error),
+                Some(Err(error)) => {
+                    self.placement();
+                    self.skip(error);
+                }
                 None => {
                     self.finish();
                     if self.queue.is_empty() {
@@ -1001,9 +1107,14 @@ fn fits(found: &MediaType, expected: &MediaType) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use archivindex_warc::value::Algorithm;
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
 
     use super::*;
+    use crate::gzip::MemberReader;
 
     const WARCINFO_ID: &str = "urn:uuid:aaaaaaaa-0000-4000-8000-000000000000";
     const REQUEST_ID: &str = "urn:uuid:bbbbbbbb-0000-4000-8000-000000000000";
@@ -1237,7 +1348,12 @@ mod tests {
     /// Each finding's rule name is checked against its serialized form here, so every test
     /// expecting a finding checks that pairing too.
     fn findings(records: &[TestRecord]) -> Vec<(usize, Violation)> {
-        lint(records)
+        faults(lint(records))
+    }
+
+    /// The findings among the results of a lint pass, by position.
+    fn faults(checked: Vec<Checked>) -> Vec<(usize, Violation)> {
+        checked
             .into_iter()
             .filter_map(Result::err)
             .map(|finding| {
@@ -1246,6 +1362,32 @@ mod tests {
                 (finding.index, finding.violation)
             })
             .collect()
+    }
+
+    /// The members spelled as one gzip stream.
+    fn gzip(members: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for member in members {
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+            encoder.write_all(member).expect("a member is written");
+            out.extend_from_slice(&encoder.finish().expect("a member is finished"));
+        }
+
+        out
+    }
+
+    /// The findings of a lint pass over a gzip file whose framing is checked, by position.
+    fn gzip_findings(members: &[&[u8]]) -> Vec<(usize, Violation)> {
+        let stream = gzip(members);
+        let reader = MemberReader::new(&stream[..]);
+        let framing = reader.framing();
+
+        faults(
+            Linter::new(reader)
+                .checking_gzip_framing(framing)
+                .collect::<Result<_, _>>()
+                .expect("every record reads"),
+        )
     }
 
     /// The rule name the serialized form of a finding writes.
@@ -1601,6 +1743,52 @@ mod tests {
             [
                 (4, Violation::DuplicateRecordId { first: 1 }),
                 (5, Violation::DuplicateRecordId { first: 1 }),
+            ]
+        );
+    }
+
+    /// A compressed file is written one record to a member, which is what the rule asks for.
+    #[test]
+    fn each_record_lies_in_a_gzip_member_of_its_own() {
+        let records = capture()
+            .iter()
+            .map(|record| render(std::slice::from_ref(record)))
+            .collect::<Vec<_>>();
+        let members = records.iter().map(Vec::as_slice).collect::<Vec<_>>();
+
+        assert_eq!(gzip_findings(&members), []);
+    }
+
+    /// A file written as one member, as a plain gzip of an uncompressed file is, faults every
+    /// record but the one its member holds first.
+    #[test]
+    fn records_sharing_a_gzip_member_are_reported() {
+        let records = capture();
+
+        assert_eq!(
+            gzip_findings(&[&render(&records)]),
+            [
+                (1, Violation::SharedGzipMember { first: 0 }),
+                (2, Violation::SharedGzipMember { first: 0 }),
+                (3, Violation::SharedGzipMember { first: 0 }),
+            ]
+        );
+    }
+
+    /// A record whose octets are split is reported, and the record after it still begins a member.
+    #[test]
+    fn a_record_split_across_gzip_members_is_reported() {
+        let records = capture();
+        let warcinfo = render(&records[..1]);
+        let request = render(&records[1..2]);
+        let (opening, rest) = request.split_at(request.len() / 2);
+        let tail = render(&records[2..]);
+
+        assert_eq!(
+            gzip_findings(&[&warcinfo, opening, rest, &tail]),
+            [
+                (1, Violation::SplitGzipMember { members: 2 }),
+                (3, Violation::SharedGzipMember { first: 2 }),
             ]
         );
     }
