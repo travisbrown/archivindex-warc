@@ -2,11 +2,8 @@
 //!
 //! Records of other types are copied as read.
 
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::Path;
 
-use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::parse::{raw, untyped};
 use archivindex_warc::record::extension::NoExtension;
 use archivindex_warc::record::fields::Body;
@@ -15,7 +12,7 @@ use archivindex_warc::record::fields::warcinfo::WarcinfoField;
 use archivindex_warc::record::{self, FieldsBlock, Record, RenderError};
 use archivindex_warc::value::{LabelledDigest, Text};
 
-use crate::file::{compression, open};
+use crate::file::transform;
 use crate::{Error, Result};
 
 /// What was written to the rewritten file.
@@ -169,25 +166,8 @@ impl TwoPartField {
 /// record cannot be read or written, a warcinfo record cannot be rewritten, or the output cannot
 /// be flushed.
 pub fn warcinfo(input: &Path, output: &Path, values: &WarcinfoValues) -> Result<RewriteSummary> {
-    if input == output {
-        return Err(Error::SameInputAndOutput {
-            path: input.to_owned(),
-        });
-    }
-
-    let file = File::create(output).map_err(|source| Error::Create {
-        path: output.to_owned(),
-        source,
-    })?;
-    let mut writer = WarcWriter::new(BufWriter::new(file)).with_compression(compression(output));
-    let mut records = 0;
     let mut rewritten = 0;
-
-    for (index, result) in open(input)?.iter_raw_records().enumerate() {
-        let mut record = result.map_err(|source| Error::Read {
-            path: input.to_owned(),
-            source,
-        })?;
+    let records = transform(&[input], output, |index, mut record| {
         if is_warcinfo(&record.header) {
             record = rewrite_warcinfo(record, values).map_err(|source| Error::RewriteWarcinfo {
                 path: input.to_owned(),
@@ -197,21 +177,7 @@ pub fn warcinfo(input: &Path, output: &Path, values: &WarcinfoValues) -> Result<
             rewritten += 1;
         }
 
-        let written = writer.write(&record).map_err(|source| Error::Write {
-            path: output.to_owned(),
-            source,
-        })?;
-        log::trace!(
-            "wrote {} bytes at offset {}",
-            written.length,
-            written.offset
-        );
-        records += 1;
-    }
-
-    writer.flush().map_err(|source| Error::Flush {
-        path: output.to_owned(),
-        source,
+        Ok(Some(record))
     })?;
 
     Ok(RewriteSummary { records, rewritten })
@@ -289,6 +255,7 @@ mod tests {
     use archivindex_warc::value::Algorithm;
 
     use super::*;
+    use crate::file::open;
 
     const WARCINFO_BODY: &str =
         "software: old/1\r\noperator: Old <old@example.com>\r\nrobots: classic\r\n";

@@ -11,16 +11,13 @@
 //! around values do not affect matching.
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::Path;
 
-use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::parse::raw;
 use archivindex_warc::value::WarcDate;
 use archivindex_warc::version::WarcVersion;
 
-use crate::file::{compression, open};
+use crate::file::{open, transform};
 use crate::{Error, Result};
 
 /// Fields whose values are record identifiers that may point at a warcinfo record.
@@ -58,9 +55,9 @@ pub struct MergeSummary {
 ///
 /// # Errors
 ///
-/// Returns an error when a file cannot be opened, a record cannot be read or written, or a
-/// warcinfo record whose duplicates are dropped has no `WARC-Record-ID` to redirect their
-/// references to.
+/// Returns an error when the output path is also an input path, a file cannot be opened, a record
+/// cannot be read or written, or a warcinfo record whose duplicates are dropped has no
+/// `WARC-Record-ID` to redirect their references to.
 pub fn merge(first: &Path, second: &Path, output: &Path) -> Result<MergeSummary> {
     let plan = MergePlan::build(first, second)?;
 
@@ -152,61 +149,30 @@ impl MergePlan {
     /// Stream both files into the output, applying the plan.
     fn write(self, first: &Path, second: &Path, output: &Path) -> Result<MergeSummary> {
         let Self { actions, redirects } = self;
-        let file = File::create(output).map_err(|source| Error::Create {
-            path: output.to_owned(),
-            source,
-        })?;
-        let mut writer =
-            WarcWriter::new(BufWriter::new(file)).with_compression(compression(output));
         let mut actions = actions.into_iter();
-        let mut summary = MergeSummary {
-            records: 0,
-            merged: 0,
-        };
+        let mut merged = 0;
+        let records = transform(&[first, second], output, |_, mut record| {
+            if is_warcinfo(&record.header) {
+                match actions.next().ok_or(Error::WarcinfoRecordsChanged)? {
+                    WarcinfoAction::Emit(kept) => record = kept,
+                    WarcinfoAction::Skip => {
+                        log::debug!(
+                            "dropping the duplicate warcinfo record {}",
+                            String::from_utf8_lossy(record_id(&record).unwrap_or_default())
+                        );
+                        merged += 1;
 
-        for path in [first, second] {
-            log::info!("copying records from {}", path.display());
-            for result in open(path)?.iter_raw_records() {
-                let mut record = result.map_err(|source| Error::Read {
-                    path: path.to_owned(),
-                    source,
-                })?;
-
-                if is_warcinfo(&record.header) {
-                    record = match actions.next().ok_or(Error::WarcinfoRecordsChanged)? {
-                        WarcinfoAction::Emit(kept) => kept,
-                        WarcinfoAction::Skip => {
-                            log::debug!(
-                                "dropping the duplicate warcinfo record {}",
-                                String::from_utf8_lossy(record_id(&record).unwrap_or_default())
-                            );
-                            summary.merged += 1;
-                            continue;
-                        }
-                    };
+                        return Ok(None);
+                    }
                 }
-
-                redirect_references(&mut record.header, &redirects);
-
-                let written = writer.write(&record).map_err(|source| Error::Write {
-                    path: output.to_owned(),
-                    source,
-                })?;
-                log::trace!(
-                    "wrote {} bytes at offset {}",
-                    written.length,
-                    written.offset
-                );
-                summary.records += 1;
             }
-        }
 
-        writer.flush().map_err(|source| Error::Flush {
-            path: output.to_owned(),
-            source,
+            redirect_references(&mut record.header, &redirects);
+
+            Ok(Some(record))
         })?;
 
-        Ok(summary)
+        Ok(MergeSummary { records, merged })
     }
 }
 
@@ -503,5 +469,22 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(trimmed(&records[0], "WARC-Record-ID").unwrap(), ID_B);
         assert_eq!(trimmed(&records[1], "WARC-Warcinfo-ID").unwrap(), ID_B);
+    }
+
+    /// Merging into one of its own inputs is refused before the file is touched.
+    #[test]
+    fn refuses_an_output_that_is_an_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let contents = warcinfo(ID_A, "2024-05-02T00:00:00Z", "sha1:AAAA", &[]);
+        let first = write_file(directory.path(), "first.warc", &contents);
+        let second = write_file(directory.path(), "second.warc", &contents);
+
+        let error = merge(&first, &second, &first).unwrap_err();
+
+        assert!(matches!(
+            &error,
+            Error::SameInputAndOutput { path } if path == &first
+        ));
+        assert_eq!(std::fs::read(first).unwrap(), contents);
     }
 }
