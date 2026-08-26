@@ -36,11 +36,13 @@
 //!     `WARC-Payload-Digest` the digest of the payload its block determines. A digest under an
 //!     algorithm this build does not compute is not checked, and neither is the payload digest of a
 //!     segment or of a record that declares its block truncated.
+//! 12. No two records share a `WARC-Record-ID`, which clause 5.2 of the standard requires to be
+//!     globally unique. Concatenating files record by record is what usually breaks this.
 //!
 //! Each rule a record breaks is one [`Finding`]. A record that breaks none is reported by its
 //! identifier alone.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::{self, Display, Formatter};
 use std::io::BufRead;
 
@@ -215,6 +217,12 @@ pub enum Violation {
         /// Why the block does not yield a payload.
         reason: String,
     },
+    /// A record's `WARC-Record-ID` is one an earlier record already used.
+    #[error("`WARC-Record-ID` is the identifier of record {first}")]
+    DuplicateRecordId {
+        /// The position of the record that used the identifier first.
+        first: usize,
+    },
     /// A `request` record's target URI does not have the collection's host as its host.
     #[error("the target URI's host should be `{expected}`, but {}", host(found.as_deref()))]
     WrongRequestHost {
@@ -252,6 +260,7 @@ impl Violation {
             Self::PayloadDigestMismatch { .. } => "payload_digest_mismatch",
             Self::MalformedDigest { .. } => "malformed_digest",
             Self::UnreadablePayload { .. } => "unreadable_payload",
+            Self::DuplicateRecordId { .. } => "duplicate_record_id",
             Self::WrongRequestHost { .. } => "wrong_request_host",
         }
     }
@@ -423,6 +432,8 @@ pub struct Linter<R> {
     pending: Option<Pending>,
     /// The preceding record, if it broke no rule and the record after it may still fault it.
     clean: Option<Uri<String>>,
+    /// Where each identifier the file has used was used first.
+    record_ids: HashMap<Uri<String>, usize>,
     /// Results not yet yielded, since one record can produce several.
     queue: VecDeque<Checked>,
     /// A read error to yield once the results queued before it have been.
@@ -439,6 +450,7 @@ impl<R: BufRead> Linter<R> {
             collection_host: None,
             pending: None,
             clean: None,
+            record_ids: HashMap::new(),
             queue: VecDeque::new(),
             deferred: None,
         }
@@ -525,6 +537,12 @@ impl<R: BufRead> Linter<R> {
                     found: record.type_name().to_owned(),
                 },
             );
+        }
+
+        if let Some(&first) = self.record_ids.get(record_id) {
+            self.report(index, record_id, Violation::DuplicateRecordId { first });
+        } else {
+            self.record_ids.insert(record_id.clone(), index);
         }
 
         if let Record::Warcinfo { header, body } = record {
@@ -1155,6 +1173,45 @@ mod tests {
         vec![warcinfo(), request(), response(), metadata()]
     }
 
+    /// An identifier for a further record a test adds, distinct for each `nonce`.
+    fn other_id(nonce: usize) -> String {
+        format!("urn:uuid:eeeeeeee-0000-4000-8000-0000000001{nonce:02}")
+    }
+
+    /// Copies of `records` under identifiers of their own, keeping the references among them.
+    ///
+    /// A field naming a record outside the copy, such as the `warcinfo` record a capture belongs
+    /// to, keeps the identifier it names.
+    fn copies(records: &[TestRecord], nonce: usize) -> Vec<TestRecord> {
+        let own = records.iter().map(declared_id).collect::<Vec<_>>();
+
+        records
+            .iter()
+            .map(|record| {
+                let mut copy = record.clone();
+                for (_, value) in &mut copy.headers {
+                    if own.contains(&*value) {
+                        // Identifiers are written between brackets, which the copy keeps.
+                        value.insert_str(value.len() - 1, &format!("-{nonce}"));
+                    }
+                }
+
+                copy
+            })
+            .collect()
+    }
+
+    /// The identifier a record declares, as its field is written.
+    fn declared_id(record: &TestRecord) -> String {
+        record
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "WARC-Record-ID")
+            .expect("the record declares an identifier")
+            .1
+            .clone()
+    }
+
     fn render(records: &[TestRecord]) -> Vec<u8> {
         let mut out = Vec::new();
         for record in records {
@@ -1350,7 +1407,7 @@ mod tests {
             .clone()
             .set("WARC-Warcinfo-ID", &format!("<{OTHER_ID}>"));
         records.push(warcinfo_with_id(OTHER_ID));
-        records.push(resource(RESPONSE_ID));
+        records.push(resource(&other_id(1)));
 
         assert_eq!(
             findings(&records),
@@ -1380,7 +1437,7 @@ mod tests {
         records[2] = records[2].clone().without("WARC-Payload-Digest");
         records.push(resource(OTHER_ID).without("WARC-Payload-Digest"));
         records.push(
-            TestRecord::new("revisit", OTHER_ID, "")
+            TestRecord::new("revisit", &other_id(1), "")
                 .with("WARC-Target-URI", TARGET)
                 .with("WARC-Warcinfo-ID", format!("<{WARCINFO_ID}>"))
                 .with(
@@ -1529,6 +1586,25 @@ mod tests {
         );
     }
 
+    /// Concatenating a file with itself is what usually repeats an identifier.
+    #[test]
+    fn no_two_records_share_an_identifier() {
+        let mut records = capture();
+        records.push(response().set("WARC-Record-ID", &format!("<{REQUEST_ID}>")));
+        records.push(metadata().set("WARC-Record-ID", &format!("<{REQUEST_ID}>")));
+
+        assert_eq!(
+            findings(&records)
+                .into_iter()
+                .filter(|(_, violation)| matches!(violation, Violation::DuplicateRecordId { .. }))
+                .collect::<Vec<_>>(),
+            [
+                (4, Violation::DuplicateRecordId { first: 1 }),
+                (5, Violation::DuplicateRecordId { first: 1 }),
+            ]
+        );
+    }
+
     #[test]
     fn a_record_with_a_block_carries_a_content_type() {
         let mut records = capture();
@@ -1541,7 +1617,7 @@ mod tests {
                 .with("WARC-Segment-Origin-ID", format!("<{RESPONSE_ID}>")),
         );
         records.push(
-            TestRecord::new("revisit", OTHER_ID, "")
+            TestRecord::new("revisit", &other_id(1), "")
                 .with("WARC-Target-URI", TARGET)
                 .with("WARC-Warcinfo-ID", format!("<{WARCINFO_ID}>"))
                 .with("WARC-Payload-Digest", DIGEST)
@@ -1660,7 +1736,11 @@ mod tests {
     #[test]
     fn a_second_request_breaks_the_capture_before_it() {
         let mut records = capture();
-        records.insert(2, request());
+        records.insert(2, copies(&[request()], 1).remove(0));
+        // The response names the request it follows, which is now the second one.
+        records[3] = records[3]
+            .clone()
+            .set("WARC-Concurrent-To", &format!("<{REQUEST_ID}-1>"));
 
         assert_eq!(
             findings(&records),
@@ -1744,7 +1824,7 @@ mod tests {
         let mut records = capture();
         records[0].body = "software: test\r\n".to_owned();
         records.push(warcinfo_with_id(OTHER_ID).without("WARC-Filename"));
-        records.push(warcinfo_with_id(OTHER_ID).set("WARC-Filename", "other.warc"));
+        records.push(warcinfo_with_id(&other_id(1)).set("WARC-Filename", "other.warc"));
 
         assert_eq!(
             findings(&records),
@@ -1784,14 +1864,15 @@ mod tests {
         let malformed = [HOST, "example.com-", "-20240401120000", "example.com-today"];
         let mut records = capture();
         for (index, collection) in malformed.into_iter().enumerate() {
-            let mut warcinfo = warcinfo_with_id(OTHER_ID);
+            let identifier = other_id(index);
+            let mut warcinfo = warcinfo_with_id(&identifier);
             warcinfo.body = format!("software: test\r\nisPartOf: {collection}\r\n");
             records.push(warcinfo.set("WARC-Filename", &format!("{collection}.warc.gz")));
             if index == 0 {
-                records.extend(capture()[1..].iter().map(|record| {
+                records.extend(copies(&capture()[1..], 1).iter().map(|record| {
                     record
                         .clone()
-                        .set("WARC-Warcinfo-ID", &format!("<{OTHER_ID}>"))
+                        .set("WARC-Warcinfo-ID", &format!("<{identifier}>"))
                         .set("WARC-Target-URI", "https://www.example.com/")
                 }));
             }
@@ -1824,14 +1905,14 @@ mod tests {
                 .clone()
                 .set("WARC-Target-URI", "https://Example.COM/");
         }
-        let mut other = capture()[1..].to_vec();
+        let mut other = copies(&capture()[1..], 1);
         for record in &mut other {
             *record = record
                 .clone()
                 .set("WARC-Target-URI", "https://www.example.com/");
         }
         records.extend(other);
-        let mut hostless = capture()[1..].to_vec();
+        let mut hostless = copies(&capture()[1..], 2);
         for record in &mut hostless {
             *record = record
                 .clone()
