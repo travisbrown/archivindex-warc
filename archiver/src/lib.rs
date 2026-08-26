@@ -78,12 +78,23 @@ pub struct Config {
     ///
     /// [`Archiver::new`] rejects values that cannot be used as HTTP field values.
     pub user_agent: String,
-    /// The network timeout, applied to connecting and to each socket read and write.
+    /// The idle timeout, applied to connecting and to each socket read and write.
     ///
     /// A fetch fails when connecting, sending the request, or reading the response header section
     /// times out. A read timing out after the header section instead truncates the response, which
-    /// is recorded with a `WARC-Truncated` reason of `time`.
+    /// is recorded with a `WARC-Truncated` reason of `time`. Each operation is timed on its own,
+    /// so a slow peer that keeps sending never trips it; [`max_capture_time`](Self::max_capture_time)
+    /// bounds the whole capture.
     pub timeout: Duration,
+    /// The maximum time spent capturing one URL, when set.
+    ///
+    /// The time covers every hop of the URL's redirect chain and every challenge answered along
+    /// it, but not name resolution, which is not timed. Reaching the limit is reported as a
+    /// timeout is: the capture fails when no response header section has been read on the
+    /// current hop, and is otherwise truncated with a `WARC-Truncated` reason of `time`. Each
+    /// attempt a session makes at a URL is given the whole time. The limit is lifted when unset.
+    /// The default is [`Config::DEFAULT_MAX_CAPTURE_TIME`].
+    pub max_capture_time: Option<Duration>,
     /// The maximum number of redirects followed for each URL.
     ///
     /// Every hop is captured; when a response still redirects after this many follows, it is
