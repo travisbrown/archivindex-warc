@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 /// A version number that names no supported WARC version.
 ///
-/// Only the number is captured here, without the `WARC/` a version line spells it after.
+/// WARC 1.0 and 1.1 are supported. The error stores only the number following `WARC/`.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("Malformed version: {0}")]
 pub struct Error(pub String);

@@ -18,12 +18,21 @@ This project began as a fork of [Reza Akhavan][jedireza]'s [`warc` crate][warc-c
 implementation, including WARC 1.1 support, layered validation, semantic record builders, and
 record framing for indexed access.
 
-- Migration from [`libflate`][libflate] to [`flate2`][flate2]
-- Updates for all dependencies (including [`nom`][nom], from 7 to 8)
-- [WARC 1.1][warc-1.1] support
-- Many minor bug fixes, mostly related to edge cases
-- A separate [`validator`](validator/) Rust project providing an easy way to compare several
-  independent WARC validators
+## Repository
+
+The workspace also contains crates for labelled digests, higher-level WARC operations, revisit
+indexes, web capture, and command-line applications. The [`validator`](validator/) is a separate
+Rust project so that its dependency tree does not constrain the workspace.
+
+## Development
+
+The workspace requires Rust 1.88 or later. Run its tests and build its documentation with:
+
+```console
+cargo test --locked --workspace --features archivindex-warc-revisit-index/bundled
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps \
+  --features archivindex-warc-revisit-index/bundled
+```
 
 The first iteration of the Archivindex project was [supported][archivindex-prototype-fund] by [the
 Prototype Fund][prototype-fund].

@@ -24,6 +24,14 @@
 //! the declared version, and names or values that cannot form a valid header line.
 //! [`io::read::Error`] and [`io::write::Error`] add stream failures.
 //!
+//! WARC 1.1 allows UTF-8 field values and also admits the encoded words of RFC 2047, which clause
+//! 4 asks reading software to understand. Community recommendation #67 of the [annotated
+//! standard][annotated] is not to implement that mechanism, and this crate follows it: an encoded
+//! word is read and written as it stands.
+//!
+//! Only WARC 1.0 and 1.1 are supported. An unsupported version stops iteration: the reader does not
+//! parse its header, so it cannot use `Content-Length` to skip the record.
+//!
 //! [annotated]:
 //!   https://iipc.github.io/warc-specifications/specifications/warc-format/warc-1.1-annotated/
 //! [warc-crate]: https://crates.io/crates/warc
