@@ -118,6 +118,22 @@ jobs:
           --all-targets -- -D warnings
       - name: Test validator
         run: cargo test --locked --manifest-path validator/Cargo.toml
+      - name: Build validator
+        run: cargo build --locked --manifest-path validator/Cargo.toml
+      # The validators that need no installation, over the fixtures every one of them accepts.
+      - name: Validate fixtures
+        run: |
+          for fixture in \
+            tests/data/pywb/httpbin-resource.warc.gz \
+            tests/data/pywb/post-test.warc.gz \
+            tests/data/warcio/example-resource.warc.gz \
+            tests/data/warcio/post-test.warc.gz
+          do
+            validator/target/debug/archivindex-warc-validator --no-install \
+              --validator archivindex-raw --validator archivindex-untyped \
+              --validator archivindex-record --validator warc --validator warcat-rs \
+              "$fixture" || exit 1
+          done
 
   msrv:
     name: Rust 1.88 compatibility
