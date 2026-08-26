@@ -1,0 +1,31 @@
+[package]
+name = "archivindex-archiver-cli"
+description = "A command-line tool for archiving URLs into WARC files"
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "archivindex-archiver"
+path = "src/main.rs"
+# Avoid a rustdoc output-filename collision with the `archivindex-archiver` library crate.
+doc = false
+
+[features]
+# Compile SQLite from source rather than linking the system library.
+bundled = ["archivindex-archiver/bundled"]
+
+[dependencies]
+anyhow = "1"
+archivindex-archiver = { version = "0.1.0", path = "../archiver/" }
+archivindex-cli-support.workspace = true
+clap.workspace = true
+indicatif = "0.18"
+log.workspace = true
