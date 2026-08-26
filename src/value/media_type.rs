@@ -17,9 +17,9 @@ use crate::parsing::{QuotedStringError, is_lws, is_token, lossy, unquote};
 /// OWS        = *( SP / HTAB )
 /// ```
 ///
-/// The published grammar has no `OWS`, and so forbids the spaces around `;` that the standard's own
-/// examples use. Errata #38 of the WARC 1.1 annotated specification supplies the rule above, which
-/// is what we implement.
+/// This parser accepts optional spaces and tabs around `;`, following annotation #38 of the WARC
+/// 1.1 annotated specification. It also preserves a trailing `;`, which is outside that grammar
+/// but occurs in archives.
 ///
 /// Type, subtype, and parameter names retain their case. [`is`](Self::is) and
 /// [`parameter`](Self::parameter) compare names case-insensitively; derived equality compares the
@@ -33,6 +33,8 @@ pub struct MediaType {
     type_name: Cow<'static, str>,
     subtype: Cow<'static, str>,
     parameters: Cow<'static, [Parameter]>,
+    /// A `;` closing the value with no parameter after it, as written, or the empty string.
+    trailing: Cow<'static, str>,
 }
 
 /// One `OWS ";" OWS parameter` of a media type.
@@ -198,6 +200,7 @@ impl MediaType {
             type_name: Cow::Borrowed(type_name),
             subtype: Cow::Borrowed(subtype),
             parameters: Cow::Borrowed(parameters),
+            trailing: Cow::Borrowed(""),
         }
     }
 
@@ -205,6 +208,10 @@ impl MediaType {
     ///
     /// Exact matches for the public constants and `application/http; msgtype=request` or
     /// `application/http; msgtype=response` parse without allocating.
+    ///
+    /// Whitespace around separators and a trailing semicolon are preserved. Leading whitespace and
+    /// whitespace after the final parameter are removed; redundant escapes in quoted values are
+    /// normalized.
     ///
     /// # Errors
     ///
@@ -234,8 +241,9 @@ impl MediaType {
         }
 
         let mut parameters = Vec::new();
-        // A separator runs from the end of the element before it to the parameter it introduces,
-        // so it starts at the white space that element was trimmed of rather than at the `;`.
+        let mut trailing = Cow::Borrowed("");
+        // A separator runs from the end of the element before it to the parameter it introduces, so
+        // it starts at the white space that element was trimmed of rather than at the `;`.
         let mut separator_start = essence_end - trailing_ows(&value[..essence_end]);
         let mut index = essence_end;
 
@@ -246,6 +254,12 @@ impl MediaType {
             let (chunk, rest) = split_parameter(&value[content_start..]);
             // Trailing `OWS` belongs to the separator that follows, not to this parameter.
             let content = trim_ows_end(chunk);
+
+            if content.is_empty() && rest.is_empty() {
+                trailing = owned_ascii(&value[separator_start..]);
+                break;
+            }
+
             let (name, parameter_value) =
                 parse_parameter(content).map_err(|failure| failure.against(value, content))?;
 
@@ -263,6 +277,7 @@ impl MediaType {
             type_name: owned_ascii(type_name),
             subtype: owned_ascii(subtype),
             parameters: Cow::Owned(parameters),
+            trailing,
         })
     }
 
@@ -315,7 +330,7 @@ impl Display for MediaType {
             write!(f, "{separator}{name}={value}")?;
         }
 
-        Ok(())
+        f.write_str(&self.trailing)
     }
 }
 
@@ -620,6 +635,14 @@ mod tests {
                     source: QuotedStringError::Unterminated,
                 },
             ),
+            // Only the `;` closing a value introduces no parameter.
+            (
+                b"text/plain;; x=1".as_slice(),
+                Error::MalformedParameter {
+                    value: "text/plain;; x=1".to_owned(),
+                    parameter: String::new(),
+                },
+            ),
         ] {
             assert_eq!(MediaType::parse(value), Err(expected), "{value:?}");
         }
@@ -646,6 +669,29 @@ mod tests {
                 "{value:?}"
             );
         }
+    }
+
+    /// A trailing semicolon is accepted and preserved for compatibility with existing archives.
+    #[test]
+    fn keeps_a_semicolon_that_closes_a_value() {
+        for value in [
+            b"text/plain;".as_slice(),
+            b"text/plain; ".as_slice(),
+            b"application/http;msgtype=response;".as_slice(),
+            b"application/http;msgtype=response; ".as_slice(),
+        ] {
+            let media_type = MediaType::parse(value).expect("a media type archives write");
+
+            assert_eq!(media_type.to_string().as_bytes(), value, "{value:?}");
+        }
+
+        let media_type = MediaType::parse(b"application/http;msgtype=response;")
+            .expect("a media type archives write");
+        assert!(media_type.is("application", "http"));
+        assert_eq!(
+            media_type.parameter("msgtype").map(ParameterValue::as_str),
+            Some("response")
+        );
     }
 
     /// A media type reads back as written, parameters and their white space included.

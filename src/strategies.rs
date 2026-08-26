@@ -150,8 +150,12 @@ pub fn media_type() -> impl Strategy<Value = MediaType> {
             ),
             0..=3,
         ),
+        // A `;` closing the value introduces no parameter, which archives write and this crate
+        // keeps. White space after it is not generated, since a field line is read without its
+        // trailing white space.
+        select(vec!["", ";"]),
     )
-        .prop_map(|(type_name, subtype, parameters)| {
+        .prop_map(|(type_name, subtype, parameters, trailing)| {
             let mut spelled = format!("{type_name}/{subtype}");
             for (space, name, value) in parameters {
                 spelled.push(';');
@@ -160,6 +164,7 @@ pub fn media_type() -> impl Strategy<Value = MediaType> {
                 spelled.push('=');
                 spelled.push_str(value);
             }
+            spelled.push_str(trailing);
 
             MediaType::parse(spelled.as_bytes())
                 .expect("invariant violation: a generated media type parses")
