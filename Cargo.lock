@@ -108,6 +108,7 @@ dependencies = [
  "flate2",
  "fluent-uri",
  "http",
+ "memchr",
  "proptest",
  "rcgen",
  "reqwest",

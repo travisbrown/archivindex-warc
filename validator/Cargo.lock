@@ -120,6 +120,7 @@ dependencies = [
  "chrono",
  "flate2",
  "fluent-uri",
+ "memchr",
  "thiserror",
  "uuid 1.25.0",
 ]

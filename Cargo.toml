@@ -82,6 +82,8 @@ file-format = { version = "0.29", optional = true, features = ["reader"] }
 flate2 = { workspace = true, optional = true }
 fluent-uri.workspace = true
 http = { version = "1", optional = true }
+# Vectorized newline scanning in the reader's line loop.
+memchr = "2.8"
 rustls = { version = "0.23", optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
