@@ -116,14 +116,23 @@ dependencies = [
 name = "archivindex-warc"
 version = "0.1.0"
 dependencies = [
+ "archivindex-warc-digest",
  "chrono",
  "flate2",
  "fluent-uri",
+ "thiserror",
+ "uuid 1.25.0",
+]
+
+[[package]]
+name = "archivindex-warc-digest"
+version = "0.1.0"
+dependencies = [
+ "data-encoding",
  "md-5 0.11.0",
  "sha1 0.11.0",
  "sha2 0.11.0",
  "thiserror",
- "uuid 1.25.0",
 ]
 
 [[package]]

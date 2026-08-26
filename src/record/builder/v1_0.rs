@@ -25,14 +25,13 @@ use fluent_uri::{ParseError, Uri};
 
 use super::{
     ContinuationBuilder, ConversionBuilder, MetadataBuilder, OtherBuilder, RequestBuilder,
-    ResourceBuilder, ResponseBuilder, WarcinfoBuilder, add_sha_1_digests, core_headers,
-    parse_target_uri,
+    ResourceBuilder, ResponseBuilder, WarcinfoBuilder, add_digests, core_headers, parse_target_uri,
 };
 use crate::record::extension::{Extension, NoExtension};
 use crate::record::header::truncated_type::TruncatedType;
 use crate::record::header::{PayloadHeaders, RevisitHeader, RevisitProfile};
 use crate::record::{BlockError, Error, Record, RecordHeader};
-use crate::value::{LabelledDigest, MediaType, WarcDate};
+use crate::value::{Algorithm, LabelledDigest, MediaType, WarcDate};
 use crate::version::WarcVersion;
 
 /// A builder for a `revisit` record, which stands in for content already archived.
@@ -57,7 +56,7 @@ use crate::version::WarcVersion;
 #[derive(Clone, Debug)]
 pub struct RevisitBuilder<E: Extension = NoExtension> {
     header: RevisitHeader<E>,
-    sha_1: bool,
+    digests: Option<Algorithm>,
 }
 
 revisit_builder!(RevisitBuilder, WarcVersion::V1_0, "1.0");

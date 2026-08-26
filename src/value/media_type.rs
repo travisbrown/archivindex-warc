@@ -3,7 +3,6 @@
 use std::borrow::Cow;
 use std::fmt::Display;
 
-use super::from_ascii;
 use crate::parsing::{QuotedStringError, is_lws, is_token, lossy, unquote};
 
 /// A `media-type` value.
@@ -400,7 +399,10 @@ fn parse_parameter(input: &[u8]) -> Result<(Cow<'static, str>, ParameterValue), 
 
 /// Take ownership of bytes already validated as ASCII.
 fn owned_ascii(bytes: &[u8]) -> Cow<'static, str> {
-    Cow::Owned(from_ascii(bytes).to_owned())
+    Cow::Owned(
+        String::from_utf8(bytes.to_vec())
+            .expect("invariant violation: grammar admitted a non-ASCII byte"),
+    )
 }
 
 /// The length of the `OWS` a value opens with.
