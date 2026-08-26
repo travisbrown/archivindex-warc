@@ -12,10 +12,9 @@ use archivindex_warc::parse::raw::Record as RawRecord;
 use archivindex_warc::parse::untyped::Record as UntypedRecord;
 use archivindex_warc::record::Record;
 use archivindex_warc::record::extension::NoExtension;
-use archivindex_warc::value::{DigestAlgorithm, LabelledDigest};
+use archivindex_warc::value::{Algorithm, LabelledDigest};
 use data_encoding::{BASE32_NOPAD, BASE64, BASE64URL, HEXLOWER};
 use flate2::bufread::{GzDecoder, MultiGzDecoder};
-use sha1::{Digest, Sha1};
 
 /// Resolve the path of a fixture within one of the `tests/data` fixture sets.
 fn fixture_path(set: &str, name: &str) -> PathBuf {
@@ -105,7 +104,7 @@ pub fn roundtrip_records(source: &[u8]) -> Result<Vec<u8>, String> {
 /// where the lift is expected to succeed.
 /// Compute the default digest added during rendering.
 fn added_digest(content: &[u8]) -> LabelledDigest {
-    LabelledDigest::from_digest(DigestAlgorithm::Sha256, &sha2::Sha256::digest(content))
+    LabelledDigest::compute(Algorithm::Sha256, content).unwrap()
 }
 
 /// Clone a record and add the digests rendering would supply.
@@ -271,7 +270,7 @@ fn digest_matches(data: &[u8], expected: &str) -> bool {
         return false;
     }
 
-    let digest = Sha1::digest(data);
+    let digest = Algorithm::Sha1.digest(data).unwrap();
     match expected.len().cmp(&32) {
         std::cmp::Ordering::Equal => BASE32_NOPAD.encode(&digest) == expected,
         std::cmp::Ordering::Greater => HEXLOWER.encode(&digest).eq_ignore_ascii_case(expected),

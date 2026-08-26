@@ -1,12 +1,14 @@
 //! Parsed values for WARC header fields.
 
 mod date;
-mod digest;
 mod media_type;
 mod text;
 
+pub use archivindex_warc_digest as digest;
 pub use date::{WarcDate, WarcDatePrecision};
-pub use digest::{DigestAlgorithm, DigestEncoding, Error as DigestError, LabelledDigest};
+pub use digest::algorithm::marker::{self, Supported};
+pub use digest::algorithm::{self, Algorithm, Hasher};
+pub use digest::{Encoding, Error as DigestError, Format as DigestFormat, LabelledDigest};
 pub use media_type::{Error as MediaTypeError, MediaType, ParameterValue};
 pub use text::{Error as TextError, Text};
 
@@ -46,17 +48,18 @@ pub enum Error {
     Text(#[from] TextError),
 }
 
-/// Read bytes already validated as ASCII as a string.
-fn from_ascii(bytes: &[u8]) -> &str {
-    std::str::from_utf8(bytes).expect("invariant violation: grammar admitted a non-ASCII byte")
-}
-
 #[cfg(test)]
 mod tests {
     use std::error::Error as _;
 
-    use super::{DigestError, Error, MediaTypeError, TextError};
+    use super::{Algorithm, DigestError, Error, MediaTypeError, TextError, digest};
     use crate::parsing::QuotedStringError;
+
+    /// The digest crate remains available under the value-layer path.
+    #[test]
+    fn digest_crate_is_reexported() {
+        assert_eq!(digest::algorithm::Algorithm::Sha1, Algorithm::Sha1);
+    }
 
     /// A rule is named without the field whose value failed it, since the same rule serves
     /// several fields and [`crate::parse::untyped::Error`] is what supplies the name.

@@ -320,11 +320,10 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use chrono::Utc;
-    use sha2::Digest as _;
 
     use super::*;
     use crate::record::RenderError;
-    use crate::value::DigestAlgorithm;
+    use crate::value::Algorithm;
 
     const REQUEST_BLOCK: &[u8] = b"GET / HTTP/1.1\r\nhost: example.com\r\n\r\n";
     const RESPONSE_BLOCK: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello";
@@ -342,7 +341,7 @@ mod tests {
     }
 
     fn entity_body_digest(entity_body: &[u8]) -> LabelledDigest {
-        LabelledDigest::from_digest(DigestAlgorithm::Sha256, &sha2::Sha256::digest(entity_body))
+        LabelledDigest::compute(Algorithm::Sha256, entity_body).unwrap()
     }
 
     #[test]

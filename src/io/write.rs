@@ -6,11 +6,10 @@ use std::{fs, io};
 
 #[cfg(feature = "gzip")]
 use flate2::{GzBuilder, write::GzEncoder as GzipWriter};
-use sha2::Digest as _;
 
 use crate::io::MB;
 use crate::parse::raw;
-use crate::value::{DigestAlgorithm, LabelledDigest};
+use crate::value::{Algorithm, Hasher, LabelledDigest, Supported, marker};
 
 /// The default gzip compression level used by [`WarcWriter::write_gzip`].
 #[cfg(feature = "gzip")]
@@ -74,7 +73,7 @@ pub struct Written {
     pub offset: u64,
     /// The number of bytes stored.
     pub length: u64,
-    /// The SHA-256 digest of the stored bytes, present when the writer computes digests.
+    /// The stored-bytes digest, if requested.
     pub digest: Option<LabelledDigest>,
 }
 
@@ -85,17 +84,27 @@ pub struct Written {
 pub struct WarcWriter<W> {
     writer: W,
     position: u64,
-    digests: bool,
+    digests: Option<Algorithm>,
 }
 
 impl<W> WarcWriter<W> {
     /// Compute a SHA-256 digest of each record's stored bytes.
     ///
-    /// Each record-writing method returns the digest in [`Written`]. For an independent gzip
-    /// member, the digest covers the compressed bytes.
+    /// For an independent gzip member, this covers the compressed bytes.
     #[must_use]
-    pub const fn with_digests(mut self) -> Self {
-        self.digests = true;
+    pub fn with_digests(self) -> Self {
+        self.with_digest_algorithm(marker::Sha256)
+    }
+
+    /// Compute a digest of each record's stored bytes with the given algorithm.
+    ///
+    /// The algorithm is chosen at the type level ([`Supported`]), so an algorithm this build
+    /// cannot compute is a compile error. This digest is independent of the record's block and
+    /// payload digests: it covers the bytes as stored, for indexes and containers that reference
+    /// records by offset and length.
+    #[must_use]
+    pub fn with_digest_algorithm<A: Supported>(mut self, _algorithm: A) -> Self {
+        self.digests = Some(A::ALGORITHM);
         self
     }
 
@@ -137,7 +146,7 @@ impl<W: Write> WarcWriter<W> {
         Self {
             writer: w,
             position: 0,
-            digests: false,
+            digests: None,
         }
     }
 
@@ -307,25 +316,25 @@ fn write_member<W: Write>(writer: W, record: &raw::Record, level: u32) -> Result
 struct TapWriter<W> {
     writer: W,
     length: u64,
-    hasher: Option<sha2::Sha256>,
+    hasher: Option<Hasher>,
 }
 
 impl<W> TapWriter<W> {
-    fn new(writer: W, digest: bool) -> Self {
+    fn new(writer: W, digest: Option<Algorithm>) -> Self {
         Self {
             writer,
             length: 0,
-            hasher: digest.then(sha2::Sha256::new),
+            hasher: digest.map(|algorithm| {
+                algorithm.hasher().expect(
+                    "invariant violation: writer algorithms come from `Supported` witnesses",
+                )
+            }),
         }
     }
 
     /// Return the byte count and requested digest.
     fn finish(self) -> (u64, Option<LabelledDigest>) {
-        let digest = self
-            .hasher
-            .map(|hasher| LabelledDigest::from_digest(DigestAlgorithm::Sha256, &hasher.finalize()));
-
-        (self.length, digest)
+        (self.length, self.hasher.map(Hasher::finalize_labelled))
     }
 }
 
@@ -517,17 +526,31 @@ mod write_tests {
     /// Digesting covers each record's stored bytes.
     #[test]
     fn write_digests_the_stored_bytes() {
-        use sha2::Digest as _;
-
         let record = test_record(WarcVersion::V1_1, &[("WARC-Type", "resource")], b"body!");
 
         let mut writer = WarcWriter::new(Vec::new()).with_digests();
         let written = writer.write(&record).unwrap();
 
-        let expected = crate::value::LabelledDigest::from_digest(
-            crate::value::DigestAlgorithm::Sha256,
-            &sha2::Sha256::digest(writer.get_ref()),
-        );
+        let expected = crate::value::LabelledDigest::compute(
+            crate::value::Algorithm::Sha256,
+            writer.get_ref(),
+        )
+        .unwrap();
+        assert_eq!(written.digest, Some(expected));
+    }
+
+    /// The stored-bytes digest uses the selected algorithm.
+    #[test]
+    fn write_digests_with_the_chosen_algorithm() {
+        let record = test_record(WarcVersion::V1_1, &[("WARC-Type", "resource")], b"body!");
+
+        let mut writer =
+            WarcWriter::new(Vec::new()).with_digest_algorithm(crate::value::marker::Sha1);
+        let written = writer.write(&record).unwrap();
+
+        let expected =
+            crate::value::LabelledDigest::compute(crate::value::Algorithm::Sha1, writer.get_ref())
+                .unwrap();
         assert_eq!(written.digest, Some(expected));
     }
 
@@ -770,8 +793,6 @@ mod write_gzip_tests {
     /// A gzip member's digest covers the compressed bytes in its reported frame.
     #[test]
     fn write_gzip_digests_the_compressed_member() {
-        use sha2::Digest as _;
-
         let first = test_record(WarcVersion::V1_1, &[("WARC-Type", "resource")], b"one");
         let second = test_record(WarcVersion::V1_1, &[("WARC-Type", "resource")], b"two");
 
@@ -785,10 +806,11 @@ mod write_gzip_tests {
         for written in frames {
             let start = usize::try_from(written.offset).unwrap();
             let end = start + usize::try_from(written.length).unwrap();
-            let expected = crate::value::LabelledDigest::from_digest(
-                crate::value::DigestAlgorithm::Sha256,
-                &sha2::Sha256::digest(&bytes[start..end]),
-            );
+            let expected = crate::value::LabelledDigest::compute(
+                crate::value::Algorithm::Sha256,
+                &bytes[start..end],
+            )
+            .unwrap();
             assert_eq!(written.digest, Some(expected));
         }
     }

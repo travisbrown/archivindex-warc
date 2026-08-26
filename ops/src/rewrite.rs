@@ -13,7 +13,7 @@ use archivindex_warc::record::fields::Body;
 use archivindex_warc::record::fields::dcmi::DcmiTerm;
 use archivindex_warc::record::fields::warcinfo::WarcinfoField;
 use archivindex_warc::record::{self, FieldsBlock, Record, RenderError};
-use archivindex_warc::value::{DigestAlgorithm, LabelledDigest, Text};
+use archivindex_warc::value::{Algorithm, LabelledDigest, Text};
 use sha2::Digest as _;
 
 use crate::files::{is_gzip, open};
@@ -275,17 +275,13 @@ fn rewrite_warcinfo(
 /// The digest of `block` under the algorithm of `declared`, or `None` for an algorithm this
 /// crate cannot compute.
 fn refreshed_digest(declared: &LabelledDigest, block: &[u8]) -> Option<LabelledDigest> {
-    Some(match declared.algorithm() {
-        DigestAlgorithm::Md5 => {
-            LabelledDigest::from_digest(DigestAlgorithm::Md5, &md5::Md5::digest(block))
+    Some(match declared.algorithm()? {
+        Algorithm::Md5 => LabelledDigest::from_digest(Algorithm::Md5, &md5::Md5::digest(block)),
+        Algorithm::Sha1 => LabelledDigest::from_digest(Algorithm::Sha1, &sha1::Sha1::digest(block)),
+        Algorithm::Sha256 => {
+            LabelledDigest::from_digest(Algorithm::Sha256, &sha2::Sha256::digest(block))
         }
-        DigestAlgorithm::Sha1 => {
-            LabelledDigest::from_digest(DigestAlgorithm::Sha1, &sha1::Sha1::digest(block))
-        }
-        DigestAlgorithm::Sha256 => {
-            LabelledDigest::from_digest(DigestAlgorithm::Sha256, &sha2::Sha256::digest(block))
-        }
-        DigestAlgorithm::Other(_) => return None,
+        _ => return None,
     })
 }
 
@@ -351,7 +347,7 @@ mod tests {
     }
 
     fn sha1(body: &str) -> LabelledDigest {
-        LabelledDigest::from_digest(DigestAlgorithm::Sha1, &sha1::Sha1::digest(body))
+        LabelledDigest::from_digest(Algorithm::Sha1, &sha1::Sha1::digest(body))
     }
 
     fn fields_of(record: &Record<NoExtension>) -> Vec<(&str, &str)> {
@@ -447,8 +443,8 @@ mod tests {
                 .core()
                 .block_digest
                 .as_ref()
-                .map(LabelledDigest::algorithm),
-            Some(&DigestAlgorithm::Sha256)
+                .and_then(LabelledDigest::algorithm),
+            Some(Algorithm::Sha256)
         );
         for record in [&records[0], &records[2]] {
             let Record::Warcinfo { header, .. } = record else {

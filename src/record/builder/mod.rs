@@ -42,9 +42,8 @@
 //! fields identifying the declared WARC version; a `metadata` body begins empty. Construct a
 //! record directly if either type must carry another kind of block.
 //!
-//! Rendering adds SHA-256 block and payload digests when possible. Use
-//! [`sha_1_digests`](ResponseBuilder::sha_1_digests) to add SHA-1 digests to the record
-//! instead.
+//! Rendering adds SHA-256 block and payload digests when possible.
+//! [`digests`](ResponseBuilder::digests) selects another algorithm.
 //!
 //! Records declare WARC 1.1. The [`v1_0`] module mirrors every entry point here for an archive
 //! that has to be written as WARC 1.0.
@@ -59,7 +58,7 @@ use fluent_uri::{ParseError, Uri};
 use uuid::Uuid;
 
 use crate::parse::untyped::name::Field;
-use crate::record::digest::{add_sha_1_block_digest, add_sha_1_payload_digest};
+use crate::record::digest::{add_block_digest, add_payload_digest};
 use crate::record::extension::{Extension, NoExtension};
 use crate::record::fields::dcmi::DcmiTerm;
 use crate::record::fields::metadata::{HopsFromSeed, MetadataBody, MetadataField};
@@ -71,7 +70,7 @@ use crate::record::header::{
     WarcinfoHeader,
 };
 use crate::record::{BlockError, Error, FieldsBlock, Record, RecordHeader, fields};
-use crate::value::{LabelledDigest, MediaType, Text, TextError, WarcDate};
+use crate::value::{Algorithm, LabelledDigest, MediaType, Text, TextError, WarcDate};
 use crate::version::WarcVersion;
 
 /// Generate a version 4 UUID using the `urn:uuid` scheme.
@@ -104,11 +103,11 @@ fn core_headers<E: Extension>(date: WarcDate, content_type: Option<MediaType>) -
     }
 }
 
-/// Add the SHA-1 digests requested by the builder.
-fn add_sha_1_digests<E: Extension>(record: &mut Record<E>, sha_1: bool) {
-    if sha_1 {
-        add_sha_1_block_digest(record);
-        add_sha_1_payload_digest(record);
+/// Add the requested digests.
+fn add_digests<E: Extension>(record: &mut Record<E>, digests: Option<Algorithm>) {
+    if let Some(algorithm) = digests {
+        add_block_digest(record, algorithm);
+        add_payload_digest(record, algorithm);
     }
 }
 
@@ -200,7 +199,7 @@ macro_rules! shared_setters {
 
     // The optional fields every record carries whose block the builder is given.
     (core, $($rest:tt)*) => {
-        shared_setters!(record_id, sha_1_digests, block, truncated, $($rest)*);
+        shared_setters!(record_id, digests, block, truncated, $($rest)*);
     };
 
     (record_id, $($rest:tt)*) => {
@@ -214,14 +213,16 @@ macro_rules! shared_setters {
         shared_setters!($($rest)*);
     };
 
-    (sha_1_digests, $($rest:tt)*) => {
-        /// Add SHA-1 digests to the record's content block.
+    (digests, $($rest:tt)*) => {
+        /// Add block and payload digests computed with the given algorithm.
         ///
-        /// Digests use unpadded uppercase Base32. Existing digests are preserved, and a header
-        /// built without a block gets none.
+        /// Digests use the algorithm's recommended label and encoding. Existing digests are
+        /// preserved, and a header built without a block gets none. The algorithm is chosen at
+        /// the type level ([`Supported`](crate::value::Supported)), so an algorithm this build
+        /// cannot compute is a compile error.
         #[must_use]
-        pub const fn sha_1_digests(mut self) -> Self {
-            self.sha_1 = true;
+        pub fn digests<A: crate::value::Supported>(mut self, _algorithm: A) -> Self {
+            self.digests = Some(A::ALGORITHM);
             self
         }
 
@@ -399,7 +400,7 @@ macro_rules! builder_end {
                 let Self {
                     mut header,
                     body,
-                    sha_1,
+                    digests,
                 } = self;
 
                 // A block is held in memory, so its length is a `usize` that fits a `u64`
@@ -410,7 +411,7 @@ macro_rules! builder_end {
                     header,
                     body: FieldsBlock::Fields(body),
                 };
-                add_sha_1_digests(&mut record, sha_1);
+                add_digests(&mut record, digests);
 
                 record
             }
@@ -434,9 +435,9 @@ macro_rules! builder_end {
             /// payload digest profile that carries a block without declaring it truncated is
             /// refused when it is written.
             pub fn body(self, body: impl Into<Vec<u8>>) -> Result<Record<E>, BlockError> {
-                let sha_1 = self.sha_1;
+                let digests = self.digests;
                 let mut record = RecordHeader::$variant(self.header).with_body(body.into())?;
-                add_sha_1_digests(&mut record, sha_1);
+                add_digests(&mut record, digests);
 
                 Ok(record)
             }
@@ -470,7 +471,7 @@ macro_rules! capture_builder {
                         segment_origin: false,
                         other: Default::default(),
                     },
-                    sha_1: false,
+                    digests: None,
                 })
             }
 
@@ -509,7 +510,7 @@ macro_rules! capture_builder {
 pub struct WarcinfoBuilder<E: Extension = NoExtension> {
     header: WarcinfoHeader<E>,
     body: WarcinfoBody,
-    sha_1: bool,
+    digests: Option<Algorithm>,
 }
 
 impl<E: Extension> WarcinfoBuilder<E> {
@@ -534,7 +535,7 @@ impl<E: Extension> WarcinfoBuilder<E> {
                 other: Default::default(),
             },
             body,
-            sha_1: false,
+            digests: None,
         }
     }
 
@@ -551,7 +552,7 @@ impl<E: Extension> WarcinfoBuilder<E> {
 }
 
 impl<E: Extension> WarcinfoBuilder<E> {
-    shared_setters!(record_id, sha_1_digests, extension(WarcinfoFields),);
+    shared_setters!(record_id, digests, extension(WarcinfoFields),);
 
     body_setters!(
         WarcinfoField;
@@ -637,7 +638,7 @@ builder_end!(WarcinfoBuilder as Warcinfo, fields);
 #[derive(Clone, Debug)]
 pub struct ResponseBuilder<E: Extension = NoExtension> {
     header: ResponseHeader<E>,
-    sha_1: bool,
+    digests: Option<Algorithm>,
 }
 
 capture_builder!(
@@ -653,7 +654,7 @@ builder_end!(ResponseBuilder as Response);
 #[derive(Clone, Debug)]
 pub struct ResourceBuilder<E: Extension = NoExtension> {
     header: ResourceHeader<E>,
-    sha_1: bool,
+    digests: Option<Algorithm>,
 }
 
 capture_builder!(
@@ -669,7 +670,7 @@ builder_end!(ResourceBuilder as Resource);
 #[derive(Clone, Debug)]
 pub struct RequestBuilder<E: Extension = NoExtension> {
     header: RequestHeader<E>,
-    sha_1: bool,
+    digests: Option<Algorithm>,
 }
 
 capture_builder!(
@@ -688,7 +689,7 @@ builder_end!(RequestBuilder as Request);
 pub struct MetadataBuilder<E: Extension = NoExtension> {
     header: MetadataHeader<E>,
     body: MetadataBody,
-    sha_1: bool,
+    digests: Option<Algorithm>,
 }
 
 impl<E: Extension> MetadataBuilder<E> {
@@ -711,7 +712,7 @@ impl<E: Extension> MetadataBuilder<E> {
                 other: Default::default(),
             },
             body: MetadataBody::new(),
-            sha_1: false,
+            digests: None,
         }
     }
 }
@@ -720,7 +721,7 @@ impl<E: Extension> MetadataBuilder<E> {
     shared_setters!(
         v1_0,
         record_id,
-        sha_1_digests,
+        digests,
         target_uri,
         warcinfo_id,
         ip_address,
@@ -806,7 +807,7 @@ macro_rules! revisit_builder {
                         segment_origin: false,
                         other: Default::default(),
                     },
-                    sha_1: false,
+                    digests: None,
                 })
             }
 
@@ -844,7 +845,7 @@ macro_rules! revisit_builder {
 #[derive(Clone, Debug)]
 pub struct RevisitBuilder<E: Extension = NoExtension> {
     header: RevisitHeader<E>,
-    sha_1: bool,
+    digests: Option<Algorithm>,
 }
 
 revisit_builder!(RevisitBuilder, WarcVersion::V1_1, "1.1");
@@ -872,7 +873,7 @@ builder_end!(RevisitBuilder as Revisit);
 #[derive(Clone, Debug)]
 pub struct ConversionBuilder<E: Extension = NoExtension> {
     header: ConversionHeader<E>,
-    sha_1: bool,
+    digests: Option<Algorithm>,
 }
 
 impl<E: Extension> ConversionBuilder<E> {
@@ -896,7 +897,7 @@ impl<E: Extension> ConversionBuilder<E> {
                 segment_origin: false,
                 other: Default::default(),
             },
-            sha_1: false,
+            digests: None,
         })
     }
 }
@@ -919,7 +920,7 @@ builder_end!(ConversionBuilder as Conversion);
 #[derive(Clone, Debug)]
 pub struct ContinuationBuilder<E: Extension = NoExtension> {
     header: ContinuationHeader<E>,
-    sha_1: bool,
+    digests: Option<Algorithm>,
 }
 
 impl<E: Extension> ContinuationBuilder<E> {
@@ -962,7 +963,7 @@ impl<E: Extension> ContinuationBuilder<E> {
                 segment_total_length: None,
                 other: Default::default(),
             },
-            sha_1: false,
+            digests: None,
         })
     }
 }
@@ -991,7 +992,7 @@ builder_end!(ContinuationBuilder as Continuation);
 #[derive(Clone, Debug)]
 pub struct OtherBuilder<E: Extension = NoExtension> {
     header: OtherHeader<E>,
-    sha_1: bool,
+    digests: Option<Algorithm>,
 }
 
 impl<E: Extension> OtherBuilder<E> {
@@ -1007,7 +1008,7 @@ impl<E: Extension> OtherBuilder<E> {
                 segment_origin: false,
                 extension,
             },
-            sha_1: false,
+            digests: None,
         }
     }
 }
@@ -1149,9 +1150,10 @@ pub mod v1_0;
 mod tests {
     use super::*;
     use crate::parse::{raw, untyped};
-    use crate::record::digest::{added_digest, sha_1_digest};
+    use crate::record::digest::added_digest;
     use crate::record::extension::{ExtensionRecordType, Never};
     use crate::record::tests::as_rendered;
+    use crate::value::marker;
 
     const RECORD_ID: &str = "urn:uuid:00000000-0000-0000-0000-000000000001";
     pub(super) const OTHER_ID: &str = "urn:uuid:00000000-0000-0000-0000-000000000002";
@@ -1208,8 +1210,14 @@ mod tests {
                 .build(),
             Record::response(TARGET_URI, date())
                 .expect("a well-formed target URI")
-                .block_digest(added_digest(RESPONSE_BLOCK.as_bytes()))
-                .payload_digest(sha_1_digest(RESPONSE_PAYLOAD.as_bytes()))
+                .block_digest(added_digest(
+                    Algorithm::Sha256.into(),
+                    RESPONSE_BLOCK.as_bytes(),
+                ))
+                .payload_digest(added_digest(
+                    Algorithm::Sha1.into(),
+                    RESPONSE_PAYLOAD.as_bytes(),
+                ))
                 .ip_address("192.0.2.1".parse().expect("an address"))
                 .concurrent_to(uri(OTHER_ID))
                 .warcinfo_id(uri(OTHER_ID))
@@ -1316,12 +1324,12 @@ mod tests {
         Ok(())
     }
 
-    /// The SHA-1 option adds both block and payload digests when possible.
+    /// The `digests` option selects the algorithm used for added digests.
     #[test]
-    fn a_builder_told_to_use_sha_1_writes_sha_1_digests() -> Result<(), BlockError> {
+    fn a_builder_told_an_algorithm_writes_its_digests() -> Result<(), BlockError> {
         let record: Record = Record::response(TARGET_URI, date())
             .expect("a well-formed target URI")
-            .sha_1_digests()
+            .digests(marker::Sha1)
             .body(RESPONSE_BLOCK)?;
         let block_digest = record.core().block_digest.as_ref().map(ToString::to_string);
         let payload_digest = record
@@ -1346,7 +1354,7 @@ mod tests {
     #[test]
     fn a_fields_body_is_digested_as_it_is_written() -> Result<(), fields::Error> {
         let record: Record = Record::metadata(date())
-            .sha_1_digests()
+            .digests(marker::Sha1)
             .via("http://www.archive.org/")?
             .build();
         let written = record.core().block_digest.as_ref().map(ToString::to_string);
@@ -1360,16 +1368,19 @@ mod tests {
         Ok(())
     }
 
-    /// A caller-provided digest takes precedence over the SHA-1 option.
+    /// A caller-provided digest takes precedence over the `digests` option.
     #[test]
-    fn a_digest_the_caller_gave_outranks_the_sha_1_option() -> Result<(), BlockError> {
+    fn a_digest_the_caller_gave_outranks_the_digests_option() -> Result<(), BlockError> {
         let record: Record = Record::response(TARGET_URI, date())
             .expect("a well-formed target URI")
-            .sha_1_digests()
-            .block_digest(added_digest(b"hello"))
+            .digests(marker::Sha1)
+            .block_digest(added_digest(Algorithm::Sha256.into(), b"hello"))
             .body("hello")?;
 
-        assert_eq!(record.core().block_digest, Some(added_digest(b"hello")));
+        assert_eq!(
+            record.core().block_digest,
+            Some(added_digest(Algorithm::Sha256.into(), b"hello"))
+        );
 
         Ok(())
     }
@@ -1377,7 +1388,7 @@ mod tests {
     /// `build` returns the same header that `body` uses to create a record.
     #[test]
     fn a_builder_ended_with_build_builds_the_header_block_alone() -> Result<(), BlockError> {
-        let block_digest = sha_1_digest(b"hello");
+        let block_digest = added_digest(Algorithm::Sha1.into(), b"hello");
         // Set body-dependent fields explicitly so the header and record are comparable.
         let header: RecordHeader = Record::response(TARGET_URI, date())
             .expect("a well-formed target URI")
