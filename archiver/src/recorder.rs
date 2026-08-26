@@ -16,7 +16,9 @@
 //! disconnect, or I/O timeout truncates the response instead of failing the fetch; the reason is
 //! available in [`CapturedExchange::truncated`]. [`Recorder::new`] bounds each connection step at
 //! [`DEFAULT_TIMEOUT`] and the response at [`DEFAULT_MAX_RESPONSE_LENGTH`]; each setter lifts its
-//! bound when given `None`.
+//! bound when given `None`. The timeout bounds each step, not the exchange: a peer sending one
+//! byte before each read times out never trips it. [`Recorder::fetch_by`] bounds the whole
+//! exchange by a deadline as well.
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
@@ -155,7 +157,8 @@ impl Recorder {
 
     /// Set the timeout for each connection read or write, or lift it with `None`.
     ///
-    /// A read timeout after the header section truncates the response instead of failing.
+    /// A read timeout after the header section truncates the response instead of failing. Name
+    /// resolution is not timed.
     #[must_use]
     pub const fn io_timeout(mut self, timeout: Option<Duration>) -> Self {
         self.io_timeout = timeout;
@@ -186,14 +189,47 @@ impl Recorder {
     /// Returns [`Error`] for an invalid target, a connection or TLS failure, an incomplete header
     /// section, or malformed response framing. A size limit, disconnect, or read timeout after the
     /// header section instead returns a response with [`CapturedExchange::truncated`] set.
-    // The `http` crate has already validated the URI, including its use as a header value.
-    #[allow(clippy::missing_panics_doc)]
     pub fn fetch(
         &self,
         method: &Method,
         target: &http::Uri,
         headers: &HeaderMap,
         body: Option<&[u8]>,
+    ) -> Result<CapturedExchange, Error> {
+        self.fetch_within(method, target, headers, body, None)
+    }
+
+    /// Perform one exchange as [`fetch`](Self::fetch) does, ending it at `deadline`.
+    ///
+    /// Each connection step is bounded by the time left as well as by its timeout, so the
+    /// exchange ends within one step's timeout of the deadline. Reaching it is reported as a
+    /// read timeout is: a failure before the response header section is complete, and a `time`
+    /// truncation after.
+    ///
+    /// # Errors
+    ///
+    /// As for [`fetch`](Self::fetch), with a passed deadline reported as a timed-out I/O
+    /// operation.
+    pub fn fetch_by(
+        &self,
+        method: &Method,
+        target: &http::Uri,
+        headers: &HeaderMap,
+        body: Option<&[u8]>,
+        deadline: Instant,
+    ) -> Result<CapturedExchange, Error> {
+        self.fetch_within(method, target, headers, body, Some(deadline))
+    }
+
+    // The `http` crate has already validated the URI, including its use as a header value.
+    #[allow(clippy::missing_panics_doc)]
+    pub(crate) fn fetch_within(
+        &self,
+        method: &Method,
+        target: &http::Uri,
+        headers: &HeaderMap,
+        body: Option<&[u8]>,
+        deadline: Option<Instant>,
     ) -> Result<CapturedExchange, Error> {
         let tls = match target.scheme_str() {
             Some("http") => false,
@@ -240,17 +276,22 @@ impl Recorder {
         let date = Utc::now();
         let clock = Instant::now();
 
-        let stream = self.connect(host, port)?;
+        let stream = self.connect(host, port, deadline)?;
         let ip_address = stream.peer_addr()?.ip();
         stream.set_read_timeout(self.io_timeout)?;
         stream.set_write_timeout(self.io_timeout)?;
 
-        let mut transport = if tls {
+        let stream = if tls {
             let server_name = ServerName::try_from(host.to_owned())?;
             let connection = rustls::ClientConnection::new(Arc::clone(&self.tls), server_name)?;
-            Transport::Tls(Box::new(rustls::StreamOwned::new(connection, stream)))
+            Stream::Tls(Box::new(rustls::StreamOwned::new(connection, stream)))
         } else {
-            Transport::Plain(stream)
+            Stream::Plain(stream)
+        };
+        let mut transport = Transport {
+            stream,
+            io_timeout: self.io_timeout,
+            deadline,
         };
 
         transport.write_all(&request)?;
@@ -278,14 +319,19 @@ impl Recorder {
     }
 
     /// Connect to the first resolved address that succeeds.
-    fn connect(&self, host: &str, port: u16) -> Result<TcpStream, Error> {
-        let Some(timeout) = self.connect_timeout else {
-            return TcpStream::connect((host, port)).map_err(Error::Io);
-        };
-
+    fn connect(
+        &self,
+        host: &str,
+        port: u16,
+        deadline: Option<Instant>,
+    ) -> Result<TcpStream, Error> {
         let mut failure = None;
         for address in (host, port).to_socket_addrs()? {
-            match TcpStream::connect_timeout(&address, timeout) {
+            let attempt = bound(self.connect_timeout, deadline)?.map_or_else(
+                || TcpStream::connect(address),
+                |timeout| TcpStream::connect_timeout(&address, timeout),
+            );
+            match attempt {
                 Ok(stream) => return Ok(stream),
                 Err(error) => failure = Some(error),
             }
@@ -356,32 +402,81 @@ impl CapturedExchange {
     }
 }
 
-enum Transport {
+/// The tighter of a step's timeout and the time left to a deadline.
+///
+/// A deadline that has passed is a timed-out operation, since the socket refuses a zero timeout.
+fn bound(
+    timeout: Option<Duration>,
+    deadline: Option<Instant>,
+) -> std::io::Result<Option<Duration>> {
+    let Some(deadline) = deadline else {
+        return Ok(timeout);
+    };
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(std::io::Error::new(
+            ErrorKind::TimedOut,
+            "the fetch deadline has passed",
+        ));
+    }
+
+    Ok(Some(timeout.map_or(left, |timeout| timeout.min(left))))
+}
+
+enum Stream {
     Plain(TcpStream),
     Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
 }
 
+/// A connection whose every read and write is bounded by the I/O timeout and the deadline.
+struct Transport {
+    stream: Stream,
+    io_timeout: Option<Duration>,
+    deadline: Option<Instant>,
+}
+
+impl Transport {
+    /// Bound the next socket operation by the time left to the deadline, when there is one.
+    ///
+    /// Without a deadline the socket keeps the timeout set when it was connected.
+    fn arm(&self) -> std::io::Result<()> {
+        if self.deadline.is_none() {
+            return Ok(());
+        }
+        let timeout = bound(self.io_timeout, self.deadline)?;
+        let socket = match &self.stream {
+            Stream::Plain(stream) => stream,
+            Stream::Tls(stream) => &stream.sock,
+        };
+        socket.set_read_timeout(timeout)?;
+        socket.set_write_timeout(timeout)
+    }
+}
+
 impl Read for Transport {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.read(buffer),
-            Self::Tls(stream) => stream.read(buffer),
+        self.arm()?;
+        match &mut self.stream {
+            Stream::Plain(stream) => stream.read(buffer),
+            Stream::Tls(stream) => stream.read(buffer),
         }
     }
 }
 
 impl Write for Transport {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.write(buffer),
-            Self::Tls(stream) => stream.write(buffer),
+        self.arm()?;
+        match &mut self.stream {
+            Stream::Plain(stream) => stream.write(buffer),
+            Stream::Tls(stream) => stream.write(buffer),
         }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        match self {
-            Self::Plain(stream) => stream.flush(),
-            Self::Tls(stream) => stream.flush(),
+        self.arm()?;
+        match &mut self.stream {
+            Stream::Plain(stream) => stream.flush(),
+            Stream::Tls(stream) => stream.flush(),
         }
     }
 }
