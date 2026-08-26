@@ -142,9 +142,13 @@ impl TryFrom<raw::Record> for Record {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+    use test_strategy::proptest;
+
     use super::value::ValueForm;
     use super::{Error, Field, Record};
     use crate::parse::raw;
+    use crate::strategies;
     use crate::version::WarcVersion;
 
     fn raw(fields: &[(&str, &str)]) -> raw::Record {
@@ -266,5 +270,13 @@ mod tests {
             std::error::Error::source(&error).map(ToString::to_string),
             Some("not a timestamp: yesterday".to_owned())
         );
+    }
+
+    /// Reading a record against the grammar keeps every byte it was read from.
+    #[proptest]
+    fn preserves_the_record_it_reads(#[strategy(strategies::raw_record())] record: raw::Record) {
+        let grammatical = Record::try_from(record.clone()).expect("a grammatical record");
+
+        prop_assert_eq!(grammatical.into_raw(), record);
     }
 }

@@ -289,7 +289,11 @@ fn parse_uri(content: &[u8]) -> Result<ValueForm, Error> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+    use test_strategy::proptest;
+
     use super::{Error, Field, HeaderValue, TextError, ValueForm};
+    use crate::strategies;
 
     /// A value keeps every byte it was written with, whatever its grammar makes of them.
     #[test]
@@ -466,5 +470,18 @@ mod tests {
             );
             assert_eq!(value.form(), Some(&form));
         }
+    }
+
+    /// A form reads back from the value that spells it.
+    #[proptest]
+    fn round_trips_a_form_through_the_value_spelling_it(
+        #[strategy(strategies::field_and_form())] input: (Field, ValueForm),
+    ) {
+        let (field, form) = input;
+        let written = HeaderValue::from(form.clone());
+
+        let read = HeaderValue::parse(Some(field), written.as_bytes());
+
+        prop_assert_eq!(read.map(HeaderValue::into_form), Ok(Some(form)));
     }
 }

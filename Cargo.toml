@@ -91,6 +91,7 @@ webpki-roots = { version = "1", optional = true }
 
 [dev-dependencies]
 data-encoding.workspace = true
+proptest.workspace = true
 # The recorder's TLS test serves a self-signed certificate.
 rcgen = "0.14"
 # The request-reconstruction test compares against bytes sent by a real loopback client.
@@ -99,6 +100,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 tempfile.workspace = true
+test-strategy.workspace = true
 # Only the `read_filtered` example parses URLs.
 url = "2"
 # The upstream crate this one is derived from, compared against by `warc_crate_roundtrip`.

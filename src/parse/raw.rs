@@ -372,7 +372,12 @@ fn parse_length(value: &[u8]) -> Result<u64, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, RecordHeader};
+    use proptest::prelude::*;
+    use test_strategy::proptest;
+
+    use super::{Error, Record, RecordHeader};
+    use crate::io::read::WarcReader;
+    use crate::strategies;
     use crate::version::WarcVersion;
 
     /// A header block with the given field lines, terminated as the standard requires.
@@ -753,5 +758,20 @@ mod tests {
             assert_eq!(error.to_string(), message);
             assert!(std::error::Error::source(&error).is_none(), "{message}");
         }
+    }
+
+    /// A record reads back from the bytes it writes, byte for byte.
+    #[proptest]
+    fn round_trips_a_record_through_its_rendering(
+        #[strategy(strategies::raw_record())] record: Record,
+    ) {
+        let written = record.to_bytes().expect("a rendered record");
+
+        let read = WarcReader::new(written.as_slice())
+            .iter_raw_records()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("well-formed records");
+
+        prop_assert_eq!(read, vec![record]);
     }
 }

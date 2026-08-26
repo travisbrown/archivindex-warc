@@ -433,7 +433,11 @@ fn trim_ows_end(input: &[u8]) -> &[u8] {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+    use test_strategy::proptest;
+
     use super::{Cow, Error, MediaType, ParameterValue, QuotedStringError};
+    use crate::strategies;
 
     #[test]
     fn parses_a_bare_media_type() {
@@ -642,5 +646,13 @@ mod tests {
                 "{value:?}"
             );
         }
+    }
+
+    /// A media type reads back as written, parameters and their white space included.
+    #[proptest]
+    fn round_trips_a_media_type(#[strategy(strategies::media_type())] media_type: MediaType) {
+        let written = media_type.to_string();
+
+        prop_assert_eq!(MediaType::parse(written.as_bytes()), Ok(media_type));
     }
 }

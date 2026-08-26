@@ -1764,8 +1764,12 @@ impl Renderer {
 mod tests {
     use std::net::Ipv4Addr;
 
+    use proptest::prelude::*;
+    use test_strategy::proptest;
+
     use super::*;
     use crate::record::extension::{ExtensionTruncatedReason, Never};
+    use crate::strategies;
 
     const RECORD_ID: &str = "urn:uuid:00000000-0000-0000-0000-000000000001";
     const DATE: &str = "2020-07-08T02:52:55Z";
@@ -3926,5 +3930,44 @@ mod tests {
             body: Vec::new(),
         };
         assert_eq!(continuation.segment_number(), Some(2));
+    }
+
+    /// The bytes a record writes, with the digests and length rendering supplies.
+    fn render_bytes(record: Record) -> Vec<u8> {
+        record
+            .into_raw()
+            .expect("a rendered record")
+            .to_bytes()
+            .expect("a framed record")
+    }
+
+    /// The record a rendering says.
+    fn lift_bytes(bytes: &[u8]) -> Record {
+        let raw = crate::io::read::WarcReader::new(bytes)
+            .iter_raw_records()
+            .next()
+            .expect("a record")
+            .expect("a well-formed record");
+
+        Record::try_from(untyped::Record::try_from(raw).expect("a grammatical record"))
+            .expect("a record of a type the standard defines")
+    }
+
+    /// A record read from a rendering says the same thing after being written and read again, and
+    /// writes the same bytes it was read from.
+    ///
+    /// The generated record leaves the digests and length rendering supplies unset, so the
+    /// property is stated on what its rendering lifts to rather than on the record itself.
+    #[proptest]
+    fn round_trips_a_record_through_its_rendering(
+        #[strategy(strategies::record())] record: Record,
+    ) {
+        let written = render_bytes(record);
+        let lifted = lift_bytes(&written);
+
+        let rewritten = render_bytes(lifted.clone());
+
+        prop_assert_eq!(&rewritten, &written);
+        prop_assert_eq!(lift_bytes(&rewritten), lifted);
     }
 }
