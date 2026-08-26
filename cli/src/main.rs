@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use archivindex_cli_support::{Verbosity, plural};
+use archivindex_cli_support::{CommandOutcome, Verbosity, exit_code, plural};
 use archivindex_warc::io::write::{DEFAULT_GZIP_COMPRESSION_LEVEL, MAX_GZIP_COMPRESSION_LEVEL};
 use archivindex_warc::value::{Text, TextError};
 use archivindex_warc_ops::lint::Linter;
@@ -83,6 +83,8 @@ enum Command {
     },
 
     /// Check a WARC file against rules stricter than the standard, printing each finding.
+    ///
+    /// Exits 1 when the file has findings, and 2, as every command does, when it cannot be read.
     Lint {
         /// The WARC file to lint; a .gz extension selects gzip decompression.
         #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
@@ -170,16 +172,10 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     cli.verbosity.init_logging();
 
-    match run(cli) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            log::error!("{error:#}");
-            ExitCode::FAILURE
-        }
-    }
+    exit_code(run(cli))
 }
 
-fn run(cli: Cli) -> Result<()> {
+fn run(cli: Cli) -> Result<CommandOutcome> {
     let quiet = cli.verbosity.is_quiet();
 
     match cli.command {
@@ -223,7 +219,7 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Command::Lint { input } => lint(&input, quiet)?,
+        Command::Lint { input } => return lint(&input, quiet),
         Command::Merge {
             first,
             second,
@@ -272,7 +268,7 @@ fn run(cli: Cli) -> Result<()> {
         }
     }
 
-    Ok(())
+    Ok(CommandOutcome::Success)
 }
 
 /// Compress `input` record by record into the gzip WARC at `output`.
@@ -305,8 +301,8 @@ fn compress(input: &Path, level: u32, output: &Path, quiet: bool) -> Result<()> 
     Ok(())
 }
 
-/// Report every finding in `input`, failing when there is one.
-fn lint(input: &Path, quiet: bool) -> Result<()> {
+/// Report every finding in `input`, returning the outcome the findings call for.
+fn lint(input: &Path, quiet: bool) -> Result<CommandOutcome> {
     let mut linter = Linter::new(open_input(input)?);
     let mut problems = 0;
 
@@ -324,11 +320,13 @@ fn lint(input: &Path, quiet: bool) -> Result<()> {
     }
 
     if problems > 0 {
-        bail!(
+        log::warn!(
             "found {} in {}",
             plural(problems, "problem"),
             input.display()
         );
+
+        return Ok(CommandOutcome::ReportedProblems);
     }
     if !quiet {
         println!(
@@ -338,7 +336,7 @@ fn lint(input: &Path, quiet: bool) -> Result<()> {
         );
     }
 
-    Ok(())
+    Ok(CommandOutcome::Success)
 }
 
 /// Read a `TEXT` command-line value, such as a `WARC-Filename`.
@@ -543,5 +541,27 @@ mod tests {
         assert!(parse(&["--collection-id", "crawl-2026"]).is_ok());
         assert!(parse(&[]).is_err());
         assert!(parse(&["--filename", "two\nlines"]).is_err());
+    }
+
+    /// A lint run that has findings is told apart from one that could not read the file.
+    #[test]
+    fn lint_reserves_one_for_findings() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input.warc");
+        std::fs::write(
+            &input,
+            "WARC/1.1\r\nWARC-Type: resource\r\nWARC-Record-ID: <urn:uuid:1>\r\n\
+             WARC-Date: 2024-01-02T03:04:05Z\r\nWARC-Target-URI: https://example.com/\r\n\
+             Content-Length: 0\r\n\r\n\r\n\r\n",
+        )
+        .unwrap();
+        let lint = |path: &Path| {
+            let arguments = ["archivindex-warc-cli", "lint", path.to_str().unwrap()];
+
+            run(Cli::try_parse_from(arguments).unwrap())
+        };
+
+        assert_eq!(lint(&input).unwrap(), CommandOutcome::ReportedProblems);
+        assert!(lint(&directory.path().join("missing.warc")).is_err());
     }
 }
