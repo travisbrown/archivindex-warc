@@ -15,7 +15,7 @@ use archivindex_warc::record::fields::warcinfo::WarcinfoField;
 use archivindex_warc::record::{self, FieldsBlock, Record, RenderError};
 use archivindex_warc::value::{LabelledDigest, Text};
 
-use crate::files::{is_gzip, open};
+use crate::files::{compression, open};
 use crate::{Error, Result};
 
 /// What was written to the rewritten file.
@@ -175,12 +175,11 @@ pub fn warcinfo(input: &Path, output: &Path, values: &WarcinfoValues) -> Result<
         });
     }
 
-    let gzip = is_gzip(output);
     let file = File::create(output).map_err(|source| Error::Create {
         path: output.to_owned(),
         source,
     })?;
-    let mut writer = WarcWriter::new(BufWriter::new(file));
+    let mut writer = WarcWriter::new(BufWriter::new(file)).with_compression(compression(output));
     let mut records = 0;
     let mut rewritten = 0;
 
@@ -198,12 +197,7 @@ pub fn warcinfo(input: &Path, output: &Path, values: &WarcinfoValues) -> Result<
             rewritten += 1;
         }
 
-        let written = if gzip {
-            writer.write_gzip(&record)
-        } else {
-            writer.write(&record)
-        }
-        .map_err(|source| Error::Write {
+        let written = writer.write(&record).map_err(|source| Error::Write {
             path: output.to_owned(),
             source,
         })?;

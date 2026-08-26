@@ -5,6 +5,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use archivindex_warc::io::read::WarcReader;
+use archivindex_warc::io::write::Compression;
 use flate2::bufread::MultiGzDecoder;
 
 use crate::{Error, Result};
@@ -23,6 +24,15 @@ pub fn open(path: &Path) -> Result<WarcReader<Box<dyn BufRead>>> {
     };
 
     Ok(WarcReader::new(reader))
+}
+
+/// The compression to write at a path, gzip when the path names a gzip file.
+pub fn compression(path: &Path) -> Compression {
+    if is_gzip(path) {
+        Compression::gzip()
+    } else {
+        Compression::NONE
+    }
 }
 
 /// Whether a path names a gzip-compressed file.

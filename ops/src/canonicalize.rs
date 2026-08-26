@@ -12,7 +12,7 @@ use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::parse::raw;
 use archivindex_warc::parse::untyped::name::Field;
 
-use crate::files::{is_gzip, open};
+use crate::files::{compression, open};
 use crate::{Error, Result};
 
 /// What was written to the canonicalized file.
@@ -39,12 +39,11 @@ pub fn canonicalize(input: &Path, output: &Path) -> Result<CanonicalizeSummary> 
         });
     }
 
-    let gzip = is_gzip(output);
     let file = File::create(output).map_err(|source| Error::Create {
         path: output.to_owned(),
         source,
     })?;
-    let mut writer = WarcWriter::new(BufWriter::new(file));
+    let mut writer = WarcWriter::new(BufWriter::new(file)).with_compression(compression(output));
     let mut records = 0;
 
     for result in open(input)?.iter_raw_records() {
@@ -54,12 +53,7 @@ pub fn canonicalize(input: &Path, output: &Path) -> Result<CanonicalizeSummary> 
         })?;
         canonicalize_header(&mut record.header);
 
-        let written = if gzip {
-            writer.write_gzip(&record)
-        } else {
-            writer.write(&record)
-        }
-        .map_err(|source| Error::Write {
+        let written = writer.write(&record).map_err(|source| Error::Write {
             path: output.to_owned(),
             source,
         })?;
