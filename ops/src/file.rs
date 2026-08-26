@@ -7,13 +7,20 @@ use std::path::{Path, PathBuf};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::io::write::{Compression, WarcWriter};
 use archivindex_warc::parse::raw;
-use flate2::bufread::MultiGzDecoder;
 use tempfile::TempPath;
 
+use crate::gzip::{Framing, MemberReader};
 use crate::{Error, Result};
 
 /// Open a file for reading, decompressing when the path names a gzip file.
 pub fn read(path: &Path) -> Result<Box<dyn BufRead>> {
+    read_framed(path).map(|(reader, _)| reader)
+}
+
+/// Open a file for reading, reporting where its gzip members end when the path names a gzip file.
+///
+/// A file that is not gzip has no members, and yields no framing.
+pub fn read_framed(path: &Path) -> Result<(Box<dyn BufRead>, Option<Framing>)> {
     let file = File::open(path).map_err(|source| Error::Open {
         path: path.to_owned(),
         source,
@@ -21,9 +28,11 @@ pub fn read(path: &Path) -> Result<Box<dyn BufRead>> {
     let file = BufReader::new(file);
 
     Ok(if is_gzip(path) {
-        Box::new(BufReader::new(MultiGzDecoder::new(file)))
+        let reader = MemberReader::new(file);
+        let framing = reader.framing();
+        (Box::new(reader), Some(framing))
     } else {
-        Box::new(file)
+        (Box::new(file), None)
     })
 }
 
@@ -185,6 +194,7 @@ fn is_same_file(input: &Path, output: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::io::Write;
 
     use super::*;
@@ -196,6 +206,42 @@ mod tests {
             body.len()
         )
         .into_bytes()
+    }
+
+    /// A file compressed record by record has a member for each record, which the framing of a
+    /// read over it reports.
+    #[test]
+    fn reports_the_member_framing_of_a_gzip_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.warc.gz");
+        let records = [render("first"), render("second")];
+        let mut compressed = Vec::new();
+        crate::compress::compress(&records.concat()[..], 1, &mut compressed).unwrap();
+        std::fs::write(&path, compressed).unwrap();
+
+        let (reader, framing) = read_framed(&path).unwrap();
+        let framing = framing.expect("a gzip file reports its framing");
+        assert_eq!(WarcReader::new(reader).iter_raw_records().count(), 2);
+        let mut boundaries = VecDeque::new();
+        framing.take_boundaries(&mut boundaries);
+
+        assert_eq!(
+            Vec::from(boundaries),
+            [
+                records[0].len() as u64,
+                (records[0].len() + records[1].len()) as u64
+            ]
+        );
+    }
+
+    /// A file that is not gzip has no members, and so no framing to check.
+    #[test]
+    fn reports_no_framing_for_an_uncompressed_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.warc");
+        std::fs::write(&path, render("body")).unwrap();
+
+        assert!(read_framed(&path).unwrap().1.is_none());
     }
 
     #[test]
