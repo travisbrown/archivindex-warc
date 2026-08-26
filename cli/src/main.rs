@@ -5,7 +5,7 @@ mod graph;
 
 use std::fmt::Display;
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -42,7 +42,7 @@ enum Command {
 
     /// Compress a WARC file record by record, one gzip member per record.
     Compress {
-        /// The uncompressed WARC file to compress.
+        /// The WARC file to compress; a .gz extension selects gzip decompression.
         #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
@@ -56,7 +56,7 @@ enum Command {
         )]
         level: u32,
 
-        /// The file to write.
+        /// The file to write, which must have a .gz extension.
         #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         output: PathBuf,
     },
@@ -311,10 +311,14 @@ fn compress(input: &Path, level: u32, output: &Path, quiet: bool) -> Result<()> 
             input.display()
         );
     }
+    if !archivindex_warc_ops::file::is_gzip(output) {
+        bail!(
+            "a compressed output must be named with a .gz extension: {}",
+            output.display()
+        );
+    }
 
-    let reader = BufReader::new(
-        File::open(input).with_context(|| format!("cannot open {}", input.display()))?,
-    );
+    let reader = archivindex_warc_ops::file::read(input)?;
     let writer = BufWriter::new(
         File::create(output).with_context(|| format!("cannot create {}", output.display()))?,
     );
