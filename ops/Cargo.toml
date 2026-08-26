@@ -17,9 +17,6 @@ archivindex-warc.workspace = true
 flate2.workspace = true
 fluent-uri.workspace = true
 log.workspace = true
-md-5.workspace = true
-sha1.workspace = true
-sha2.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
