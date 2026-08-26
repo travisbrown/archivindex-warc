@@ -41,6 +41,9 @@
 //! 13. Every record of a gzip file lies in a gzip member of its own, which is what lets a record be
 //!     found and decompressed without reading the ones before it. A file read without its member
 //!     framing, as an uncompressed file is, is not held to this rule.
+//! 14. Nothing stands between one record and the next. A record ends with the two line endings that
+//!     close it, so a blank line before a record, or at the end of the file, is padding that some
+//!     writers emit and that concatenating files leaves behind.
 //!
 //! Each rule a record breaks is one [`Finding`]. A record that breaks none is reported by its
 //! identifier alone.
@@ -248,6 +251,18 @@ pub enum Violation {
         /// The target URI's host, or `None` if it has none.
         found: Option<String>,
     },
+    /// Blank lines stand before a record.
+    #[error("the record is preceded by {}", blank_lines(*lines))]
+    BlankLinesBefore {
+        /// The number of blank lines standing before the record.
+        lines: usize,
+    },
+    /// Blank lines stand after the last record of the file.
+    #[error("{} follow the record, at the end of the file", blank_lines(*lines))]
+    TrailingBlankLines {
+        /// The number of blank lines the file ends with.
+        lines: usize,
+    },
 }
 
 impl Violation {
@@ -281,6 +296,8 @@ impl Violation {
             Self::SharedGzipMember { .. } => "shared_gzip_member",
             Self::SplitGzipMember { .. } => "split_gzip_member",
             Self::WrongRequestHost { .. } => "wrong_request_host",
+            Self::BlankLinesBefore { .. } => "blank_lines_before",
+            Self::TrailingBlankLines { .. } => "trailing_blank_lines",
         }
     }
 }
@@ -365,6 +382,15 @@ fn filename(found: Option<&Text>) -> String {
         || "the record carries none".to_owned(),
         |name| format!("is `{name}`"),
     )
+}
+
+/// Describe a number of blank lines in a message.
+fn blank_lines(lines: usize) -> String {
+    if lines == 1 {
+        "1 blank line".to_owned()
+    } else {
+        format!("{lines} blank lines")
+    }
 }
 
 /// Describe a target URI's host in a message.
@@ -471,6 +497,8 @@ pub struct Linter<R> {
     boundaries: VecDeque<u64>,
     /// The position of the record the gzip member being read holds first.
     member_first: usize,
+    /// The position and identifier of the record read last, if it read.
+    last_record: Option<(usize, Uri<String>)>,
     /// Results not yet yielded, since one record can produce several.
     queue: VecDeque<Checked>,
     /// A read error to yield once the results queued before it have been.
@@ -492,6 +520,7 @@ impl<R: BufRead> Linter<R> {
             read_through: 0,
             boundaries: VecDeque::new(),
             member_first: 0,
+            last_record: None,
             queue: VecDeque::new(),
             deferred: None,
         }
@@ -573,6 +602,7 @@ impl<R: BufRead> Linter<R> {
         }
         self.check_record(index, record, placement);
         self.check_capture(index, record, expected);
+        self.last_record = Some((index, record.core().record_id.clone()));
         if self.queue.len() == mark {
             self.clean = Some(record.core().record_id.clone());
         }
@@ -629,6 +659,15 @@ impl<R: BufRead> Linter<R> {
             if members > 1 {
                 self.report(index, record_id, Violation::SplitGzipMember { members });
             }
+        }
+
+        let padding = self.records.blank_lines();
+        if padding > 0 {
+            self.report(
+                index,
+                record_id,
+                Violation::BlankLinesBefore { lines: padding },
+            );
         }
 
         if index == 0 && !matches!(record, Record::Warcinfo { .. }) {
@@ -901,7 +940,10 @@ impl<R: BufRead> Linter<R> {
         }
     }
 
-    /// Report a capture left waiting at the end of the file.
+    /// Report a capture left waiting at the end of the file, and the blank lines it ends with.
+    ///
+    /// Padding after a record that failed to read is left unreported, as that record is checked
+    /// against no rule.
     fn finish(&mut self) {
         let mark = self.queue.len();
         if let Some(pending) = self.pending.take() {
@@ -910,6 +952,15 @@ impl<R: BufRead> Linter<R> {
                 Slot::Metadata => Violation::ResponseWithoutMetadata { found: None },
             };
             self.report(pending.index, &pending.record_id, violation);
+        }
+
+        let padding = self.records.blank_lines();
+        if let Some((index, record_id)) = self.last_record.take().filter(|_| padding > 0) {
+            self.report(
+                index,
+                &record_id,
+                Violation::TrailingBlankLines { lines: padding },
+            );
         }
         self.settle_clean(mark);
     }
@@ -921,6 +972,7 @@ impl<R: BufRead> Linter<R> {
     fn skip(&mut self, error: read::Error) {
         self.index += 1;
         self.pending = None;
+        self.last_record = None;
         self.release_clean();
         self.deferred = Some(error);
     }
@@ -1338,7 +1390,12 @@ mod tests {
 
     /// Every item of a lint pass, which must hold no read errors.
     fn lint(records: &[TestRecord]) -> Vec<Checked> {
-        Linter::new(&render(records)[..])
+        lint_file(&render(records))
+    }
+
+    /// Every item of a lint pass over a file written byte for byte, which must hold no read errors.
+    fn lint_file(file: &[u8]) -> Vec<Checked> {
+        Linter::new(file)
             .collect::<Result<_, _>>()
             .expect("every record reads")
     }
@@ -2297,6 +2354,45 @@ mod tests {
                 (2, Violation::MissingPayloadDigest),
                 (2, Violation::RequestWithoutResponse { found: None }),
             ]
+        );
+    }
+
+    /// A blank line between records is padding, which faults the record that follows it and
+    /// leaves the capture around it intact.
+    #[test]
+    fn a_blank_line_between_records_faults_the_record_after_it() {
+        let records = capture();
+        let mut file = render(&records[..2]);
+        file.extend_from_slice(b"\r\n");
+        file.extend_from_slice(&render(&records[2..]));
+
+        assert_eq!(
+            faults(lint_file(&file)),
+            vec![(2, Violation::BlankLinesBefore { lines: 1 })]
+        );
+    }
+
+    /// Padding before the first record faults it as padding anywhere else does.
+    #[test]
+    fn blank_lines_before_the_first_record_fault_it() {
+        let mut file = b"\r\n\r\n".to_vec();
+        file.extend_from_slice(&render(&capture()));
+
+        assert_eq!(
+            faults(lint_file(&file)),
+            vec![(0, Violation::BlankLinesBefore { lines: 2 })]
+        );
+    }
+
+    /// Padding at the end of the file faults the record it follows.
+    #[test]
+    fn blank_lines_ending_the_file_fault_the_last_record() {
+        let mut file = render(&capture());
+        file.extend_from_slice(b"\r\n");
+
+        assert_eq!(
+            faults(lint_file(&file)),
+            vec![(3, Violation::TrailingBlankLines { lines: 1 })]
         );
     }
 
