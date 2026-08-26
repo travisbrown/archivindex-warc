@@ -16,6 +16,8 @@
 //! [`MAX_CHALLENGE_ANSWERS`](super::outcome::MAX_CHALLENGE_ANSWERS) times, and its challenge is
 //! then recorded as the response.
 
+use std::time::Instant;
+
 use http::header::{CONTENT_TYPE, COOKIE, HeaderValue};
 use url::Url;
 
@@ -60,11 +62,12 @@ impl Archiver {
         url: &Url,
         challenge: Challenge,
         exchanges: &mut Vec<Exchange>,
+        deadline: Option<Instant>,
     ) -> Result<bool, Error> {
         let cookie = match challenge {
             Challenge::Cookie(cookie) => Some(cookie),
             Challenge::ProofOfWork(challenge) => {
-                let (exchange, cookie) = self.submit_proof_of_work(&challenge)?;
+                let (exchange, cookie) = self.submit_proof_of_work(&challenge, deadline)?;
                 exchanges.push(exchange);
                 cookie
             }
@@ -80,6 +83,7 @@ impl Archiver {
     fn submit_proof_of_work(
         &self,
         challenge: &simply::ProofOfWork,
+        deadline: Option<Instant>,
     ) -> Result<(Exchange, Option<StoredCookie>), Error> {
         let verification_url = challenge.verification_url();
         let target = verification_url
@@ -99,11 +103,12 @@ impl Archiver {
             headers.insert(COOKIE, cookie);
         }
         let body = challenge.request_body();
-        let captured = self.recorder.fetch(
+        let captured = self.recorder.fetch_within(
             &http::Method::POST,
             &target,
             &headers,
             Some(body.as_bytes()),
+            deadline,
         )?;
         let cookie = simply::clearance_cookie(&captured, verification_url);
 

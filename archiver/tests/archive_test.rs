@@ -1113,6 +1113,27 @@ fn archive_records_timeouts_as_failures() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
+fn archive_fails_captures_past_their_time_limit() -> Result<(), Box<dyn std::error::Error>> {
+    // The slow endpoint stalls for longer than the capture time but not the idle timeout.
+    let (port, server) = serve(1)?;
+    let url = format!("http://127.0.0.1:{port}/slow");
+
+    let archiver = Archiver::new(Config {
+        timeout: Duration::from_secs(5),
+        max_capture_time: Some(Duration::from_millis(100)),
+        ..gzip_config()
+    })?;
+    let mut bytes = Vec::new();
+    let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
+    server.join().expect("server thread should not panic");
+
+    assert!(!summary.is_complete());
+    assert!(matches!(summary.failures[0].error, Error::Fetch(_)));
+
+    Ok(())
+}
+
+#[test]
 fn archive_truncates_responses_at_the_configured_limit() -> Result<(), Box<dyn std::error::Error>> {
     let (port, server) = serve(1)?;
     let url = format!("http://127.0.0.1:{port}/");
