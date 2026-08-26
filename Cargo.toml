@@ -1,6 +1,8 @@
 [workspace]
 members = [
   ".",
+  "archiver",
+  "archiver-cli",
   "cli",
   "cli-support",
   "digest",
@@ -10,6 +12,8 @@ members = [
 ]
 default-members = [
   ".",
+  "archiver",
+  "archiver-cli",
   "cli",
   "cli-support",
   "digest",
@@ -31,6 +35,7 @@ repository = "https://github.com/travisbrown/archivindex-warc"
 archivindex-cli-support = { path = "cli-support" }
 archivindex-test-support = { path = "test-support" }
 archivindex-warc = { version = "0.1.0", path = "." }
+chrono = "0.4"
 clap = { version = "4.5", features = ["derive"] }
 data-encoding = "2"
 flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
@@ -44,6 +49,7 @@ sha2 = "0.11"
 tempfile = "3"
 test-strategy = "0.4"
 thiserror = "2"
+url = "2"
 
 [workspace.lints.rust]
 missing_docs = "deny"
@@ -88,13 +94,12 @@ gzip = ["dep:flate2"]
 http = ["dep:http"]
 # `serde` supplies `IgnoredAny` for validating JSON without building a document.
 payload-identification = ["dep:file-format", "dep:serde", "dep:serde_json"]
-recorder = ["http", "dep:rustls", "dep:webpki-roots"]
 # Enables Serde derives and conversion between types and `application/warc-fields` bodies.
 serde = ["dep:serde", "archivindex-warc-digest/serde"]
 
 [dependencies]
 archivindex-warc-digest = { version = "0.1.0", path = "digest" }
-chrono = "0.4"
+chrono.workspace = true
 # `reader` adds content-based checks for formats that signatures alone cannot identify.
 file-format = { version = "0.29", optional = true, features = ["reader"] }
 flate2 = { workspace = true, optional = true }
@@ -102,19 +107,15 @@ fluent-uri.workspace = true
 http = { workspace = true, optional = true }
 # Vectorized newline scanning in the reader's line loop.
 memchr = "2.8"
-rustls = { version = "0.23", optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 # A builder not told a record identifier generates one, which is a version 4 UUID.
 uuid = { version = "1", features = ["v4"] }
-webpki-roots = { version = "1", optional = true }
 
 [dev-dependencies]
 data-encoding.workspace = true
 proptest.workspace = true
-# The recorder's TLS test serves a self-signed certificate.
-rcgen = "0.14"
 # The request-reconstruction test compares against bytes sent by a real loopback client.
 reqwest = { version = "0.13", default-features = false, features = [
   "blocking",
@@ -123,7 +124,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 tempfile.workspace = true
 test-strategy.workspace = true
 # Only the `read_filtered` example parses URLs.
-url = "2"
+url.workspace = true
 # The upstream crate this one is derived from, compared against by `warc_crate_roundtrip`.
 # Pinned exactly, since that test asserts the behavior of one specific implementation.
 warc = "=0.4.0"
@@ -131,10 +132,6 @@ warc = "=0.4.0"
 [[test]]
 name = "reconstruct_request_echo"
 required-features = ["http"]
-
-[[test]]
-name = "recorder_loopback"
-required-features = ["recorder"]
 
 # These examples demonstrate gzip-compressed WARC files, so they are only built when the
 # feature they require is enabled; the remaining examples are still auto-discovered.
