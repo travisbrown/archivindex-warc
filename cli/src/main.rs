@@ -3,6 +3,7 @@
 mod export;
 mod graph;
 
+use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter};
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use archivindex_cli_support::{CommandOutcome, Verbosity, exit_code, plural};
 use archivindex_warc::io::write::{DEFAULT_GZIP_COMPRESSION_LEVEL, MAX_GZIP_COMPRESSION_LEVEL};
 use archivindex_warc::value::{Text, TextError};
-use archivindex_warc_ops::lint::Linter;
+use archivindex_warc_ops::lint::{Finding, Linter};
 use archivindex_warc_ops::rewrite::WarcinfoValues;
 use clap::{Parser, Subcommand};
 use flate2::bufread::MultiGzDecoder;
@@ -89,6 +90,10 @@ enum Command {
         /// The WARC file to lint; a .gz extension selects gzip decompression.
         #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
+
+        /// How to write the findings.
+        #[arg(long, value_name = "FORMAT", default_value_t = LintFormat::Text)]
+        format: LintFormat,
     },
 
     /// Merge the records of two WARC files, dropping duplicate warcinfo records.
@@ -158,6 +163,34 @@ enum RewriteTarget {
     },
 }
 
+/// The formats the `lint` command writes findings in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
+enum LintFormat {
+    /// One line of prose per finding.
+    Text,
+
+    /// One JSON object per finding, and per record that could not be read.
+    Json,
+}
+
+impl Display for LintFormat {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text => formatter.write_str("text"),
+            Self::Json => formatter.write_str("json"),
+        }
+    }
+}
+
+/// A record the linter could not read, as the JSON format writes it.
+#[derive(serde::Serialize)]
+struct Unreadable {
+    /// The record's zero-based position in the file.
+    index: usize,
+    /// Why it could not be read.
+    error: String,
+}
+
 /// The formats the `export` command writes.
 #[derive(Debug, Subcommand)]
 enum ExportFormat {
@@ -219,7 +252,7 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
                 }
             }
         }
-        Command::Lint { input } => return lint(&input, quiet),
+        Command::Lint { input, format } => return lint(&input, format, quiet),
         Command::Merge {
             first,
             second,
@@ -302,19 +335,17 @@ fn compress(input: &Path, level: u32, output: &Path, quiet: bool) -> Result<()> 
 }
 
 /// Report every finding in `input`, returning the outcome the findings call for.
-fn lint(input: &Path, quiet: bool) -> Result<CommandOutcome> {
+fn lint(input: &Path, format: LintFormat, quiet: bool) -> Result<CommandOutcome> {
     let mut linter = Linter::new(open_input(input)?);
     let mut problems = 0;
 
     while let Some(item) = linter.next() {
         match item {
             Ok(Ok(_)) => continue,
-            Ok(Err(finding)) => println!("{finding}"),
-            Err(error) => println!(
-                "record {}: {:#}",
-                linter.position() - 1,
-                anyhow::Error::from(error)
-            ),
+            Ok(Err(finding)) => report_finding(format, &finding)?,
+            Err(error) => {
+                report_unreadable(format, linter.position() - 1, &anyhow::Error::from(error))?;
+            }
         }
         problems += 1;
     }
@@ -328,7 +359,7 @@ fn lint(input: &Path, quiet: bool) -> Result<CommandOutcome> {
 
         return Ok(CommandOutcome::ReportedProblems);
     }
-    if !quiet {
+    if !quiet && format == LintFormat::Text {
         println!(
             "Found no problems in {} of {}.",
             plural(linter.position(), "record"),
@@ -337,6 +368,37 @@ fn lint(input: &Path, quiet: bool) -> Result<CommandOutcome> {
     }
 
     Ok(CommandOutcome::Success)
+}
+
+/// Write one finding in the chosen format.
+fn report_finding(format: LintFormat, finding: &Finding) -> Result<()> {
+    match format {
+        LintFormat::Text => println!("{finding}"),
+        LintFormat::Json => println!("{}", as_json(finding)?),
+    }
+
+    Ok(())
+}
+
+/// Write one unreadable record in the chosen format.
+fn report_unreadable(format: LintFormat, index: usize, error: &anyhow::Error) -> Result<()> {
+    match format {
+        LintFormat::Text => println!("record {index}: {error:#}"),
+        LintFormat::Json => println!(
+            "{}",
+            as_json(&Unreadable {
+                index,
+                error: format!("{error:#}"),
+            })?
+        ),
+    }
+
+    Ok(())
+}
+
+/// One line of JSON.
+fn as_json<T: serde::Serialize>(value: &T) -> Result<String> {
+    serde_json::to_string(value).context("cannot serialize JSON output")
 }
 
 /// Read a `TEXT` command-line value, such as a `WARC-Filename`.
@@ -485,12 +547,30 @@ mod tests {
     }
 
     #[test]
-    fn lint_accepts_an_input() {
+    fn lint_accepts_an_input_and_defaults_to_text() {
         let cli = Cli::try_parse_from(["archivindex-warc-cli", "lint", "input.warc.gz"]).unwrap();
+        let json = Cli::try_parse_from([
+            "archivindex-warc-cli",
+            "lint",
+            "input.warc",
+            "--format",
+            "json",
+        ])
+        .unwrap();
 
         assert!(matches!(
             cli.command,
-            Command::Lint { input } if input.as_path() == Path::new("input.warc.gz")
+            Command::Lint {
+                input,
+                format: LintFormat::Text
+            } if input.as_path() == Path::new("input.warc.gz")
+        ));
+        assert!(matches!(
+            json.command,
+            Command::Lint {
+                format: LintFormat::Json,
+                ..
+            }
         ));
     }
 

@@ -151,6 +151,8 @@ dependencies = [
  "fluent-uri",
  "log",
  "md-5",
+ "serde",
+ "serde_json",
  "sha1",
  "sha2",
  "tempfile",
