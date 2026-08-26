@@ -1,1 +1,1 @@
-doc-valid-idents = ["ARChive", "BLAKE2b", ".."]
+doc-valid-idents = ["ARChive", "BLAKE2b", "SQLite", ".."]
