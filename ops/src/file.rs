@@ -1,11 +1,12 @@
-//! Opening WARC files by path.
+//! Reading and writing WARC files by path.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, BufWriter};
 use std::path::Path;
 
 use archivindex_warc::io::read::WarcReader;
-use archivindex_warc::io::write::Compression;
+use archivindex_warc::io::write::{Compression, WarcWriter};
+use archivindex_warc::parse::raw;
 use flate2::bufread::MultiGzDecoder;
 
 use crate::{Error, Result};
@@ -46,4 +47,67 @@ pub fn is_gzip(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
+}
+
+/// Stream the records of `inputs` through `transform` into `output`, returning the number of
+/// records written.
+///
+/// The records of each input are read in order, with all of one input's records preceding the
+/// next's, and are numbered from zero across the inputs. A record the closure returns as `None`
+/// is dropped. Both inputs and output are compressed when their paths end in `.gz`, and a
+/// compressed output holds one gzip member per record.
+pub(crate) fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Record>>>(
+    inputs: &[&Path],
+    output: &Path,
+    mut transform: F,
+) -> Result<usize> {
+    if let Some(path) = inputs.iter().find(|input| **input == output) {
+        return Err(Error::SameInputAndOutput {
+            path: (*path).to_owned(),
+        });
+    }
+
+    let readers = inputs
+        .iter()
+        .map(|input| open(input).map(|reader| (*input, reader)))
+        .collect::<Result<Vec<_>>>()?;
+    let file = File::create(output).map_err(|source| Error::Create {
+        path: output.to_owned(),
+        source,
+    })?;
+    let mut writer = WarcWriter::new(BufWriter::new(file)).with_compression(compression(output));
+    let mut records = 0;
+    let mut index = 0;
+
+    for (path, reader) in readers {
+        log::info!("copying records from {}", path.display());
+
+        for result in reader.iter_raw_records() {
+            let record = result.map_err(|source| Error::Read {
+                path: path.to_owned(),
+                source,
+            })?;
+
+            if let Some(record) = transform(index, record)? {
+                let written = writer.write(&record).map_err(|source| Error::Write {
+                    path: output.to_owned(),
+                    source,
+                })?;
+                log::trace!(
+                    "wrote {} bytes at offset {}",
+                    written.length,
+                    written.offset
+                );
+                records += 1;
+            }
+            index += 1;
+        }
+    }
+
+    writer.flush().map_err(|source| Error::Flush {
+        path: output.to_owned(),
+        source,
+    })?;
+
+    Ok(records)
 }

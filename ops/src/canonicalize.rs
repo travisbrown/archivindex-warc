@@ -4,16 +4,13 @@
 //! order. Extension fields follow standard fields and keep their spelling and relative order.
 //! Values, bodies, record order, and the relative order of repeated fields are preserved.
 
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::Path;
 
-use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::parse::raw;
 use archivindex_warc::parse::untyped::name::Field;
 
-use crate::file::{compression, open};
-use crate::{Error, Result};
+use crate::Result;
+use crate::file::transform;
 
 /// What was written to the canonicalized file.
 #[derive(Debug)]
@@ -33,41 +30,10 @@ pub struct CanonicalizeSummary {
 /// Returns an error when the input and output paths are the same, a file cannot be opened, a
 /// record cannot be read or written, or the output cannot be flushed.
 pub fn canonicalize(input: &Path, output: &Path) -> Result<CanonicalizeSummary> {
-    if input == output {
-        return Err(Error::SameInputAndOutput {
-            path: input.to_owned(),
-        });
-    }
-
-    let file = File::create(output).map_err(|source| Error::Create {
-        path: output.to_owned(),
-        source,
-    })?;
-    let mut writer = WarcWriter::new(BufWriter::new(file)).with_compression(compression(output));
-    let mut records = 0;
-
-    for result in open(input)?.iter_raw_records() {
-        let mut record = result.map_err(|source| Error::Read {
-            path: input.to_owned(),
-            source,
-        })?;
+    let records = transform(&[input], output, |_, mut record| {
         canonicalize_header(&mut record.header);
 
-        let written = writer.write(&record).map_err(|source| Error::Write {
-            path: output.to_owned(),
-            source,
-        })?;
-        log::trace!(
-            "wrote {} bytes at offset {}",
-            written.length,
-            written.offset
-        );
-        records += 1;
-    }
-
-    writer.flush().map_err(|source| Error::Flush {
-        path: output.to_owned(),
-        source,
+        Ok(Some(record))
     })?;
 
     Ok(CanonicalizeSummary { records })
@@ -90,9 +56,12 @@ fn canonicalize_header(header: &mut raw::RecordHeader) {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
     use std::io::Write;
 
     use super::*;
+    use crate::Error;
+    use crate::file::open;
 
     /// A WARC 1.1 record with the given fields, framed by the body's length.
     fn render(headers: &[(&str, &str)], body: &str) -> Vec<u8> {
