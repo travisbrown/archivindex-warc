@@ -3,6 +3,10 @@
 //! [`WarcReader`] returns records at any of the crate's three representation levels. Record bodies
 //! are read fully into memory. The three `filter` iterators can inspect a header block and skip its
 //! body without buffering it.
+//!
+//! Blank lines standing between records are padding that the standard does not allow for, which
+//! some writers emit and concatenating files leaves behind. They are skipped, and every iterator
+//! reports how many stood before the record it returned last.
 
 use std::io::{BufRead, BufReader};
 use std::marker::PhantomData;
@@ -248,15 +252,18 @@ fn read_line_bounded<R: BufRead>(
 /// most [`MAX_HEADER_BLOCK`] bytes.
 ///
 /// The header block is left in `header_buffer`, which is cleared first so callers can reuse
-/// one buffer across records.
+/// one buffer across records. Blank lines before the header block are padding rather than part
+/// of it: they are skipped, and their number is returned.
 ///
-/// Returns `None` on a clean end-of-stream at a record boundary. End-of-stream with header
-/// bytes already buffered is truncated input, and is an error.
+/// Returns `None` on a clean end-of-stream at a record boundary, blank lines there included.
+/// End-of-stream with header bytes already buffered is truncated input, and is an error.
 fn read_header_block<R: BufRead>(
     reader: &mut R,
     header_buffer: &mut Vec<u8>,
+    blank_lines: &mut usize,
 ) -> Option<Result<(), Error>> {
     header_buffer.clear();
+    *blank_lines = 0;
     loop {
         match read_line_bounded(reader, header_buffer, MAX_HEADER_BLOCK) {
             Err(e) => return Some(Err(e)),
@@ -272,10 +279,23 @@ fn read_header_block<R: BufRead>(
                 return Some(Err(Error::Raw(raw::Error::UnexpectedEndOfHeaderBlock)));
             }
             Ok(LineRead::LimitExceeded) => return Some(Err(Error::HeaderBlockTooLarge)),
+            // Writers pad the space between records with blank lines, and concatenating archives
+            // leaves them behind. A blank line where a version line belongs is that padding, so
+            // it is counted and dropped rather than read as the start of a header block.
+            Ok(LineRead::Line(_)) if is_blank_line(header_buffer) => {
+                header_buffer.clear();
+                *blank_lines += 1;
+            }
             Ok(LineRead::Line(2)) if header_buffer.ends_with(b"\r\n") => return Some(Ok(())),
             Ok(LineRead::Line(_)) => {}
         }
     }
+}
+
+/// Whether the buffer holds nothing but one line ending, which is a blank line standing where a
+/// record's version line belongs.
+fn is_blank_line(header_buffer: &[u8]) -> bool {
+    header_buffer == b"\r\n" || header_buffer == b"\n"
 }
 
 /// Read a record body of the given length, plus the `\r\n\r\n` record terminator.
@@ -358,6 +378,8 @@ struct Reading<R> {
     /// than yielding garbage records from the middle of a partly consumed one.
     finished: bool,
     header_buffer: Vec<u8>,
+    /// The number of blank lines skipped before the header block read last.
+    blank_lines: usize,
 }
 
 impl<R: BufRead> Reading<R> {
@@ -366,6 +388,7 @@ impl<R: BufRead> Reading<R> {
             reader,
             finished: false,
             header_buffer: Vec::new(),
+            blank_lines: 0,
         }
     }
 
@@ -378,7 +401,11 @@ impl<R: BufRead> Reading<R> {
             return None;
         }
 
-        match read_header_block(&mut self.reader, &mut self.header_buffer) {
+        match read_header_block(
+            &mut self.reader,
+            &mut self.header_buffer,
+            &mut self.blank_lines,
+        ) {
             None => {
                 self.finished = true;
                 None
@@ -422,6 +449,11 @@ impl<R: BufRead> Reading<R> {
         )
     }
 
+    /// The number of blank lines skipped before the header block read last.
+    const fn blank_lines(&self) -> usize {
+        self.blank_lines
+    }
+
     /// Stop iteration if a read failed, since where the reader is left is not known.
     const fn fuse_on_error<T>(&mut self, result: Result<T, Error>) -> Result<T, Error> {
         if result.is_err() {
@@ -449,6 +481,16 @@ impl<R: BufRead> RawIter<R> {
             reading: Reading::new(reader),
         }
     }
+
+    /// The number of blank lines skipped before the record returned last.
+    ///
+    /// A blank line between records is padding the standard does not allow for, which some
+    /// writers emit and concatenating archives leaves behind. Once iteration has ended, this is
+    /// the number of blank lines the input ends with.
+    #[must_use]
+    pub const fn blank_lines(&self) -> usize {
+        self.reading.blank_lines()
+    }
 }
 
 impl<R: BufRead> Iterator for RawIter<R> {
@@ -474,6 +516,16 @@ impl<R: BufRead> UntypedIter<R> {
         Self {
             raw: RawIter::new(reader),
         }
+    }
+
+    /// The number of blank lines skipped before the record returned last.
+    ///
+    /// A blank line between records is padding the standard does not allow for, which some
+    /// writers emit and concatenating archives leaves behind. Once iteration has ended, this is
+    /// the number of blank lines the input ends with.
+    #[must_use]
+    pub const fn blank_lines(&self) -> usize {
+        self.raw.blank_lines()
     }
 }
 
@@ -507,6 +559,16 @@ impl<R: BufRead, E: Extension> RecordIter<R, E> {
             extension: PhantomData,
         }
     }
+
+    /// The number of blank lines skipped before the record returned last.
+    ///
+    /// A blank line between records is padding the standard does not allow for, which some
+    /// writers emit and concatenating archives leaves behind. Once iteration has ended, this is
+    /// the number of blank lines the input ends with.
+    #[must_use]
+    pub const fn blank_lines(&self) -> usize {
+        self.untyped.blank_lines()
+    }
 }
 
 impl<R: BufRead, E: Extension> Iterator for RecordIter<R, E> {
@@ -527,6 +589,18 @@ impl<R: BufRead, E: Extension> Iterator for RecordIter<R, E> {
 pub struct FilterRawIter<R, F> {
     reading: Reading<R>,
     filter: F,
+}
+
+impl<R: BufRead, F> FilterRawIter<R, F> {
+    /// The number of blank lines skipped before the record returned last.
+    ///
+    /// A blank line between records is padding the standard does not allow for, which some
+    /// writers emit and concatenating archives leaves behind. Once iteration has ended, this is
+    /// the number of blank lines the input ends with.
+    #[must_use]
+    pub const fn blank_lines(&self) -> usize {
+        self.reading.blank_lines()
+    }
 }
 
 impl<R: BufRead, F: FnMut(&raw::RecordHeader) -> bool> Iterator for FilterRawIter<R, F> {
@@ -562,6 +636,18 @@ impl<R: BufRead, F: FnMut(&raw::RecordHeader) -> bool> Iterator for FilterRawIte
 pub struct FilterUntypedIter<R, F> {
     reading: Reading<R>,
     filter: F,
+}
+
+impl<R: BufRead, F> FilterUntypedIter<R, F> {
+    /// The number of blank lines skipped before the record returned last.
+    ///
+    /// A blank line between records is padding the standard does not allow for, which some
+    /// writers emit and concatenating archives leaves behind. Once iteration has ended, this is
+    /// the number of blank lines the input ends with.
+    #[must_use]
+    pub const fn blank_lines(&self) -> usize {
+        self.reading.blank_lines()
+    }
 }
 
 impl<R: BufRead, F: FnMut(&untyped::RecordHeader) -> bool> Iterator for FilterUntypedIter<R, F> {
@@ -613,6 +699,18 @@ pub struct FilterRecordIter<R, F, E = NoExtension> {
     /// The extension is carried as a marker rather than a value. The function type keeps `E`
     /// from affecting the iterator's auto traits.
     extension: PhantomData<fn() -> E>,
+}
+
+impl<R: BufRead, F, E> FilterRecordIter<R, F, E> {
+    /// The number of blank lines skipped before the record returned last.
+    ///
+    /// A blank line between records is padding the standard does not allow for, which some
+    /// writers emit and concatenating archives leaves behind. Once iteration has ended, this is
+    /// the number of blank lines the input ends with.
+    #[must_use]
+    pub const fn blank_lines(&self) -> usize {
+        self.reading.blank_lines()
+    }
 }
 
 impl<R: BufRead, E: Extension, F: FnMut(&record::RecordHeader<E>) -> bool> Iterator
@@ -1727,5 +1825,86 @@ mod gzip_tests {
             .collect::<Vec<_>>();
 
         assert_eq!(bodies, [b"first".to_vec(), b"second".to_vec()]);
+    }
+}
+
+#[cfg(test)]
+mod blank_line_tests {
+    use super::WarcReader;
+
+    /// A WARC 1.1 resource record framed by the length of its body.
+    fn record(body: &str) -> String {
+        format!(
+            "WARC/1.1\r\nWARC-Type: resource\r\nContent-Length: {}\r\n\r\n{body}\r\n\r\n",
+            body.len()
+        )
+    }
+
+    /// The body of each record of `archive` with the blank lines read before it, and the number
+    /// of blank lines the archive ends with.
+    fn read(archive: &str) -> (Vec<(String, usize)>, usize) {
+        let mut records = WarcReader::new(archive.as_bytes()).iter_raw_records();
+        let mut read = Vec::new();
+        while let Some(record) = records.next() {
+            let record = record.expect("every record reads");
+            read.push((
+                String::from_utf8(record.body).expect("a body of text"),
+                records.blank_lines(),
+            ));
+        }
+
+        (read, records.blank_lines())
+    }
+
+    /// A blank line between records is padding, which reading skips rather than reading it as the
+    /// start of a record.
+    #[test]
+    fn skips_the_blank_lines_between_records() {
+        let archive = format!("{}\r\n{}", record("first"), record("second"));
+
+        assert_eq!(
+            read(&archive),
+            (vec![("first".to_owned(), 0), ("second".to_owned(), 1)], 0)
+        );
+    }
+
+    /// Padding before the first record and after the last is skipped as well.
+    #[test]
+    fn skips_the_blank_lines_an_archive_opens_and_ends_with() {
+        let archive = format!("\r\n\r\n{}\r\n", record("only"));
+
+        assert_eq!(read(&archive), (vec![("only".to_owned(), 2)], 1));
+    }
+
+    /// A blank line written with a bare line feed is padding too, as bare line feeds are read
+    /// elsewhere in this crate.
+    #[test]
+    fn skips_a_blank_line_written_with_a_bare_line_feed() {
+        let archive = format!("{}\n{}", record("first"), record("second"));
+
+        assert_eq!(
+            read(&archive),
+            (vec![("first".to_owned(), 0), ("second".to_owned(), 1)], 0)
+        );
+    }
+
+    /// An archive of blank lines alone holds no records, and ends cleanly.
+    #[test]
+    fn reads_an_archive_of_blank_lines_as_no_records() {
+        assert_eq!(read("\r\n\r\n"), (vec![], 2));
+    }
+
+    /// Every iterator counts the padding, whatever level it reads records at.
+    #[test]
+    fn counts_the_padding_at_every_level() {
+        let archive = format!("\r\n{}", record("only"));
+
+        let mut filtered = WarcReader::new(archive.as_bytes()).filter_raw_records(|_| true);
+        assert!(filtered.next().is_some());
+        assert_eq!(filtered.blank_lines(), 1);
+
+        let mut untyped = WarcReader::new(archive.as_bytes()).iter_untyped_records();
+        assert!(untyped.next().is_some());
+        assert_eq!(untyped.blank_lines(), 1);
     }
 }
