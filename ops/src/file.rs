@@ -121,7 +121,9 @@ pub(crate) struct TransformSummary {
 /// one is written, so a failure partway through leaves any file already at `output` as it was,
 /// and a crash after this returns cannot lose the output. The move replaces the name rather than
 /// the file it held, so an output that is a hard link or symbolic link to an input leaves the
-/// input as it was.
+/// input as it was. The partial file is created exclusively: a run whose partial file already
+/// exists fails without writing, so concurrent runs cannot share one, a link or an input at that
+/// path is left as it was, and a partial file left by an interrupted run must be removed first.
 pub(crate) fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Record>>>(
     inputs: &[&Path],
     output: &Path,
@@ -139,7 +141,7 @@ pub(crate) fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Recor
         .map(|input| open(input).map(|reader| (*input, reader)))
         .collect::<Result<Vec<_>>>()?;
     let partial = partial_path(output);
-    let file = File::create(&partial).map_err(|source| Error::Create {
+    let file = File::create_new(&partial).map_err(|source| Error::Create {
         path: partial.clone(),
         source,
     })?;
@@ -249,7 +251,6 @@ fn is_same_file(input: &Path, output: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::io::Write;
 
     use archivindex_test_support::render;
 
@@ -376,23 +377,62 @@ mod tests {
     }
 
     #[test]
-    fn writes_through_a_partial_file() {
+    fn refuses_an_existing_partial_file() {
         let directory = tempfile::tempdir().unwrap();
         let input = directory.path().join("input.warc");
         let output = directory.path().join("output.warc");
+        let partial = partial_path(&output);
         std::fs::write(&input, resource("body")).unwrap();
-        let mut stale = File::create(partial_path(&output)).unwrap();
-        stale.write_all(b"stale").unwrap();
-        drop(stale);
+        std::fs::write(&partial, b"stale").unwrap();
 
-        let summary = transform(&[&input], &output, Compression::NONE, |_, record| {
+        let error = transform(&[&input], &output, Compression::NONE, |_, record| {
             Ok(Some(record))
         })
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(summary.records, 1);
-        assert!(!partial_path(&output).exists());
-        assert_eq!(open(&output).unwrap().iter_raw_records().count(), 1);
+        assert!(matches!(&error, Error::Create { path, .. } if *path == partial));
+        assert_eq!(std::fs::read(&partial).unwrap(), b"stale");
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn refuses_an_input_at_the_partial_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("output.warc");
+        let input = partial_path(&output);
+        let contents = resource("body");
+        std::fs::write(&input, &contents).unwrap();
+
+        let error = transform(&[&input], &output, Compression::NONE, |_, record| {
+            Ok(Some(record))
+        })
+        .unwrap_err();
+
+        assert!(matches!(&error, Error::Create { path, .. } if *path == input));
+        assert_eq!(std::fs::read(&input).unwrap(), contents);
+        assert!(!output.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_symbolic_link_at_the_partial_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input.warc");
+        let output = directory.path().join("output.warc");
+        let partial = partial_path(&output);
+        let contents = resource("body");
+        std::fs::write(&input, &contents).unwrap();
+        std::os::unix::fs::symlink(&input, &partial).unwrap();
+
+        let error = transform(&[&input], &output, Compression::NONE, |_, record| {
+            Ok(Some(record))
+        })
+        .unwrap_err();
+
+        assert!(matches!(&error, Error::Create { path, .. } if *path == partial));
+        assert_eq!(std::fs::read(&input).unwrap(), contents);
+        assert!(std::fs::symlink_metadata(&partial).unwrap().is_symlink());
+        assert!(!output.exists());
     }
 
     #[test]
