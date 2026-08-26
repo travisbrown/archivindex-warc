@@ -38,16 +38,25 @@ pub enum Error {
 ///
 /// # Errors
 ///
-/// Returns an error if the headers or chunk framing are malformed, or if the message uses an
-/// unsupported transfer-coding.
+/// Returns an error if the header section is malformed, if a body that opens as a chunked message
+/// is framed badly from there on, or if the message uses an unsupported transfer-coding.
 pub fn entity_body(message: &[u8]) -> Result<Cow<'_, [u8]>, Error> {
     let (body, transfer_encoding) = split_message(message)?;
 
-    if is_chunked(&transfer_encoding)? {
+    if is_chunked(&transfer_encoding)? && opens_chunked(body) {
         Ok(Cow::Owned(dechunk(body)?))
     } else {
         Ok(Cow::Borrowed(body))
     }
+}
+
+/// Whether a body opens with a chunk size line.
+///
+/// Capturing tools commonly store a body they have already dechunked while keeping the
+/// `Transfer-Encoding` field it arrived with, so a body declared chunked that does not begin as
+/// one is the entity-body as stored.
+fn opens_chunked(body: &[u8]) -> bool {
+    next_line(body, 0).is_some_and(|line| chunk_size(&body[..line.end]).is_ok())
 }
 
 /// Split an HTTP message into its body and combined `Transfer-Encoding` value.
@@ -283,11 +292,11 @@ mod tests {
         let prefix = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
 
         for (body, expected) in [
+            // A chunk after the first declares a size that is not one.
             (
-                "zz\r\nabc\r\n0\r\n\r\n",
+                "3\r\nabc\r\nzz\r\ndef\r\n0\r\n\r\n",
                 Error::MalformedChunkSize("zz".to_owned()),
             ),
-            ("\r\nabc\r\n", Error::MalformedChunkSize(String::new())),
             // The body ends inside the data of a chunk.
             ("5\r\nabc", Error::IncompleteChunkedBody),
             // The data of a chunk is not closed by a line ending.
@@ -298,6 +307,27 @@ mod tests {
             let message = [prefix.as_bytes(), body.as_bytes()].concat();
 
             assert_eq!(entity_body(&message).unwrap_err(), expected, "{body:?}");
+        }
+    }
+
+    /// Capturing tools store dechunked bodies under the `Transfer-Encoding` the response carried,
+    /// which the payload digests of such records are computed over.
+    #[test]
+    fn body_declared_chunked_that_does_not_open_as_one_is_read_as_stored() {
+        let prefix = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: -1\r\n\r\n";
+
+        for body in [
+            "<!doctype html>\r\n<title>a</title>",
+            "zz\r\nabc\r\n0\r\n\r\n",
+            "",
+        ] {
+            let message = [prefix.as_bytes(), body.as_bytes()].concat();
+
+            assert_eq!(
+                entity_body(&message).unwrap().as_ref(),
+                body.as_bytes(),
+                "{body:?}"
+            );
         }
     }
 }
