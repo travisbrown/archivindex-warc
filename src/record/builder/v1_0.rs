@@ -190,7 +190,6 @@ mod tests {
     use super::*;
     use crate::record::builder::tests::{OTHER_ID, TARGET_URI, date, round_trip, uri, written};
     use crate::record::builder::{specification_uri, v1_0};
-    use crate::record::tests::as_rendered;
 
     /// Every entry point in [`v1_0`] declares WARC 1.0, which is the whole of what the module
     /// adds over the entry points on [`Record`].
@@ -244,7 +243,7 @@ mod tests {
                 specification_uri(WarcVersion::V1_0)
             )
         );
-        assert_eq!(round_trip(&record), as_rendered(record.clone()));
+        assert_eq!(round_trip(&record), record.clone());
     }
 
     /// A `revisit` record built for WARC 1.0 carries no field WARC 1.0 does not define, so it
@@ -285,7 +284,7 @@ mod tests {
             .body("HTTP/1.1 200 OK\r\n\r\n")?;
 
         assert_eq!(record.version(), WarcVersion::V1_0);
-        assert_eq!(round_trip(&record), as_rendered(record.clone()));
+        assert_eq!(round_trip(&record), record.clone());
 
         let raw = record.into_raw().expect("a record built here is writable");
 

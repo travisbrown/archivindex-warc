@@ -118,8 +118,8 @@ pub struct CoreHeaders<E: Extension = NoExtension> {
     pub content_length: Option<u64>,
     /// `WARC-Block-Digest`: `algorithm ":" value` over the whole of the record's block.
     ///
-    /// Rendering adds a SHA-256 digest when this is `None`. Supported algorithms are validated;
-    /// unsupported algorithms are preserved without validation.
+    /// A digest of a supported algorithm is validated when the record is rendered; one of an
+    /// unsupported algorithm is preserved without validation.
     pub block_digest: Option<LabelledDigest>,
     /// `Content-Type`: the media type of the block itself.
     ///

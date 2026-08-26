@@ -42,8 +42,8 @@
 //! fields identifying the declared WARC version; a `metadata` body begins empty. Construct a
 //! record directly if either type must carry another kind of block.
 //!
-//! Rendering adds SHA-256 block and payload digests when possible.
-//! [`digests`](ResponseBuilder::digests) selects another algorithm.
+//! [`digests`](ResponseBuilder::digests) computes block and payload digests as the record is
+//! built.
 //!
 //! Records declare WARC 1.1. The [`v1_0`] module mirrors every entry point here for an archive
 //! that has to be written as WARC 1.0.
@@ -1152,7 +1152,6 @@ mod tests {
     use crate::parse::{raw, untyped};
     use crate::record::digest::added_digest;
     use crate::record::extension::{ExtensionRecordType, Never};
-    use crate::record::tests::as_rendered;
     use crate::value::marker;
 
     const RECORD_ID: &str = "urn:uuid:00000000-0000-0000-0000-000000000001";
@@ -1258,7 +1257,7 @@ mod tests {
     #[test]
     fn a_built_record_reads_back_as_itself() -> Result<(), Error> {
         for record in records()? {
-            assert_eq!(round_trip(&record), as_rendered(record));
+            assert_eq!(round_trip(&record), record);
         }
 
         Ok(())
@@ -1298,7 +1297,7 @@ mod tests {
 
         assert!(record.core().record_id.as_str().starts_with("urn:uuid:"));
         assert_ne!(record.core().record_id, another.core().record_id);
-        assert_eq!(round_trip(&record), as_rendered(record));
+        assert_eq!(round_trip(&record), record);
 
         Ok(())
     }
@@ -1425,7 +1424,7 @@ mod tests {
                 .as_ref()
                 .is_some_and(|content_type| content_type.is("application", "warc-fields"))
         );
-        assert_eq!(round_trip(&record), as_rendered(record.clone()));
+        assert_eq!(round_trip(&record), record.clone());
         assert!(matches!(
             record,
             Record::Warcinfo {
@@ -1449,7 +1448,7 @@ mod tests {
                 specification_uri(WarcVersion::V1_1)
             )
         );
-        assert_eq!(round_trip(&record), as_rendered(record.clone()));
+        assert_eq!(round_trip(&record), record.clone());
     }
 
     /// An `operator` includes the email address only when provided.
@@ -1498,7 +1497,7 @@ mod tests {
                 specification_uri(WarcVersion::V1_1)
             )
         );
-        assert_eq!(round_trip(&record), as_rendered(record.clone()));
+        assert_eq!(round_trip(&record), record.clone());
 
         Ok(())
     }
@@ -1521,7 +1520,7 @@ mod tests {
             String::from_utf8_lossy(&record.body_bytes()),
             "via: http://www.archive.org/\r\nhopsFromSeed: E\r\nfetchTimeMs: 565\r\n"
         );
-        assert_eq!(round_trip(&record), as_rendered(record.clone()));
+        assert_eq!(round_trip(&record), record.clone());
 
         Ok(())
     }
@@ -1540,7 +1539,7 @@ mod tests {
             String::from_utf8_lossy(&record.body_bytes()),
             "x-note: first\r\nx-note: second\r\n"
         );
-        assert_eq!(round_trip(&record), as_rendered(record.clone()));
+        assert_eq!(round_trip(&record), record.clone());
 
         Ok(())
     }
@@ -1733,7 +1732,7 @@ mod tests {
 
         assert_eq!(
             Record::<Sitemaps>::try_from(grammar).expect("a written record reads as itself"),
-            as_rendered(record)
+            record
         );
 
         let response = Record::<Sitemaps>::response(TARGET_URI, date())
