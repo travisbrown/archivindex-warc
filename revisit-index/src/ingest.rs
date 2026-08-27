@@ -116,6 +116,7 @@ fn index_response<E: Extension>(
             &RevisitTarget {
                 payload_digest: payload_digest.clone(),
                 payload_length: Some(payload_length),
+                identified_payload_type: header.payload.identified_payload_type.clone(),
                 record_id: header.core.record_id.clone(),
                 target_uri: header.target_uri.clone(),
                 warc_date: header.core.date,

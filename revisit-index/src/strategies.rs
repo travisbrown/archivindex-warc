@@ -1,6 +1,6 @@
 //! Property-testing strategies for indexed values.
 
-use archivindex_warc::value::{Algorithm, Encoding, LabelledDigest, WarcDate};
+use archivindex_warc::value::{Algorithm, Encoding, LabelledDigest, MediaType, WarcDate};
 use archivindex_warc::version::WarcVersion;
 use fluent_uri::Uri;
 use proptest::prelude::*;
@@ -94,20 +94,42 @@ pub fn resource_key() -> impl Strategy<Value = ResourceKey> {
     })
 }
 
+/// An identified payload type drawn from a small pool.
+fn media_type() -> impl Strategy<Value = MediaType> {
+    select(vec![
+        "text/html",
+        "application/json",
+        "image/png",
+        "text/plain; charset=utf-8",
+    ])
+    .prop_map(|value| {
+        MediaType::parse(value.as_bytes()).expect("invariant violation: a pooled media type parses")
+    })
+}
+
 /// A canonical payload-bearing record, digested from the pool.
 pub fn revisit_target() -> impl Strategy<Value = RevisitTarget> {
     (
         pooled_digest(),
         // Lengths are stored in a signed column, so `i64::MAX` is the largest one that fits.
         proptest::option::of(0..=u64::MAX >> 1),
+        proptest::option::of(media_type()),
         uri(),
         uri(),
         warc_date(),
     )
         .prop_map(
-            |(payload_digest, payload_length, record_id, target_uri, warc_date)| RevisitTarget {
+            |(
                 payload_digest,
                 payload_length,
+                identified_payload_type,
+                record_id,
+                target_uri,
+                warc_date,
+            )| RevisitTarget {
+                payload_digest,
+                payload_length,
+                identified_payload_type,
                 record_id,
                 target_uri,
                 warc_date,
