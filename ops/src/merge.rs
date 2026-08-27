@@ -5,10 +5,10 @@
 //! matching record with the earliest `WARC-Date` is written where the first of them stood, the
 //! rest are dropped, and every reference to a dropped record is redirected to the kept one.
 //!
-//! Two warcinfo records match when they declare the same WARC version, carry the same body, and
-//! carry the same fields other than `WARC-Record-ID`, `WARC-Date`, `WARC-Filename`,
-//! `WARC-Block-Digest`, and `WARC-Payload-Digest`. Field order, field name case, and white space
-//! around values do not affect matching.
+//! Two warcinfo records match when they declare the same WARC version, carry the same body other
+//! than `isPartOf` fields, and carry the same header fields other than `WARC-Record-ID`,
+//! `WARC-Date`, `WARC-Filename`, `WARC-Block-Digest`, `WARC-Payload-Digest`, and `Content-Length`.
+//! Header field order, field name case, and white space around values do not affect matching.
 //!
 //! A warcinfo record that declares a `WARC-Filename` has it rewritten to the name of the output,
 //! which is the file it is then in.
@@ -17,6 +17,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use archivindex_warc::parse::raw;
+use archivindex_warc::record::fields::dcmi::DcmiTerm;
+use archivindex_warc::record::fields::warcinfo::{WarcinfoBody, WarcinfoField};
 use archivindex_warc::value::{Text, WarcDate};
 use archivindex_warc::version::WarcVersion;
 
@@ -25,13 +27,15 @@ use crate::header::{REFERENCE_FIELDS, is_warcinfo, normalize_id};
 use crate::{Error, Result};
 
 /// Fields that vary between otherwise identical warcinfo records: the generated identifier, the
-/// capture date, the name of the enclosing file, and the digests.
-const INCIDENTAL_FIELDS: [&str; 5] = [
+/// capture date, the name of the enclosing file, the digests, and the length that changes with an
+/// incidental `isPartOf` value.
+const INCIDENTAL_FIELDS: [&str; 6] = [
     "WARC-Record-ID",
     "WARC-Date",
     "WARC-Filename",
     "WARC-Block-Digest",
     "WARC-Payload-Digest",
+    "Content-Length",
 ];
 
 /// What became of the merged files' records.
@@ -190,7 +194,8 @@ impl MergePlan {
 }
 
 /// A warcinfo record's identity for matching: its version, its fields other than the incidental
-/// ones with names lowercased and values trimmed and sorted, and its body.
+/// ones with names lowercased and values trimmed and sorted, and its body without `isPartOf`
+/// fields.
 type GroupKey = (WarcVersion, Vec<(String, Vec<u8>)>, Vec<u8>);
 
 /// The matching identity of a warcinfo record.
@@ -208,7 +213,67 @@ fn group_key(record: &raw::Record) -> GroupKey {
         .collect();
     headers.sort_unstable();
 
-    (record.header.version, headers, record.body.clone())
+    (record.header.version, headers, body_key(&record.body))
+}
+
+/// A body with every `isPartOf` field removed, when it is a valid warc-fields block.
+///
+/// The bytes of every other field are retained exactly, so making `isPartOf` incidental does not
+/// make differences in spelling, white space, folding, or line endings elsewhere incidental too.
+/// A body that is not warc-fields retains its original identity.
+fn body_key(body: &[u8]) -> Vec<u8> {
+    let Ok(fields) = WarcinfoBody::parse(body) else {
+        return body.to_vec();
+    };
+    let is_part_of = WarcinfoField::Dcmi(DcmiTerm::IsPartOf);
+    if fields.get(&is_part_of).is_none() {
+        return body.to_vec();
+    }
+
+    let mut key = Vec::with_capacity(body.len());
+    let mut cursor = 0;
+    while cursor < body.len() {
+        let field_start = cursor;
+        let (line, next) = body_line(body, cursor);
+        if line.is_empty() {
+            key.extend_from_slice(&body[cursor..]);
+            break;
+        }
+
+        cursor = next;
+        while body
+            .get(cursor)
+            .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+        {
+            cursor = body_line(body, cursor).1;
+        }
+
+        let colon = line
+            .iter()
+            .position(|byte| *byte == b':')
+            .expect("invariant violation: parsed warc-fields line has no colon");
+        let name = line[..colon].trim_ascii_end();
+        if !name.eq_ignore_ascii_case(b"isPartOf") {
+            key.extend_from_slice(&body[field_start..cursor]);
+        }
+    }
+
+    key
+}
+
+/// A line's content and the offset at which the following line begins.
+fn body_line(body: &[u8], start: usize) -> (&[u8], usize) {
+    let Some(relative_end) = body[start..].iter().position(|byte| *byte == b'\n') else {
+        return (&body[start..], body.len());
+    };
+    let line_feed = start + relative_end;
+    let content_end = if line_feed > start && body[line_feed - 1] == b'\r' {
+        line_feed - 1
+    } else {
+        line_feed
+    };
+
+    (&body[start..content_end], line_feed + 1)
 }
 
 /// Point references to merged warcinfo records at the surviving record.
@@ -403,6 +468,51 @@ mod tests {
 
         // A record referencing the kept warcinfo record round-trips byte for byte.
         assert_eq!(records[3].to_bytes().unwrap(), second_response);
+    }
+
+    /// A collection name describes where a WARC belongs, not whether its crawl metadata is the
+    /// same. The kept record retains the collection name it carried.
+    #[test]
+    fn merges_warcinfo_records_with_different_collections() {
+        let directory = tempfile::tempdir().unwrap();
+
+        let headers = |id, date, digest| {
+            [
+                ("WARC-Type", "warcinfo"),
+                ("WARC-Record-ID", id),
+                ("WARC-Date", date),
+                ("WARC-Block-Digest", digest),
+                ("Content-Type", "application/warc-fields"),
+            ]
+        };
+        let first = write_file(
+            directory.path(),
+            "first.warc",
+            &render(
+                &headers(ID_A, "2024-05-02T00:00:00Z", "sha1:AAAA"),
+                "software: tool/1.0\r\nisPartOf: first-collection\r\noperator: Example\r\n",
+            ),
+        );
+        let second = write_file(
+            directory.path(),
+            "second.warc",
+            &render(
+                &headers(ID_B, "2024-05-01T00:00:00Z", "sha1:BBBB"),
+                "software: tool/1.0\r\nISPARTOF:\r\n second-collection\r\noperator: Example\r\n",
+            ),
+        );
+        let output = directory.path().join("merged.warc");
+
+        let summary = merge(&first, &second, &output).unwrap();
+
+        assert_eq!(summary.records, 1);
+        assert_eq!(summary.merged, 1);
+        let records = read_records(&output);
+        assert_eq!(trimmed(&records[0], "WARC-Record-ID").unwrap(), ID_B);
+        assert_eq!(
+            records[0].body,
+            b"software: tool/1.0\r\nISPARTOF:\r\n second-collection\r\noperator: Example\r\n"
+        );
     }
 
     /// A `WARC-Filename` that cannot be spelled as a `TEXT` value is dropped rather than left
