@@ -208,6 +208,7 @@ impl Archiver {
                 request_headers: self.headers.clone(),
                 persistent_index,
                 digests: self.digests,
+                min_revisit_payload_length: self.config.min_revisit_payload_length,
             },
         )
     }
@@ -227,6 +228,7 @@ impl Archiver {
             request_headers: self.headers.clone(),
             persistent_index: None,
             digests: self.digests,
+            min_revisit_payload_length: self.config.min_revisit_payload_length,
         };
         let mut collection = if let Some(output) = output {
             Collection::new_for_path(output, options())?

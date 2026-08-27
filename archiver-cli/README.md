@@ -45,5 +45,8 @@ email = "operator@example.com"
 The software defaults to this tool's name and version, and no operator is named
 by default.
 
-Sessions can use a persistent revisit and resource-state database by setting
+A response whose payload duplicates an earlier capture is stored as a `revisit`
+record unless the payload is shorter than `min-revisit-payload-length`, 256
+bytes by default. Sessions can use a persistent revisit and resource-state
+database by setting
 `session.revisit-index` to its path. No revisit index is configured by default.

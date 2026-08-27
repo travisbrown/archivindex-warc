@@ -40,6 +40,15 @@ fn gzip_config() -> Config {
     }
 }
 
+/// [`gzip_config`] storing every duplicate payload as a revisit, since the canned payloads are
+/// shorter than the default minimum.
+fn revisiting_config() -> Config {
+    Config {
+        min_revisit_payload_length: 0,
+        ..gzip_config()
+    }
+}
+
 /// The operator most tests run their sessions as, configured by [`gzip_config`].
 fn operator() -> Operator {
     Operator {
@@ -288,7 +297,7 @@ fn persistent_index_supplies_historical_and_same_session_revisit_targets()
     let output = directory.path().join("persistent-revisits.warc.gz");
 
     let summary = Session::new(
-        archiver(gzip_config()),
+        archiver(revisiting_config()),
         "persistent-revisits",
         [&historical_url, &first_new_url, &second_new_url],
         &output,
@@ -668,7 +677,7 @@ fn processor_can_explicitly_recapture_a_seen_url() -> Result<(), Box<dyn std::er
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("recapture.warc.gz");
 
-    let summary = Session::new(archiver(gzip_config()), "recapture", [&url], &output)?
+    let summary = Session::new(archiver(revisiting_config()), "recapture", [&url], &output)?
         .processor(RecaptureProcessor {
             remaining: 1,
             observed: None,
@@ -948,7 +957,7 @@ fn session_crawls_discovered_urls_into_extra_pages() -> Result<(), Box<dyn std::
     let summary = Session::new(
         archiver(Config {
             user_agent: "session-test/1.0".to_owned(),
-            ..gzip_config()
+            ..revisiting_config()
         }),
         "crawl-2026.08",
         &seeds,
@@ -1477,13 +1486,18 @@ fn session_reports_exhausted_http_status_retries() -> Result<(), Box<dyn std::er
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("status-exhausted.warc.gz");
 
-    let summary = Session::new(archiver(gzip_config()), "status-exhausted", [&url], &path)?
-        .retry(RetryConfig {
-            attempts: 2,
-            initial_backoff: Duration::ZERO,
-            max_backoff: Duration::ZERO,
-        })
-        .run()?;
+    let summary = Session::new(
+        archiver(revisiting_config()),
+        "status-exhausted",
+        [&url],
+        &path,
+    )?
+    .retry(RetryConfig {
+        attempts: 2,
+        initial_backoff: Duration::ZERO,
+        max_backoff: Duration::ZERO,
+    })
+    .run()?;
     server.join().expect("server thread should not panic");
 
     assert!(!summary.is_complete());
