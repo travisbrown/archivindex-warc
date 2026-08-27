@@ -6,7 +6,7 @@
 
 # The User-Agent header value sent with every request. The default is this
 # tool's name and version.
-# user_agent = "archivindex-archiver/0.1.0"
+# user-agent = "archivindex-archiver/0.1.0"
 
 # The idle timeout for connecting and for each socket read or write.
 timeout = "30s"
@@ -14,14 +14,14 @@ timeout = "30s"
 # The maximum time spent capturing one URL, including its redirect hops. A
 # response still arriving at the limit is archived truncated rather than
 # failed. Write "unbounded" to capture every URL to completion.
-max_capture_time = "10m"
+max-capture-time = "10m"
 
 # The maximum number of redirects followed for each URL. Answering a
 # challenge is not a redirect.
-max_redirects = 10
+max-redirects = 10
 
 # Whether each WARC record is compressed as an independent gzip member.
-gzip_warc = false
+gzip-warc = false
 
 # The number of URLs downloaded concurrently. Captures are written in input
 # order whatever the value.
@@ -30,7 +30,7 @@ concurrency = 1
 # The maximum number of response bytes stored for one fetch, 256 MiB by
 # default. A response reaching the limit is archived truncated rather than
 # failed. Write "unbounded" to store every response whole.
-max_response_length = 268435456
+max-response-length = 268435456
 
 # The software named in the warcinfo record of every WARC file, written as
 # "name/version". The default is this tool's name and version. When set, both
@@ -67,10 +67,11 @@ algorithm = "sha256"
 [session]
 
 # The wait between successive queued capture requests.
-request_delay = "0s"
+request-delay = "0s"
 
-# The maximum number of successful requested-URL captures, unset by default.
-# limit = 100
+# The persistent revisit and resource-state database used by sessions, unset
+# by default.
+# revisit-index = "revisits.sqlite3"
 
 # Whether the session identifier is recorded as the warcinfo title and
 # processor titles in metadata.
@@ -83,5 +84,5 @@ titles = false
 attempts = 3
 
 # The delay before the first retry, doubling up to the maximum.
-initial_backoff = "1s"
-max_backoff = "30s"
+initial-backoff = "1s"
+max-backoff = "30s"

@@ -1,5 +1,6 @@
 //! Configuration types and defaults for the archiving client.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use archivindex_warc::value::{Algorithm, DigestFormat, Encoding};
@@ -47,7 +48,7 @@ impl Default for Config {
 /// The default is this crate's own name and version. When set in a document, both parts are
 /// required, since a caller's version number does not describe this crate.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Software {
     /// The software's name.
     pub name: String,
@@ -67,7 +68,7 @@ impl Default for Software {
 
 /// The operator named in the `warcinfo` record of every WARC file, as `name` or `name <email>`.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Operator {
     /// The operator's name.
     pub name: String,
@@ -87,7 +88,7 @@ pub struct Operator {
 /// A revisit index matches a response to an earlier capture by payload digest, so captures under
 /// a different payload algorithm do not match those an index already holds.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct DigestConfig {
     /// The algorithm of both digests. The default is [`DigestConfig::DEFAULT_ALGORITHM`].
     pub algorithm: Algorithm,
@@ -139,7 +140,7 @@ impl Default for DigestConfig {
 
 /// Digest settings for one field, each taking precedence over the general setting when set.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct DigestOverride {
     /// The algorithm of this field's digests.
     pub algorithm: Option<Algorithm>,
@@ -160,27 +161,27 @@ pub struct DigestFormats {
 ///
 /// The builder methods of [`Session`](crate::session::Session) override these for one session.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct SessionConfig {
     /// The policy for retrying transient failures.
     pub retry: RetryConfig,
     /// The wait between successive queued capture requests.
     #[serde(with = "humantime_serde")]
     pub request_delay: Duration,
-    /// The maximum number of successful requested-URL captures, when set.
-    pub limit: Option<usize>,
+    /// The persistent revisit and resource-state database used by sessions, when set.
+    pub revisit_index: Option<PathBuf>,
     /// Whether the session identifier is recorded as the `warcinfo` title and processor titles
     /// in metadata.
     pub titles: bool,
 }
 
 impl Default for SessionConfig {
-    /// The default retry policy, no request delay, no capture limit, and no titles.
+    /// The default retry policy, no request delay, no revisit index, and no titles.
     fn default() -> Self {
         Self {
             retry: RetryConfig::default(),
             request_delay: Duration::ZERO,
-            limit: None,
+            revisit_index: None,
             titles: false,
         }
     }
@@ -287,6 +288,7 @@ pub mod bounded_length {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::time::Duration;
 
     use archivindex_warc::value::{Algorithm, DigestFormat, Encoding};
@@ -392,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn a_configuration_round_trips_through_serde() {
+    fn a_configuration_serializes_with_kebab_case_and_round_trips() {
         let config = Config {
             max_capture_time: None,
             max_response_length: None,
@@ -402,8 +404,21 @@ mod tests {
         let written = serde_json::to_string(&config).expect("a JSON document");
         let read = serde_json::from_str::<Config>(&written).expect("a configuration");
 
-        assert!(written.contains("\"max_capture_time\":\"unbounded\""));
-        assert!(written.contains("\"max_response_length\":\"unbounded\""));
+        for key in [
+            "user-agent",
+            "max-capture-time",
+            "max-redirects",
+            "gzip-warc",
+            "max-response-length",
+            "request-delay",
+            "revisit-index",
+            "initial-backoff",
+            "max-backoff",
+        ] {
+            assert!(written.contains(&format!("\"{key}\":")), "missing {key}");
+        }
+        assert!(written.contains("\"max-capture-time\":\"unbounded\""));
+        assert!(written.contains("\"max-response-length\":\"unbounded\""));
         assert!(written.contains("\"timeout\":\"30s\""));
         assert_eq!(read, config);
     }
@@ -411,14 +426,18 @@ mod tests {
     #[test]
     fn a_document_sets_every_section() {
         let document = r#"{
-            "user_agent": "example/1.0",
+            "user-agent": "example/1.0",
             "timeout": "1m 30s",
-            "max_capture_time": "unbounded",
-            "max_response_length": 1024,
+            "max-capture-time": "unbounded",
+            "max-response-length": 1024,
             "software": {"name": "example-crawler", "version": "2.0"},
             "operator": {"name": "Example Operator", "email": "operator@example.com"},
             "digest": {"algorithm": "SHA-1", "payload": {"encoding": "base16"}},
-            "session": {"retry": {"attempts": 1}, "request_delay": "250ms", "limit": 5}
+            "session": {
+                "retry": {"attempts": 1},
+                "request-delay": "250ms",
+                "revisit-index": "revisits.sqlite3"
+            }
         }"#;
 
         let config = serde_json::from_str::<Config>(document).expect("a configuration");
@@ -456,7 +475,10 @@ mod tests {
         );
         assert_eq!(config.session.retry.attempts, 1);
         assert_eq!(config.session.request_delay, Duration::from_millis(250));
-        assert_eq!(config.session.limit, Some(5));
+        assert_eq!(
+            config.session.revisit_index,
+            Some(PathBuf::from("revisits.sqlite3"))
+        );
     }
 
     #[test]
@@ -475,9 +497,10 @@ mod tests {
 
     #[test]
     fn a_document_cannot_hold_an_unknown_field_or_a_negative_limit() {
-        assert!(serde_json::from_str::<Config>(r#"{"timeout_seconds": 30}"#).is_err());
-        assert!(serde_json::from_str::<Config>(r#"{"max_response_length": -1}"#).is_err());
-        assert!(serde_json::from_str::<Config>(r#"{"max_capture_time": "forever"}"#).is_err());
+        assert!(serde_json::from_str::<Config>(r#"{"timeout-seconds": 30}"#).is_err());
+        assert!(serde_json::from_str::<Config>(r#"{"max-response-length": -1}"#).is_err());
+        assert!(serde_json::from_str::<Config>(r#"{"max-capture-time": "forever"}"#).is_err());
+        assert!(serde_json::from_str::<Config>(r#"{"session": {"limit": 5}}"#).is_err());
     }
 
     #[test]

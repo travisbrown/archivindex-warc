@@ -26,7 +26,7 @@ Every key is optional and takes its default when absent, so an empty file and
 no file at all are the same configuration. An unknown key is an error.
 [default-config.toml](default-config.toml) lists every key with its default
 value and meaning. Durations are humantime strings such as `30s` or `10m`, and
-the limits `max_capture_time` and `max_response_length` are lifted by writing
+the limits `max-capture-time` and `max-response-length` are lifted by writing
 `"unbounded"`.
 
 The `warcinfo` record of every WARC file names the software that wrote it and,
@@ -44,3 +44,6 @@ email = "operator@example.com"
 
 The software defaults to this tool's name and version, and no operator is named
 by default.
+
+Sessions can use a persistent revisit and resource-state database by setting
+`session.revisit-index` to its path. No revisit index is configured by default.
