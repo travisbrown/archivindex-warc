@@ -132,6 +132,23 @@ enum Command {
         output: PathBuf,
     },
 
+    /// Remove each revisit record whose target URI is that of the response it refers to.
+    ///
+    /// A revisit is removed when its WARC-Target-URI equals that of the response record its
+    /// WARC-Refers-To names, when that response is in the file. The rest of its capture is
+    /// removed with it: every record WARC-Concurrent-To links to the revisit, in either direction
+    /// and through any number of records. Every other record is copied as read.
+    RemoveSameTargetRevisits {
+        /// The WARC file to read, which is read twice, so it cannot be standard input. A .gz
+        /// extension selects gzip decompression.
+        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        input: PathBuf,
+
+        /// The file to write; a .gz extension selects record-at-a-time gzip compression.
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+        output: PathBuf,
+    },
+
     /// Rewrite part of a WARC file, copying every other record as read.
     Rewrite {
         /// The WARC file to rewrite, or - for standard input; a .gz extension, or the gzip magic
@@ -293,6 +310,9 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
         Command::PropagateIdentifiedPayloadType { input, output } => {
             propagate_identified_payload_type(&input, &output, quiet)?;
         }
+        Command::RemoveSameTargetRevisits { input, output } => {
+            remove_same_target_revisits(&input, &output, quiet)?;
+        }
         Command::Rewrite {
             input,
             output,
@@ -340,6 +360,24 @@ fn propagate_identified_payload_type(input: &Path, output: &Path, quiet: bool) -
             plural(summary.records, "record"),
             output.display(),
             plural(summary.propagated, "revisit record"),
+        );
+    }
+
+    Ok(())
+}
+
+/// Remove the revisits of `input` whose target URI is their original's, with the rest of their
+/// captures, writing the other records to `output`.
+fn remove_same_target_revisits(input: &Path, output: &Path, quiet: bool) -> Result<()> {
+    let summary = archivindex_warc_ops::remove::same_target_revisits(input, output)?;
+
+    if !quiet {
+        println!(
+            "Wrote {} to {}, removing {} and {} captured with them.",
+            plural(summary.records, "record"),
+            output.display(),
+            plural(summary.revisits, "revisit record"),
+            plural(summary.captured, "record"),
         );
     }
 
@@ -610,6 +648,25 @@ mod tests {
         assert!(matches!(
             cli.command,
             Command::PropagateIdentifiedPayloadType { input, output }
+                if input.as_path() == Path::new("input.warc.gz")
+                    && output.as_path() == Path::new("output.warc")
+        ));
+    }
+
+    #[test]
+    fn remove_same_target_revisits_takes_an_input_and_output() {
+        let cli = Cli::try_parse_from([
+            "archivindex-warc-cli",
+            "remove-same-target-revisits",
+            "input.warc.gz",
+            "-o",
+            "output.warc",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::RemoveSameTargetRevisits { input, output }
                 if input.as_path() == Path::new("input.warc.gz")
                     && output.as_path() == Path::new("output.warc")
         ));
