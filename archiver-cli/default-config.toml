@@ -32,6 +32,20 @@ concurrency = 1
 # failed. Write "unbounded" to store every response whole.
 max_response_length = 268435456
 
+# The software named in the warcinfo record of every WARC file, written as
+# "name/version". The default is this tool's name and version. When set, both
+# the name and the version are required.
+# [software]
+# name = "archivindex-archiver"
+# version = "0.1.0"
+
+# The operator named in the warcinfo record of every WARC file, written as
+# "name" or "name <email>". No operator is named by default. The name is
+# required; the email address is optional.
+# [operator]
+# name = "Example Operator"
+# email = "operator@example.com"
+
 # The formats of the digests written for every record. The algorithm and
 # encoding apply to both the block and the payload digest unless a
 # [digest.block] or [digest.payload] table overrides them. Algorithms are

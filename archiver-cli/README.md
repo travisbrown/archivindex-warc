@@ -28,3 +28,19 @@ no file at all are the same configuration. An unknown key is an error.
 value and meaning. Durations are humantime strings such as `30s` or `10m`, and
 the limits `max_capture_time` and `max_response_length` are lifted by writing
 `"unbounded"`.
+
+The `warcinfo` record of every WARC file names the software that wrote it and,
+when configured, its operator:
+
+```toml
+[software]
+name = "example-crawler"
+version = "2.0"
+
+[operator]
+name = "Example Operator"
+email = "operator@example.com"
+```
+
+The software defaults to this tool's name and version, and no operator is named
+by default.

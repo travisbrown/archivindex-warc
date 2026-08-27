@@ -26,33 +26,7 @@ mod run;
 #[error("invalid session identifier: {0:?}")]
 pub struct SessionIdError(String);
 
-/// The operator named in a session's `warcinfo` record.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Operator {
-    /// The operator's name.
-    pub name: String,
-    /// The operator's email address.
-    pub email: Option<String>,
-}
-
-/// Crawling software named in a session's `warcinfo` record.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Software {
-    /// Software name.
-    pub name: String,
-    /// Software version.
-    pub version: String,
-}
-
-impl Default for Software {
-    /// This crate's own name and version.
-    fn default() -> Self {
-        Self {
-            name: env!("CARGO_PKG_NAME").to_owned(),
-            version: env!("CARGO_PKG_VERSION").to_owned(),
-        }
-    }
-}
+pub use crate::config::{Operator, Software};
 
 /// A successfully captured page shown to a [`CaptureProcessor`].
 #[derive(Clone, Debug)]
@@ -217,7 +191,7 @@ impl SessionSummary {
 pub struct Session<'a> {
     archiver: Archiver,
     id: String,
-    operator: Operator,
+    operator: Option<Operator>,
     software: Software,
     seeds: Vec<String>,
     output: PathBuf,
@@ -233,8 +207,9 @@ pub struct Session<'a> {
 impl<'a> Session<'a> {
     /// Create a session, validating its URI-unreserved identifier.
     ///
-    /// The retry policy, request delay, capture limit, and titles start as the archiver's
-    /// [`SessionConfig`]; the builder methods override them.
+    /// The software and operator recorded in `warcinfo` start as the archiver's
+    /// [`Config`](crate::Config), and the retry policy, request delay, capture limit, and titles
+    /// as its [`SessionConfig`]; the builder methods override them.
     ///
     /// # Errors
     ///
@@ -243,7 +218,6 @@ impl<'a> Session<'a> {
     pub fn new<I: IntoIterator<Item = S>, S: AsRef<str>, P: Into<PathBuf>>(
         archiver: Archiver,
         id: &str,
-        operator: Operator,
         seeds: I,
         output: P,
     ) -> Result<Self, SessionIdError> {
@@ -261,12 +235,14 @@ impl<'a> Session<'a> {
             limit,
             titles,
         } = archiver.config.session.clone();
+        let software = archiver.config.software.clone();
+        let operator = archiver.config.operator.clone();
 
         Ok(Self {
             archiver,
             id: id.to_owned(),
             operator,
-            software: Software::default(),
+            software,
             seeds: seeds
                 .into_iter()
                 .map(|seed| seed.as_ref().to_owned())
@@ -283,12 +259,28 @@ impl<'a> Session<'a> {
     }
 
     /// Override the crawling software name and version recorded in `warcinfo`.
+    ///
+    /// A name or version holding a control character cannot be written as a `warc-fields`
+    /// value, so [`run`](Self::run) fails with [`Error::WarcFields`] before creating any output.
     #[must_use]
     pub fn software(mut self, name: impl Into<String>, version: impl Into<String>) -> Self {
         self.software = Software {
             name: name.into(),
             version: version.into(),
         };
+        self
+    }
+
+    /// Override the operator recorded in `warcinfo`, as `name` or `name <email>`.
+    ///
+    /// A name or email address holding a control character cannot be written as a `warc-fields`
+    /// value, so [`run`](Self::run) fails with [`Error::WarcFields`] before creating any output.
+    #[must_use]
+    pub fn operator(mut self, name: impl Into<String>, email: Option<String>) -> Self {
+        self.operator = Some(Operator {
+            name: name.into(),
+            email,
+        });
         self
     }
 

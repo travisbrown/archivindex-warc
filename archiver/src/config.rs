@@ -23,8 +23,8 @@ impl Config {
 impl Default for Config {
     /// The default configuration: this crate's `User-Agent`, the recorder's timeout and response
     /// bound, [`Config::DEFAULT_MAX_CAPTURE_TIME`] per URL, at most ten redirects per URL, one
-    /// download at a time, an uncompressed WARC file, and the default digest and session
-    /// settings.
+    /// download at a time, an uncompressed WARC file, this crate as the `warcinfo` software with
+    /// no operator, and the default digest and session settings.
     fn default() -> Self {
         Self {
             user_agent: Self::DEFAULT_USER_AGENT.to_owned(),
@@ -34,10 +34,46 @@ impl Default for Config {
             gzip_warc: false,
             concurrency: 1,
             max_response_length: Some(DEFAULT_MAX_RESPONSE_LENGTH),
+            software: Software::default(),
+            operator: None,
             digest: DigestConfig::default(),
             session: SessionConfig::default(),
         }
     }
+}
+
+/// The software named in the `warcinfo` record of every WARC file, as `name/version`.
+///
+/// The default is this crate's own name and version. When set in a document, both parts are
+/// required, since a caller's version number does not describe this crate.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Software {
+    /// The software's name.
+    pub name: String,
+    /// The software's version.
+    pub version: String,
+}
+
+impl Default for Software {
+    /// This crate's own name and version.
+    fn default() -> Self {
+        Self {
+            name: env!("CARGO_PKG_NAME").to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+        }
+    }
+}
+
+/// The operator named in the `warcinfo` record of every WARC file, as `name` or `name <email>`.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Operator {
+    /// The operator's name.
+    pub name: String,
+    /// The operator's email address, when given.
+    #[serde(default)]
+    pub email: Option<String>,
 }
 
 /// The formats of the digests written for every record.
@@ -255,7 +291,7 @@ mod tests {
 
     use archivindex_warc::value::{Algorithm, DigestFormat, Encoding};
 
-    use super::{DigestConfig, DigestFormats, DigestOverride};
+    use super::{DigestConfig, DigestFormats, DigestOverride, Operator, Software};
     use crate::Config;
     use crate::recorder::{DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT};
 
@@ -281,6 +317,15 @@ mod tests {
             Config::default().max_capture_time,
             Some(Config::DEFAULT_MAX_CAPTURE_TIME)
         );
+    }
+
+    #[test]
+    fn the_software_is_this_crate_by_default_and_no_operator_is_named() {
+        let config = Config::default();
+
+        assert_eq!(config.software.name, "archivindex-archiver");
+        assert_eq!(config.software.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(config.operator, None);
     }
 
     #[test]
@@ -370,6 +415,8 @@ mod tests {
             "timeout": "1m 30s",
             "max_capture_time": "unbounded",
             "max_response_length": 1024,
+            "software": {"name": "example-crawler", "version": "2.0"},
+            "operator": {"name": "Example Operator", "email": "operator@example.com"},
             "digest": {"algorithm": "SHA-1", "payload": {"encoding": "base16"}},
             "session": {"retry": {"attempts": 1}, "request_delay": "250ms", "limit": 5}
         }"#;
@@ -380,6 +427,20 @@ mod tests {
         assert_eq!(config.timeout, Duration::from_secs(90));
         assert_eq!(config.max_capture_time, None);
         assert_eq!(config.max_response_length, Some(1024));
+        assert_eq!(
+            config.software,
+            Software {
+                name: "example-crawler".to_owned(),
+                version: "2.0".to_owned(),
+            }
+        );
+        assert_eq!(
+            config.operator,
+            Some(Operator {
+                name: "Example Operator".to_owned(),
+                email: Some("operator@example.com".to_owned()),
+            })
+        );
         assert_eq!(
             config.digest.formats(),
             DigestFormats {
@@ -399,9 +460,33 @@ mod tests {
     }
 
     #[test]
+    fn an_operator_may_be_named_without_an_email() {
+        let config = serde_json::from_str::<Config>(r#"{"operator": {"name": "Solo"}}"#)
+            .expect("a configuration");
+
+        assert_eq!(
+            config.operator,
+            Some(Operator {
+                name: "Solo".to_owned(),
+                email: None,
+            })
+        );
+    }
+
+    #[test]
     fn a_document_cannot_hold_an_unknown_field_or_a_negative_limit() {
         assert!(serde_json::from_str::<Config>(r#"{"timeout_seconds": 30}"#).is_err());
         assert!(serde_json::from_str::<Config>(r#"{"max_response_length": -1}"#).is_err());
         assert!(serde_json::from_str::<Config>(r#"{"max_capture_time": "forever"}"#).is_err());
+    }
+
+    #[test]
+    fn software_needs_both_its_parts_and_an_operator_needs_a_name() {
+        assert!(serde_json::from_str::<Config>(r#"{"software": {"name": "example"}}"#).is_err());
+        assert!(serde_json::from_str::<Config>(r#"{"software": {"version": "1.0"}}"#).is_err());
+        assert!(
+            serde_json::from_str::<Config>(r#"{"operator": {"email": "operator@example.com"}}"#)
+                .is_err()
+        );
     }
 }

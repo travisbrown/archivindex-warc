@@ -3,6 +3,8 @@
 use std::time::Duration;
 
 use archivindex_warc::record::Record;
+use archivindex_warc::record::extension::NoExtension;
+use archivindex_warc::record::fields::Error as FieldsError;
 use archivindex_warc::record::fields::dcmi::DcmiTerm;
 use archivindex_warc::record::fields::metadata::MetadataField;
 use archivindex_warc::record::fields::warcinfo::WarcinfoField;
@@ -11,29 +13,40 @@ use chrono::Utc;
 use fluent_uri::Uri;
 
 use super::outcome::DATE_PRECISION;
-use crate::Error;
-use crate::session::{Operator, Software};
+use crate::config::{Operator, Software};
+use crate::{Config, Error};
 
 /// Information recorded in the WARC file's initial `warcinfo` record.
 pub struct WarcinfoOptions<'a> {
     pub user_agent: &'a str,
-    pub software: Option<&'a Software>,
+    pub software: &'a Software,
     pub operator: Option<&'a Operator>,
     pub session_id: Option<&'a str>,
     pub title: Option<&'a str>,
 }
 
 impl<'a> WarcinfoOptions<'a> {
-    /// Options for a one-shot run: this crate as software, with no operator or session.
-    pub const fn archiver(user_agent: &'a str) -> Self {
+    /// Options for a one-shot run: the configured software and operator, with no session.
+    pub fn archiver(config: &'a Config) -> Self {
         Self {
-            user_agent,
-            software: None,
-            operator: None,
+            user_agent: &config.user_agent,
+            software: &config.software,
+            operator: config.operator.as_ref(),
             session_id: None,
             title: None,
         }
     }
+}
+
+/// Check that the configured software and operator can be written as `warc-fields` values.
+pub fn check_warcinfo_fields(config: &Config) -> Result<(), FieldsError> {
+    let builder = Record::<NoExtension>::warcinfo(WarcDate::new(Utc::now(), DATE_PRECISION))
+        .software(&config.software.name, &config.software.version)?;
+    if let Some(operator) = &config.operator {
+        builder.operator(&operator.name, operator.email.as_deref())?;
+    }
+
+    Ok(())
 }
 
 /// Values recorded in the `warc-fields` metadata accompanying one capture.
@@ -48,10 +61,9 @@ pub struct MetadataValues<'a> {
 ///
 /// `software` and `http-header-user-agent` are always included.
 pub fn warcinfo_record(warc_name: &str, options: &WarcinfoOptions<'_>) -> Result<Record, Error> {
-    let software = options.software.cloned().unwrap_or_default();
     let mut builder = Record::warcinfo(WarcDate::new(Utc::now(), DATE_PRECISION))
         .filename(warc_name)?
-        .software(&software.name, &software.version)?;
+        .software(&options.software.name, &options.software.version)?;
     if let Some(operator) = options.operator {
         builder = builder.operator(&operator.name, operator.email.as_deref())?;
     }

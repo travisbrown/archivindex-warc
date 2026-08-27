@@ -295,6 +295,22 @@ mod tests {
     }
 
     #[test]
+    fn a_configuration_file_names_the_software_and_operator() {
+        let config = ConfigFormat::Toml
+            .parse(
+                "[software]\nname = \"example-crawler\"\nversion = \"2.0\"\n\n\
+                 [operator]\nname = \"Example Operator\"\nemail = \"operator@example.com\"\n",
+            )
+            .expect("a configuration");
+
+        assert_eq!(config.software.name, "example-crawler");
+        assert_eq!(config.software.version, "2.0");
+        let operator = config.operator.expect("a configured operator");
+        assert_eq!(operator.name, "Example Operator");
+        assert_eq!(operator.email.as_deref(), Some("operator@example.com"));
+    }
+
+    #[test]
     fn a_configuration_file_cannot_hold_an_unknown_key() {
         assert!(ConfigFormat::Toml.parse("gzip = true\n").is_err());
     }

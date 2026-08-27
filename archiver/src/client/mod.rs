@@ -20,7 +20,7 @@ mod warc_mapping;
 
 use collection::{Collection, CollectionOptions};
 use outcome::CaptureOutcome;
-use warc_fields::WarcinfoOptions;
+use warc_fields::{WarcinfoOptions, check_warcinfo_fields};
 
 const WARC_NAME: &str = "data.warc";
 const GZIP_WARC_NAME: &str = "data.warc.gz";
@@ -39,11 +39,13 @@ impl Archiver {
     /// # Errors
     ///
     /// Returns [`ConfigError::InvalidUserAgent`] if the configured `User-Agent` cannot be sent as
-    /// a field value, or [`ConfigError::UnsupportedDigestAlgorithm`] if a configured digest
-    /// algorithm is not enabled in this build.
+    /// a field value, [`ConfigError::UnsupportedDigestAlgorithm`] if a configured digest
+    /// algorithm is not enabled in this build, or [`ConfigError::UnwritableWarcinfoField`] if the
+    /// configured software or operator cannot be written to the `warcinfo` record.
     pub fn new(config: Config) -> Result<Self, ConfigError> {
         let user_agent = HeaderValue::from_str(&config.user_agent)
             .map_err(|_| UserAgentError(config.user_agent.clone()))?;
+        check_warcinfo_fields(&config)?;
         let digests = config.digest.formats();
         if let Some(unsupported) = [digests.block, digests.payload]
             .into_iter()
@@ -182,8 +184,8 @@ impl Archiver {
     pub(crate) fn session_collection(
         &self,
         id: &str,
-        software: &crate::session::Software,
-        operator: &crate::session::Operator,
+        software: &crate::config::Software,
+        operator: Option<&crate::config::Operator>,
         title: Option<&str>,
         output: &Path,
         persistent_index: Option<RevisitIndex>,
@@ -198,8 +200,8 @@ impl Archiver {
                 gzip,
                 warcinfo: WarcinfoOptions {
                     user_agent: &self.config.user_agent,
-                    software: Some(software),
-                    operator: Some(operator),
+                    software,
+                    operator,
                     session_id: Some(id),
                     title,
                 },
@@ -221,7 +223,7 @@ impl Archiver {
         let options = || CollectionOptions {
             warc_name,
             gzip,
-            warcinfo: WarcinfoOptions::archiver(&self.config.user_agent),
+            warcinfo: WarcinfoOptions::archiver(&self.config),
             request_headers: self.headers.clone(),
             persistent_index: None,
             digests: self.digests,

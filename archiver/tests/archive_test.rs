@@ -9,7 +9,7 @@ use std::time::Duration;
 mod support;
 
 use archivindex_archiver::capture::{CaptureControl, CaptureEvent};
-use archivindex_archiver::config::{DigestConfig, DigestOverride};
+use archivindex_archiver::config::{DigestConfig, DigestOverride, Operator, Software};
 use archivindex_archiver::{Archiver, Config, ConfigError, CookieError, Error};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::header::truncated_type::TruncatedType;
@@ -222,6 +222,8 @@ fn archive_and_read_back() -> Result<(), Box<dyn std::error::Error>> {
             .software()
             .is_some_and(|software| software.starts_with("archivindex-archiver/"))
     );
+    // No operator is configured, so none is named.
+    assert_eq!(warcinfo_body.operator(), None);
     assert!(
         warcinfo
             .core
@@ -1349,6 +1351,73 @@ fn archive_writes_digests_in_the_configured_formats() -> Result<(), Box<dyn std:
     }));
 
     Ok(())
+}
+
+#[test]
+fn archive_names_the_configured_software_and_operator() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, server) = serve(1)?;
+    let urls = [format!("http://127.0.0.1:{port}/")];
+
+    let archiver = Archiver::new(Config {
+        software: Software {
+            name: "example-crawler".to_owned(),
+            version: "2.0".to_owned(),
+        },
+        operator: Some(Operator {
+            name: "Example Operator".to_owned(),
+            email: Some("operator@example.com".to_owned()),
+        }),
+        ..gzip_config()
+    })?;
+    let mut bytes = Vec::new();
+    let summary = archiver.archive(&urls, Cursor::new(&mut bytes))?;
+    server.join().expect("server thread should not panic");
+
+    assert!(summary.is_complete());
+
+    let records = records(&bytes)?;
+    let Record::Warcinfo {
+        body: FieldsBlock::Fields(fields),
+        ..
+    } = &records[0]
+    else {
+        panic!("the first record should be a warcinfo record with warc-fields");
+    };
+
+    assert_eq!(fields.software(), Some("example-crawler/2.0"));
+    assert_eq!(
+        fields.operator(),
+        Some("Example Operator <operator@example.com>")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn new_rejects_a_software_or_operator_that_cannot_be_recorded() {
+    let software = Archiver::new(Config {
+        software: Software {
+            name: "example-crawler".to_owned(),
+            version: "2.0\r\n".to_owned(),
+        },
+        ..gzip_config()
+    });
+    let operator = Archiver::new(Config {
+        operator: Some(Operator {
+            name: "Line\r\nBreak".to_owned(),
+            email: None,
+        }),
+        ..gzip_config()
+    });
+
+    assert!(matches!(
+        software,
+        Err(ConfigError::UnwritableWarcinfoField(_))
+    ));
+    assert!(matches!(
+        operator,
+        Err(ConfigError::UnwritableWarcinfoField(_))
+    ));
 }
 
 /// A build enabling every algorithm leaves nothing to check.

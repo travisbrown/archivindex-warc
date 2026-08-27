@@ -82,7 +82,7 @@ impl Session<'_> {
         let mut collection = self.archiver.session_collection(
             &self.id,
             &self.software,
-            &self.operator,
+            self.operator.as_ref(),
             self.titles.then_some(self.id.as_str()),
             &self.output,
             persistent_index,
