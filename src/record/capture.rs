@@ -179,7 +179,7 @@ impl<E: Extension> CaptureEvent<E> {
     ///
     /// The event's payload digest describes the revisited payload. The `identical-payload-digest`
     /// profile requires it. Payload identification is skipped because a revisit has no payload of
-    /// its own.
+    /// its own; the original's identified payload type is repeated instead.
     ///
     /// # Errors
     ///
@@ -217,6 +217,9 @@ impl<E: Extension> CaptureEvent<E> {
         }
         if let Some(digest) = self.payload_digest.take() {
             revisit_builder = revisit_builder.payload_digest(digest);
+        }
+        if let Some(media_type) = original.identified_payload_type {
+            revisit_builder = revisit_builder.identified_payload_type(media_type);
         }
         if let Some(warcinfo_id) = &self.warcinfo_id {
             revisit_builder = revisit_builder.warcinfo_id(warcinfo_id.clone());
@@ -300,6 +303,10 @@ impl<E: Extension> CaptureRecords<E> {
                 .expect("invariant violation: a capture's response record names its target URI")
                 .clone(),
             date: self.response.core().date,
+            identified_payload_type: self
+                .response
+                .payload()
+                .and_then(|headers| headers.identified_payload_type.clone()),
         }
     }
 }
@@ -313,6 +320,9 @@ pub struct RevisitOriginal {
     pub target_uri: Uri<String>,
     /// The original record's `WARC-Date`, named by `WARC-Refers-To-Date`.
     pub date: WarcDate,
+    /// The original record's `WARC-Identified-Payload-Type`, which the revisit repeats since it
+    /// stands for the same payload.
+    pub identified_payload_type: Option<MediaType>,
 }
 
 #[cfg(test)]
@@ -435,6 +445,10 @@ mod tests {
 
         assert_eq!(identified_type(&records.response), Some(MediaType::JSON));
         assert_eq!(identified_type(&records.request), None);
+        assert_eq!(
+            records.revisit_original().identified_payload_type,
+            Some(MediaType::JSON)
+        );
         records.response.into_raw().expect("a renderable response");
 
         let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
@@ -521,8 +535,30 @@ mod tests {
                 record_id: records.response.core().record_id.clone(),
                 target_uri: target_uri(),
                 date: records.response.core().date,
+                identified_payload_type: None,
             }
         );
+    }
+
+    #[test]
+    fn a_revisit_repeats_the_identified_payload_type_of_its_original() {
+        let mut original = original().revisit_original();
+        original.identified_payload_type = Some(MediaType::TEXT_PLAIN);
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+            .payload_digest(entity_body_digest(b"hello"))
+            .revisit_exchange(
+                REQUEST_BLOCK,
+                Vec::new(),
+                RevisitProfile::IDENTICAL_PAYLOAD_DIGEST,
+                original,
+            )
+            .expect("a revisit capture");
+
+        assert_eq!(
+            revisit_header(&records).payload.identified_payload_type,
+            Some(MediaType::TEXT_PLAIN)
+        );
+        records.response.into_raw().expect("a renderable revisit");
     }
 
     #[test]

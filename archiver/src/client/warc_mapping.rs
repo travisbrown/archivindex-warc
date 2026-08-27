@@ -109,6 +109,10 @@ pub fn write_exchange<W: Write>(
         .flatten()
         .map(|payload_digest| RevisitTarget {
             record_id: records.response.core().record_id.clone(),
+            identified_payload_type: records
+                .response
+                .payload()
+                .and_then(|headers| headers.identified_payload_type.clone()),
             target_uri: target_uri.clone(),
             warc_date: date,
             payload_digest,
@@ -183,6 +187,7 @@ fn capture_records(
                     record_id: original.record_id.clone(),
                     target_uri: original.target_uri.clone(),
                     date: original.warc_date,
+                    identified_payload_type: original.identified_payload_type.clone(),
                 },
             )?
         }

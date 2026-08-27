@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use archivindex_warc::value::{Algorithm, LabelledDigest, WarcDate};
+use archivindex_warc::value::{Algorithm, LabelledDigest, MediaType, WarcDate};
 use fluent_uri::Uri;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -40,13 +40,14 @@ impl Handle for rusqlite::Transaction<'_> {
 /// writer clears quickly and waiting is almost always better than failing.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 
 const SCHEMA: &str = include_str!("schema.sql");
 
 const INSERT_PAYLOAD: &str = "INSERT INTO payloads (
-     digest_algorithm, digest, digest_text, payload_length, record_id, target_uri, warc_date
- ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+     digest_algorithm, digest, digest_text, payload_length, identified_payload_type, record_id,
+     target_uri, warc_date
+ ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
  ON CONFLICT (digest_algorithm, digest) DO NOTHING";
 
 const UPSERT_RESOURCE: &str = "INSERT INTO resource_state (
@@ -220,8 +221,8 @@ impl Transaction<'_> {
     pub fn merge_from(&self, source: &Index) -> Result<(), DatabaseError> {
         copy_rows(
             source.connection(),
-            "SELECT digest_algorithm, digest, digest_text, payload_length, record_id, target_uri,
-                    warc_date
+            "SELECT digest_algorithm, digest, digest_text, payload_length, identified_payload_type,
+                    record_id, target_uri, warc_date
              FROM payloads",
             self.connection(),
             INSERT_PAYLOAD,
@@ -257,34 +258,41 @@ pub fn lookup_payload(
     let (algorithm, bytes) = digest_parts(digest)?;
     let stored = cached(
         connection,
-        "SELECT payload_length, record_id, target_uri, warc_date, digest_text
+        "SELECT payload_length, identified_payload_type, record_id, target_uri, warc_date,
+                digest_text
          FROM payloads WHERE digest_algorithm = ?1 AND digest = ?2",
         "look up payload",
     )?
     .query_row(params![algorithm.label(), bytes.as_slice()], |row| {
         Ok((
             row.get::<_, Option<i64>>(0)?,
-            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
             row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
         ))
     })
     .optional()
     .map_err(DatabaseError::during("look up payload"))?;
 
     stored
-        .map(|(length, record_id, target_uri, warc_date, digest_text)| {
-            Ok(RevisitTarget {
-                payload_digest: parse_digest("digest_text", digest_text)?,
-                payload_length: length
-                    .map(|value| unsigned("payload_length", value))
-                    .transpose()?,
-                record_id: parse_uri("record_id", record_id)?,
-                target_uri: parse_uri("target_uri", target_uri)?,
-                warc_date: parse_date("warc_date", warc_date)?,
-            })
-        })
+        .map(
+            |(length, media_type, record_id, target_uri, warc_date, digest_text)| {
+                Ok(RevisitTarget {
+                    payload_digest: parse_digest("digest_text", digest_text)?,
+                    payload_length: length
+                        .map(|value| unsigned("payload_length", value))
+                        .transpose()?,
+                    identified_payload_type: media_type
+                        .map(|value| parse_media_type("identified_payload_type", value))
+                        .transpose()?,
+                    record_id: parse_uri("record_id", record_id)?,
+                    target_uri: parse_uri("target_uri", target_uri)?,
+                    warc_date: parse_date("warc_date", warc_date)?,
+                })
+            },
+        )
         .transpose()
 }
 
@@ -300,6 +308,10 @@ pub fn insert_payload(connection: &Connection, target: &RevisitTarget) -> Result
             digest.as_slice(),
             target.payload_digest.to_string(),
             payload_length,
+            target
+                .identified_payload_type
+                .as_ref()
+                .map(ToString::to_string),
             target.record_id.as_str(),
             target.target_uri.as_str(),
             target.warc_date.to_string(),
@@ -550,6 +562,10 @@ fn parse_digest(field: &'static str, value: String) -> Result<LabelledDigest, Er
 fn parse_date(field: &'static str, value: String) -> Result<WarcDate, Error> {
     WarcDate::parse(&value, archivindex_warc::version::WarcVersion::V1_1)
         .ok_or(Error::MalformedDate { field, value })
+}
+
+fn parse_media_type(field: &'static str, value: String) -> Result<MediaType, Error> {
+    MediaType::parse(value.as_bytes()).map_err(|_| Error::MalformedMediaType { field, value })
 }
 
 #[cfg(test)]

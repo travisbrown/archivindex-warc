@@ -1,6 +1,6 @@
 //! Payload-digest index types.
 
-use archivindex_warc::value::{LabelledDigest, WarcDate};
+use archivindex_warc::value::{LabelledDigest, MediaType, WarcDate};
 use fluent_uri::Uri;
 
 /// A canonical payload-bearing WARC record suitable as an identical-payload revisit target.
@@ -10,6 +10,8 @@ pub struct RevisitTarget {
     pub payload_digest: LabelledDigest,
     /// The payload byte length, when known.
     pub payload_length: Option<u64>,
+    /// The canonical record's `WARC-Identified-Payload-Type`, when it has one.
+    pub identified_payload_type: Option<MediaType>,
     /// The canonical record's `WARC-Record-ID`.
     pub record_id: Uri<String>,
     /// The canonical record's `WARC-Target-URI`.

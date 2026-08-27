@@ -163,6 +163,14 @@ pub enum Error {
         /// The malformed value.
         value: String,
     },
+    /// A persisted media type is malformed.
+    #[error("malformed persisted {field} media type `{value}`")]
+    MalformedMediaType {
+        /// The database field containing the media type.
+        field: &'static str,
+        /// The malformed value.
+        value: String,
+    },
     /// An unsigned Rust value cannot be represented by SQLite's signed integer type.
     #[error("{field} value {value} is outside SQLite's integer range")]
     IntegerOutOfRange {

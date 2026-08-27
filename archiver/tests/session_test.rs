@@ -247,6 +247,7 @@ impl CaptureProcessor for RecaptureProcessor<'_> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn persistent_index_supplies_historical_and_same_session_revisit_targets()
 -> Result<(), Box<dyn std::error::Error>> {
     const HISTORICAL: &str = "historical payload";
@@ -258,6 +259,7 @@ fn persistent_index_supplies_historical_and_same_session_revisit_targets()
     let historical_target = RevisitTarget {
         payload_digest: sha256(HISTORICAL.as_bytes()),
         payload_length: Some(HISTORICAL.len() as u64),
+        identified_payload_type: Some(MediaType::TEXT_PLAIN),
         record_id: uri(EXTERNAL_RECORD_ID),
         target_uri: uri("https://archive.example/historical"),
         warc_date: warc_date("2025-01-01T00:00:00Z"),
@@ -324,6 +326,10 @@ fn persistent_index_supplies_historical_and_same_session_revisit_targets()
         historical.refers_to_target_uri.as_ref().map(Uri::as_str),
         Some("https://archive.example/historical")
     );
+    assert_eq!(
+        historical.payload.identified_payload_type,
+        Some(MediaType::TEXT_PLAIN)
+    );
 
     let Record::Response {
         header: new_original,
@@ -347,12 +353,20 @@ fn persistent_index_supplies_historical_and_same_session_revisit_targets()
         new_revisit.refers_to_target_uri.as_ref().map(Uri::as_str),
         Some(first_new_url.as_str())
     );
+    assert_eq!(
+        new_revisit.payload.identified_payload_type,
+        new_original.payload.identified_payload_type
+    );
 
     let persisted = Index::open(&database)?
         .lookup_payload(&sha256(NEW.as_bytes()))?
         .expect("new payload should be persisted");
     assert_eq!(persisted.record_id, new_original.core.record_id);
     assert_eq!(persisted.target_uri.as_str(), first_new_url);
+    assert_eq!(
+        persisted.identified_payload_type,
+        Some(MediaType::TEXT_PLAIN)
+    );
 
     Ok(())
 }
@@ -371,6 +385,7 @@ fn persistent_resource_state_drives_conditional_requests_and_not_modified_revisi
     index.insert_payload(&RevisitTarget {
         payload_digest: digest.clone(),
         payload_length: Some(22),
+        identified_payload_type: Some(MediaType::TEXT_PLAIN),
         record_id: uri(EXTERNAL_RECORD_ID),
         target_uri: uri(&url),
         warc_date: original_date,
@@ -417,6 +432,10 @@ fn persistent_resource_state_drives_conditional_requests_and_not_modified_revisi
     assert_eq!(header.refers_to.as_ref(), Some(&uri(EXTERNAL_RECORD_ID)));
     assert_eq!(header.refers_to_date, Some(original_date));
     assert_eq!(header.payload.payload_digest.as_ref(), Some(&digest));
+    assert_eq!(
+        header.payload.identified_payload_type,
+        Some(MediaType::TEXT_PLAIN)
+    );
 
     let state = Index::open(&database)?
         .lookup_resource(&ResourceKey::new(uri(&url)))?
@@ -459,6 +478,7 @@ fn resource_state_for_another_variant_does_not_drive_revalidation()
     index.insert_payload(&RevisitTarget {
         payload_digest: desktop_digest.clone(),
         payload_length: Some(20),
+        identified_payload_type: None,
         record_id: uri(EXTERNAL_RECORD_ID),
         target_uri: uri(&url),
         warc_date: original_date,

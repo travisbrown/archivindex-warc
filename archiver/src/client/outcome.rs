@@ -248,6 +248,7 @@ impl Original {
             None => RevisitTarget {
                 payload_digest,
                 payload_length: None,
+                identified_payload_type: None,
                 record_id: state.record_id?,
                 target_uri: state.key.target_uri().clone(),
                 warc_date: state.warc_date?,

@@ -4,6 +4,8 @@ CREATE TABLE IF NOT EXISTS payloads (
     -- The digest as the record wrote it, kept so a revisit can repeat that spelling.
     digest_text      TEXT NOT NULL,
     payload_length   INTEGER CHECK (payload_length IS NULL OR payload_length >= 0),
+    -- The record's `WARC-Identified-Payload-Type`, kept so a revisit can repeat it.
+    identified_payload_type TEXT,
     record_id        TEXT NOT NULL,
     target_uri       TEXT NOT NULL,
     warc_date        TEXT NOT NULL,

@@ -6,7 +6,7 @@ use archivindex_warc::record::Record;
 use archivindex_warc::record::extension::NoExtension;
 use archivindex_warc::record::header::RevisitProfile;
 use archivindex_warc::record::header::truncated_type::TruncatedType;
-use archivindex_warc::value::{Algorithm, Encoding, LabelledDigest, WarcDate};
+use archivindex_warc::value::{Algorithm, Encoding, LabelledDigest, MediaType, WarcDate};
 use archivindex_warc_revisit_index::payload::RevisitTarget;
 use archivindex_warc_revisit_index::resource::{ResourceKey, ResourceStateUpdate, Variance};
 use archivindex_warc_revisit_index::{Error, Index, IngestError, OpenError};
@@ -40,6 +40,7 @@ fn target(
     RevisitTarget {
         payload_digest: digest,
         payload_length,
+        identified_payload_type: None,
         record_id: uri(record_id),
         target_uri: uri(target_uri),
         warc_date: date(warc_date),
@@ -76,13 +77,16 @@ fn response(
 fn payload_round_trips_every_field_and_missing_is_none() -> Result<(), Box<dyn StdError>> {
     let index = Index::open_in_memory()?;
     let digest = LabelledDigest::from_digest(Algorithm::Sha256, &[0xa5; 32]);
-    let expected = target(
-        digest.clone(),
-        RECORD_A,
-        URI_A,
-        "2025-02-03T04:05:06.123Z",
-        Some(4_294_967_300),
-    );
+    let expected = RevisitTarget {
+        identified_payload_type: Some(MediaType::TEXT_PLAIN),
+        ..target(
+            digest.clone(),
+            RECORD_A,
+            URI_A,
+            "2025-02-03T04:05:06.123Z",
+            Some(4_294_967_300),
+        )
+    };
 
     assert!(index.lookup_payload(&sha256(b"missing"))?.is_none());
     assert!(index.insert_payload(&expected)?);
@@ -405,6 +409,10 @@ fn malformed_persisted_state_returns_an_error() -> Result<(), Box<dyn StdError>>
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("corrupt.sqlite3");
     let index = Index::open(&path)?;
+    index.insert_payload(&RevisitTarget {
+        identified_payload_type: Some(MediaType::TEXT_PLAIN),
+        ..target(sha256(b"body"), RECORD_A, URI_A, "2025-01-01", Some(4))
+    })?;
     index.update_resource(
         &key(URI_A),
         ResourceStateUpdate::Representation {
@@ -420,11 +428,19 @@ fn malformed_persisted_state_returns_an_error() -> Result<(), Box<dyn StdError>>
     drop(index);
     let connection = rusqlite::Connection::open(&path)?;
     connection.execute(
+        "UPDATE payloads SET identified_payload_type = 'bogus' WHERE target_uri = ?1",
+        [URI_A],
+    )?;
+    connection.execute(
         "UPDATE resource_state SET digest_text = 'bogus' WHERE target_uri = ?1",
         [URI_A],
     )?;
     drop(connection);
 
+    assert!(matches!(
+        Index::open(&path)?.lookup_payload(&sha256(b"body")),
+        Err(Error::MalformedMediaType { .. })
+    ));
     assert!(matches!(
         Index::open(&path)?.lookup_resource(&key(URI_A)),
         Err(Error::MalformedDigest { .. })
@@ -443,7 +459,7 @@ fn incompatible_schema_version_is_rejected_clearly() -> Result<(), Box<dyn StdEr
     assert!(matches!(
         Index::open(path),
         Err(OpenError::SchemaVersion {
-            expected: 5,
+            expected: 6,
             found: 99
         })
     ));
@@ -486,6 +502,21 @@ fn response_ingestion_creates_payload_and_resource_state_but_ignores_http_date()
     let state = index.lookup_resource(&key(URI_A))?.unwrap();
     assert_eq!(state.etag.as_deref(), Some("\"v1\""));
     assert_eq!(state.last_modified, None);
+    Ok(())
+}
+
+#[test]
+fn response_ingestion_keeps_the_identified_payload_type() -> Result<(), Box<dyn StdError>> {
+    let index = Index::open_in_memory()?;
+    let record = Record::<NoExtension>::response(URI_A, date("2025-01-01T00:00:00Z"))?
+        .record_id(uri(RECORD_A))
+        .payload_digest(sha256(b"hello"))
+        .identified_payload_type(MediaType::TEXT_PLAIN)
+        .body(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello".to_vec())?;
+
+    assert!(index.index_record(&record)?.payload_inserted);
+    let payload = index.lookup_payload(&sha256(b"hello"))?.unwrap();
+    assert_eq!(payload.identified_payload_type, Some(MediaType::TEXT_PLAIN));
     Ok(())
 }
 
