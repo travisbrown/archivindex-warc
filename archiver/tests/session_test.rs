@@ -1116,6 +1116,7 @@ fn session_starts_from_the_configured_settings() -> Result<(), Box<dyn std::erro
 
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("configured.warc.gz");
+    let database = directory.path().join("configured-revisits.sqlite3");
 
     let config = Config {
         software: Software {
@@ -1123,20 +1124,23 @@ fn session_starts_from_the_configured_settings() -> Result<(), Box<dyn std::erro
             version: "3.1".to_owned(),
         },
         session: SessionConfig {
-            limit: Some(1),
+            revisit_index: Some(database.clone()),
             ..SessionConfig::default()
         },
         ..gzip_config()
     };
-    let summary = Session::new(archiver(config), "configured", [&url], &path)?
-        .processor(SiteProcessor { port })
-        .run()?;
+    let summary = Session::new(archiver(config), "configured", [&url], &path)?.run()?;
     let request_paths = server.join().expect("server thread should not panic");
 
     assert_eq!(request_paths, ["/"]);
     assert!(summary.is_complete());
     assert_eq!(summary.seed_captures.len(), 1);
     assert_eq!(summary.extra_captures.len(), 0);
+    assert!(
+        Index::open(&database)?
+            .lookup_payload(&sha256(b"<html>home links: /about /missing</html>"))?
+            .is_some()
+    );
 
     // The configured software and operator are recorded without any builder override.
     let records = records(&std::fs::read(&path)?)?;

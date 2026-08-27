@@ -132,7 +132,7 @@ pub trait CaptureProcessor {
 /// the capture's summary and what the processor sees. Each earlier attempt's response stays in
 /// memory until the URL's capture is written.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct RetryConfig {
     /// Total attempts, including the first. Zero is treated as one.
     pub attempts: usize,
@@ -208,8 +208,8 @@ impl<'a> Session<'a> {
     /// Create a session, validating its URI-unreserved identifier.
     ///
     /// The software and operator recorded in `warcinfo` start as the archiver's
-    /// [`Config`](crate::Config), and the retry policy, request delay, capture limit, and titles
-    /// as its [`SessionConfig`]; the builder methods override them.
+    /// [`Config`](crate::Config), and the retry policy, request delay, revisit index, and titles as
+    /// its [`SessionConfig`]; the builder methods override them.
     ///
     /// # Errors
     ///
@@ -232,7 +232,7 @@ impl<'a> Session<'a> {
         let SessionConfig {
             retry,
             request_delay,
-            limit,
+            revisit_index,
             titles,
         } = archiver.config.session.clone();
         let software = archiver.config.software.clone();
@@ -251,8 +251,8 @@ impl<'a> Session<'a> {
             processor: None,
             retry,
             request_delay,
-            limit,
-            revisit_index: None,
+            limit: None,
+            revisit_index,
             events: None,
             titles,
         })

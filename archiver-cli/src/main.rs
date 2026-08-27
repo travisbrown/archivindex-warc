@@ -280,16 +280,23 @@ mod tests {
     }
 
     #[test]
-    fn a_configuration_file_lifts_a_bound_and_sets_a_flag() {
+    fn a_configuration_file_sets_paths_bounds_and_flags() {
         let toml = ConfigFormat::Toml
-            .parse("max_capture_time = \"unbounded\"\ngzip_warc = true\n")
+            .parse(
+                "max-capture-time = \"unbounded\"\ngzip-warc = true\n\
+                 [session]\nrevisit-index = \"revisits.sqlite3\"\n",
+            )
             .expect("a configuration");
         let json = ConfigFormat::Json
-            .parse(r#"{"max_response_length": "unbounded", "concurrency": 4}"#)
+            .parse(r#"{"max-response-length": "unbounded", "concurrency": 4}"#)
             .expect("a configuration");
 
         assert_eq!(toml.max_capture_time, None);
         assert!(toml.gzip_warc);
+        assert_eq!(
+            toml.session.revisit_index.as_deref(),
+            Some(Path::new("revisits.sqlite3"))
+        );
         assert_eq!(json.max_response_length, None);
         assert_eq!(json.concurrency, 4);
     }

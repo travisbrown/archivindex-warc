@@ -83,13 +83,13 @@ pub struct Archiver {
 /// as TOML, are:
 ///
 /// ```toml
-/// user_agent = "archivindex-archiver/0.1.0"  # this crate's name and version
+/// user-agent = "archivindex-archiver/0.1.0"  # this crate's name and version
 /// timeout = "30s"
-/// max_capture_time = "10m"
-/// max_redirects = 10
-/// gzip_warc = false
+/// max-capture-time = "10m"
+/// max-redirects = 10
+/// gzip-warc = false
 /// concurrency = 1
-/// max_response_length = 268435456
+/// max-response-length = 268435456
 ///
 /// [software]  # this crate's name and version
 /// name = "archivindex-archiver"
@@ -103,16 +103,17 @@ pub struct Archiver {
 /// algorithm = "sha256"
 ///
 /// [session]
-/// request_delay = "0s"
+/// request-delay = "0s"
+/// # revisit-index = "revisits.sqlite3"  # none by default
 /// titles = false
 ///
 /// [session.retry]
 /// attempts = 3
-/// initial_backoff = "1s"
-/// max_backoff = "30s"
+/// initial-backoff = "1s"
+/// max-backoff = "30s"
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
     /// The `User-Agent` header value sent with every request.
     ///
