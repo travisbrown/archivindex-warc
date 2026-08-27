@@ -116,6 +116,22 @@ enum Command {
         output: PathBuf,
     },
 
+    /// Give each revisit record the identified payload type of the response it refers to.
+    ///
+    /// A revisit record lacking WARC-Identified-Payload-Type receives the value of the response
+    /// record its WARC-Refers-To names, when that response is in the file and declares one. Every
+    /// other record is copied as read.
+    PropagateIdentifiedPayloadType {
+        /// The WARC file to read, which is read twice, so it cannot be standard input. A .gz
+        /// extension selects gzip decompression.
+        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        input: PathBuf,
+
+        /// The file to write; a .gz extension selects record-at-a-time gzip compression.
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+        output: PathBuf,
+    },
+
     /// Rewrite part of a WARC file, copying every other record as read.
     Rewrite {
         /// The WARC file to rewrite, or - for standard input; a .gz extension, or the gzip magic
@@ -274,6 +290,9 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
                 );
             }
         }
+        Command::PropagateIdentifiedPayloadType { input, output } => {
+            propagate_identified_payload_type(&input, &output, quiet)?;
+        }
         Command::Rewrite {
             input,
             output,
@@ -308,6 +327,23 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
     }
 
     Ok(CommandOutcome::Success)
+}
+
+/// Propagate identified payload types from the responses of `input` to its revisits, writing the
+/// records to `output`.
+fn propagate_identified_payload_type(input: &Path, output: &Path, quiet: bool) -> Result<()> {
+    let summary = archivindex_warc_ops::propagate::identified_payload_type(input, output)?;
+
+    if !quiet {
+        println!(
+            "Wrote {} to {}, giving {} an identified payload type.",
+            plural(summary.records, "record"),
+            output.display(),
+            plural(summary.propagated, "revisit record"),
+        );
+    }
+
+    Ok(())
 }
 
 /// Compress `input` record by record into the gzip WARC at `output`.
@@ -557,6 +593,25 @@ mod tests {
                 format: LintFormat::Json,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn propagate_identified_payload_type_takes_an_input_and_output() {
+        let cli = Cli::try_parse_from([
+            "archivindex-warc-cli",
+            "propagate-identified-payload-type",
+            "input.warc.gz",
+            "-o",
+            "output.warc",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::PropagateIdentifiedPayloadType { input, output }
+                if input.as_path() == Path::new("input.warc.gz")
+                    && output.as_path() == Path::new("output.warc")
         ));
     }
 
