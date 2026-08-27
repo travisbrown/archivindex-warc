@@ -69,6 +69,19 @@ Checks conventions stricter than the WARC standard, including header order, capt
 relationships, digests, and record-at-a-time gzip framing. Use `--format json` for JSON Lines
 output. The command exits with status 1 when it finds problems.
 
+## load-revisit-index
+
+```console
+cargo run --manifest-path cli/Cargo.toml -- load-revisit-index revisits.db archive.warc.gz
+cargo run --manifest-path cli/Cargo.toml -- load-revisit-index revisits.db captures/
+```
+
+Indexes every record of a WARC file into the SQLite revisit index at the given path, creating the
+index when it does not exist. A directory stands for the `.warc` and `.warc.gz` files directly in
+it, taken in file-name order. Each file is indexed in one transaction, so a file that cannot be
+read leaves the index as it was before that file. A record whose HTTP head or WARC payload is
+malformed is skipped with a warning.
+
 ## merge
 
 ```console
