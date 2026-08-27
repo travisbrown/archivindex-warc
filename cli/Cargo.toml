@@ -12,11 +12,16 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Passed through to the revisit index, which passes it through to rusqlite.
+bundled = ["archivindex-warc-revisit-index/bundled"]
+
 [dependencies]
 anyhow = "1"
 archivindex-cli-support.workspace = true
 archivindex-warc.workspace = true
 archivindex-warc-ops = { path = "../ops" }
+archivindex-warc-revisit-index = { version = "0.1.0", path = "../revisit-index/" }
 clap.workspace = true
 csv = "1"
 d2-little = "0.7.1-1"

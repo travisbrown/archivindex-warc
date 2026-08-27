@@ -2,6 +2,7 @@
 
 mod export;
 mod graph;
+mod index;
 
 use std::fmt::Display;
 use std::io::BufWriter;
@@ -14,6 +15,7 @@ use archivindex_warc::io::write::{DEFAULT_GZIP_COMPRESSION_LEVEL, MAX_GZIP_COMPR
 use archivindex_warc::value::{Text, TextError};
 use archivindex_warc_ops::lint::{Finding, Linter};
 use archivindex_warc_ops::rewrite::WarcinfoValues;
+use archivindex_warc_revisit_index::Index;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
@@ -98,6 +100,22 @@ enum Command {
         /// How to write the findings.
         #[arg(long, value_name = "FORMAT", default_value_t = LintFormat::Text)]
         format: LintFormat,
+    },
+
+    /// Load the records of WARC files into a revisit index.
+    ///
+    /// Each file is indexed in one transaction, so a file that cannot be read leaves the index as
+    /// it was before that file. A record whose HTTP head or WARC payload is malformed is skipped
+    /// with a warning.
+    LoadRevisitIndex {
+        /// The SQLite revisit index to load into, created when it does not exist.
+        #[arg(value_name = "DATABASE", value_hint = clap::ValueHint::FilePath)]
+        database: PathBuf,
+
+        /// The WARC file to index, or - for standard input, or a directory whose .warc and
+        /// .warc.gz files are indexed in file-name order.
+        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::AnyPath)]
+        input: PathBuf,
     },
 
     /// Merge the records of two WARC files, dropping duplicate warcinfo records.
@@ -292,6 +310,9 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
             }
         }
         Command::Lint { input, format } => return lint(&input, format, quiet),
+        Command::LoadRevisitIndex { database, input } => {
+            load_revisit_index(&database, &input, quiet)?;
+        }
         Command::Merge {
             first,
             second,
@@ -378,6 +399,36 @@ fn remove_same_target_revisits(input: &Path, output: &Path, quiet: bool) -> Resu
             output.display(),
             plural(summary.revisits, "revisit record"),
             plural(summary.captured, "record"),
+        );
+    }
+
+    Ok(())
+}
+
+/// Index the WARC file at `input`, or every WARC file in the directory there, into `database`.
+fn load_revisit_index(database: &Path, input: &Path, quiet: bool) -> Result<()> {
+    let files = index::warc_files(input)?;
+    let mut index = Index::open(database)
+        .with_context(|| format!("cannot open revisit index {}", database.display()))?;
+    let mut total = index::LoadSummary::default();
+
+    for file in &files {
+        let summary = index::load(&mut index, file)?;
+        if !quiet {
+            println!(
+                "Indexed {} of {}: {summary}.",
+                plural(summary.records, "record"),
+                file.display()
+            );
+        }
+        total += summary;
+    }
+    if !quiet && files.len() != 1 {
+        println!(
+            "Indexed {} of {} into {}: {total}.",
+            plural(total.records, "record"),
+            plural(files.len(), "WARC file"),
+            database.display()
         );
     }
 
@@ -650,6 +701,24 @@ mod tests {
             Command::PropagateIdentifiedPayloadType { input, output }
                 if input.as_path() == Path::new("input.warc.gz")
                     && output.as_path() == Path::new("output.warc")
+        ));
+    }
+
+    #[test]
+    fn load_revisit_index_takes_a_database_and_input() {
+        let cli = Cli::try_parse_from([
+            "archivindex-warc-cli",
+            "load-revisit-index",
+            "revisits.db",
+            "captures",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::LoadRevisitIndex { database, input }
+                if database.as_path() == Path::new("revisits.db")
+                    && input.as_path() == Path::new("captures")
         ));
     }
 

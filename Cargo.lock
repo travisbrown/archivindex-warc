@@ -173,6 +173,7 @@ dependencies = [
  "archivindex-test-support",
  "archivindex-warc",
  "archivindex-warc-ops",
+ "archivindex-warc-revisit-index",
  "clap",
  "csv",
  "d2-little",
