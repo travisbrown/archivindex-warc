@@ -32,6 +32,13 @@ concurrency = 1
 # failed. Write "unbounded" to store every response whole.
 max-response-length = 268435456
 
+# The payload length in bytes below which a response is stored in full although
+# its payload duplicates an earlier capture. A revisit record repeating a payload
+# this short costs about as much as the payload and is harder to read. A 304 Not
+# Modified is always stored as a revisit. Write 0 to store every duplicate as a
+# revisit.
+min-revisit-payload-length = 256
+
 # The software named in the warcinfo record of every WARC file, written as
 # "name/version". The default is this tool's name and version. When set, both
 # the name and the version are required.

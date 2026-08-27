@@ -19,13 +19,17 @@ impl Config {
 
     /// The default bound on the time spent capturing one URL.
     pub const DEFAULT_MAX_CAPTURE_TIME: Duration = Duration::from_secs(10 * 60);
+
+    /// The default length below which a repeated payload is stored again rather than as a revisit.
+    pub const DEFAULT_MIN_REVISIT_PAYLOAD_LENGTH: u64 = 256;
 }
 
 impl Default for Config {
     /// The default configuration: this crate's `User-Agent`, the recorder's timeout and response
     /// bound, [`Config::DEFAULT_MAX_CAPTURE_TIME`] per URL, at most ten redirects per URL, one
-    /// download at a time, an uncompressed WARC file, this crate as the `warcinfo` software with
-    /// no operator, and the default digest and session settings.
+    /// download at a time, an uncompressed WARC file, revisits of payloads of at least
+    /// [`Config::DEFAULT_MIN_REVISIT_PAYLOAD_LENGTH`] bytes, this crate as the `warcinfo`
+    /// software with no operator, and the default digest and session settings.
     fn default() -> Self {
         Self {
             user_agent: Self::DEFAULT_USER_AGENT.to_owned(),
@@ -35,6 +39,7 @@ impl Default for Config {
             gzip_warc: false,
             concurrency: 1,
             max_response_length: Some(DEFAULT_MAX_RESPONSE_LENGTH),
+            min_revisit_payload_length: Self::DEFAULT_MIN_REVISIT_PAYLOAD_LENGTH,
             software: Software::default(),
             operator: None,
             digest: DigestConfig::default(),
@@ -314,6 +319,14 @@ mod tests {
     }
 
     #[test]
+    fn short_payloads_are_not_revisited_by_default() {
+        assert_eq!(
+            Config::default().min_revisit_payload_length,
+            Config::DEFAULT_MIN_REVISIT_PAYLOAD_LENGTH
+        );
+    }
+
+    #[test]
     fn captures_are_bounded_in_time_by_default() {
         assert_eq!(
             Config::default().max_capture_time,
@@ -410,6 +423,7 @@ mod tests {
             "max-redirects",
             "gzip-warc",
             "max-response-length",
+            "min-revisit-payload-length",
             "request-delay",
             "revisit-index",
             "initial-backoff",
@@ -430,6 +444,7 @@ mod tests {
             "timeout": "1m 30s",
             "max-capture-time": "unbounded",
             "max-response-length": 1024,
+            "min-revisit-payload-length": 0,
             "software": {"name": "example-crawler", "version": "2.0"},
             "operator": {"name": "Example Operator", "email": "operator@example.com"},
             "digest": {"algorithm": "SHA-1", "payload": {"encoding": "base16"}},
@@ -446,6 +461,7 @@ mod tests {
         assert_eq!(config.timeout, Duration::from_secs(90));
         assert_eq!(config.max_capture_time, None);
         assert_eq!(config.max_response_length, Some(1024));
+        assert_eq!(config.min_revisit_payload_length, 0);
         assert_eq!(
             config.software,
             Software {
@@ -499,6 +515,7 @@ mod tests {
     fn a_document_cannot_hold_an_unknown_field_or_a_negative_limit() {
         assert!(serde_json::from_str::<Config>(r#"{"timeout-seconds": 30}"#).is_err());
         assert!(serde_json::from_str::<Config>(r#"{"max-response-length": -1}"#).is_err());
+        assert!(serde_json::from_str::<Config>(r#"{"min-revisit-payload-length": -1}"#).is_err());
         assert!(serde_json::from_str::<Config>(r#"{"max-capture-time": "forever"}"#).is_err());
         assert!(serde_json::from_str::<Config>(r#"{"session": {"limit": 5}}"#).is_err());
     }

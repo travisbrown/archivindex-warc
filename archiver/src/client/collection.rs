@@ -36,6 +36,8 @@ pub struct Collection {
     persistent_index: Option<Index>,
     /// The header fields every request carries, which decide which stored state applies to them.
     request_headers: HeaderMap,
+    /// The payload length below which a duplicate is written in full rather than as a revisit.
+    min_revisit_payload_length: u64,
 }
 
 /// What a collection writes, and the requests whose revisit state it records.
@@ -55,6 +57,8 @@ pub struct CollectionOptions<'a> {
     pub persistent_index: Option<Index>,
     /// The formats of the digests added to every record.
     pub digests: DigestFormats,
+    /// The payload length below which a duplicate is written in full rather than as a revisit.
+    pub min_revisit_payload_length: u64,
 }
 
 impl Collection {
@@ -102,6 +106,7 @@ impl Collection {
             request_headers,
             persistent_index,
             digests,
+            min_revisit_payload_length,
         } = options;
         let compression = if gzip {
             Compression::gzip()
@@ -126,6 +131,7 @@ impl Collection {
             session_index: Index::open_in_memory()?,
             persistent_index,
             request_headers,
+            min_revisit_payload_length,
         })
     }
 
@@ -208,9 +214,10 @@ impl Collection {
 
     /// Record every captured hop and add either a page summary or failure.
     ///
-    /// A hop whose payload digest matches an earlier capture in this collection, or whose `304 Not
-    /// Modified` confirms an earlier capture's payload unchanged, is stored as a `revisit` record
-    /// referencing the original, instead of repeating the payload.
+    /// A hop whose payload digest matches an earlier capture in this collection and whose payload
+    /// is at least the configured minimum length, or whose `304 Not Modified` confirms an earlier
+    /// capture's payload unchanged, is stored as a `revisit` record referencing the original,
+    /// instead of repeating the payload.
     pub fn record(
         &mut self,
         url: String,
@@ -279,10 +286,11 @@ impl Collection {
         let hops = exchanges.len();
 
         for (hop, exchange) in exchanges.into_iter().enumerate() {
+            let payload_length = exchange.payload_length();
             last = Some(FinalHop {
                 date: exchange.date.date_time(),
                 status: exchange.status,
-                size: exchange.payload_length(),
+                size: payload_length,
                 truncated: exchange.captured.truncated.clone(),
             });
             let key = exchange.revisit_key();
@@ -300,7 +308,9 @@ impl Collection {
                 });
             let status = exchange.status;
             let revalidated = exchange.revalidated.is_some();
-            let looked_up = if revalidated {
+            // A short payload is repeated rather than referred to, and is still indexed below so
+            // that the first record of it is the one later revisits name.
+            let looked_up = if revalidated || payload_length < self.min_revisit_payload_length {
                 None
             } else {
                 key.as_ref()
@@ -366,6 +376,7 @@ impl Collection {
             persistent_index: _,
             session_index: _,
             request_headers: _,
+            min_revisit_payload_length: _,
         } = self;
         let mut file = warc.finish().map_err(std::io::IntoInnerError::into_error)?;
         file.rewind()?;
@@ -388,6 +399,7 @@ impl Collection {
             mut persistent_index,
             session_index,
             request_headers: _,
+            min_revisit_payload_length: _,
         } = self;
         let mut source = warc.finish().map_err(std::io::IntoInnerError::into_error)?;
         source.rewind()?;

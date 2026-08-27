@@ -90,6 +90,7 @@ pub struct Archiver {
 /// gzip-warc = false
 /// concurrency = 1
 /// max-response-length = 268435456
+/// min-revisit-payload-length = 256
 ///
 /// [software]  # this crate's name and version
 /// name = "archivindex-archiver"
@@ -163,6 +164,15 @@ pub struct Config {
     /// unbounded when unset. The default is [`recorder::DEFAULT_MAX_RESPONSE_LENGTH`].
     #[serde(with = "config::bounded_length")]
     pub max_response_length: Option<u64>,
+    /// The payload length below which a response is stored in full although its payload
+    /// duplicates an earlier capture.
+    ///
+    /// A revisit record repeating a payload this short costs about as much as the payload and is
+    /// harder to read, so the response is written as an ordinary `response` record, which later
+    /// captures of the same payload then refer to. A `304 Not Modified` is always stored as a
+    /// revisit. Zero stores every duplicate as a revisit. The default is
+    /// [`Config::DEFAULT_MIN_REVISIT_PAYLOAD_LENGTH`].
+    pub min_revisit_payload_length: u64,
     /// The software named in the `warcinfo` record of every WARC file, as `name/version`.
     ///
     /// The default is this crate's own name and version. [`Archiver::new`] rejects names and

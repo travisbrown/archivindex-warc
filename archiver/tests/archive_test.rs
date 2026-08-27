@@ -12,6 +12,7 @@ use archivindex_archiver::capture::{CaptureControl, CaptureEvent};
 use archivindex_archiver::config::{DigestConfig, DigestOverride, Operator, Software};
 use archivindex_archiver::{Archiver, Config, ConfigError, CookieError, Error};
 use archivindex_warc::io::read::WarcReader;
+use archivindex_warc::record::header::RevisitProfile;
 use archivindex_warc::record::header::truncated_type::TruncatedType;
 use archivindex_warc::record::{FieldsBlock, Record};
 use archivindex_warc::value::{Algorithm, Encoding, WarcDatePrecision};
@@ -1620,6 +1621,68 @@ fn archive_never_revisits_a_truncated_capture() -> Result<(), Box<dyn std::error
     assert!(matches!(records[2], Record::Response { .. }));
     assert!(matches!(records[5], Record::Response { .. }));
     assert_eq!(records[5].core().truncated, Some(TruncatedType::Length));
+
+    Ok(())
+}
+
+#[test]
+fn archive_repeats_a_short_payload_rather_than_revisiting_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    const PAYLOAD: &str = "[]";
+
+    // Three archives of two URLs answered identically, under different minimum lengths.
+    let (port, server) = serve_with(6, |_| {
+        (
+            plain("200 OK", "content-type: application/json", PAYLOAD),
+            (),
+        )
+    })?;
+    let urls = [
+        format!("http://127.0.0.1:{port}/first"),
+        format!("http://127.0.0.1:{port}/second"),
+    ];
+    let archive = |min_revisit_payload_length| -> Result<Vec<Record>, Box<dyn std::error::Error>> {
+        let archiver = Archiver::new(Config {
+            min_revisit_payload_length,
+            ..Config::default()
+        })?;
+        let mut bytes = Vec::new();
+        let summary = archiver.archive(&urls, Cursor::new(&mut bytes))?;
+        assert!(summary.is_complete());
+
+        Ok(records(&bytes)?)
+    };
+
+    let by_default = archive(Config::DEFAULT_MIN_REVISIT_PAYLOAD_LENGTH)?;
+    let at_the_length = archive(PAYLOAD.len() as u64)?;
+    let unlimited = archive(0)?;
+    server.join().expect("server thread should not panic");
+
+    // The default stores the duplicate as a second full response.
+    assert_eq!(by_default.len(), 7);
+    let (Record::Response { header: first, .. }, Record::Response { header: second, .. }) =
+        (&by_default[2], &by_default[5])
+    else {
+        panic!("a short duplicate payload should be stored as a full response");
+    };
+    assert_eq!(first.payload.payload_digest, second.payload.payload_digest);
+
+    // A payload of the minimum length, or any length when the minimum is zero, is revisited.
+    for records in [&at_the_length, &unlimited] {
+        assert_eq!(records.len(), 7);
+        let Record::Response { header: first, .. } = &records[2] else {
+            panic!("the first capture should store a full response");
+        };
+        let Record::Revisit {
+            header: revisit, ..
+        } = &records[5]
+        else {
+            panic!("the duplicate should be stored as a revisit");
+        };
+        assert_eq!(revisit.profile, RevisitProfile::IDENTICAL_PAYLOAD_DIGEST);
+        assert_eq!(revisit.refers_to.as_ref(), Some(&first.core.record_id));
+        assert_eq!(revisit.payload.payload_digest, first.payload.payload_digest);
+    }
 
     Ok(())
 }
