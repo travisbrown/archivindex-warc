@@ -51,7 +51,7 @@ use std::time::Duration;
 
 use archivindex_warc::record::BlockError;
 use archivindex_warc::value::Algorithm;
-use config::{DigestConfig, DigestFormats, SessionConfig};
+use config::{DigestConfig, DigestFormats, Operator, SessionConfig, Software};
 use http::header::HeaderMap;
 
 use crate::recorder::Recorder;
@@ -90,6 +90,14 @@ pub struct Archiver {
 /// gzip_warc = false
 /// concurrency = 1
 /// max_response_length = 268435456
+///
+/// [software]  # this crate's name and version
+/// name = "archivindex-archiver"
+/// version = "0.1.0"
+///
+/// # [operator]  # none by default
+/// # name = "Example Operator"
+/// # email = "operator@example.com"
 ///
 /// [digest]
 /// algorithm = "sha256"
@@ -154,6 +162,17 @@ pub struct Config {
     /// unbounded when unset. The default is [`recorder::DEFAULT_MAX_RESPONSE_LENGTH`].
     #[serde(with = "config::bounded_length")]
     pub max_response_length: Option<u64>,
+    /// The software named in the `warcinfo` record of every WARC file, as `name/version`.
+    ///
+    /// The default is this crate's own name and version. [`Archiver::new`] rejects names and
+    /// versions holding control characters, which cannot be written as a `warc-fields` value.
+    pub software: Software,
+    /// The operator named in the `warcinfo` record of every WARC file, when set.
+    ///
+    /// The operator is written as `name` or `name <email>`. [`Archiver::new`] rejects names and
+    /// email addresses holding control characters, which cannot be written as a `warc-fields`
+    /// value.
+    pub operator: Option<Operator>,
     /// The formats of the digests written for every record.
     ///
     /// [`Archiver::new`] rejects algorithms this build does not enable.
@@ -283,6 +302,10 @@ pub enum ConfigError {
     /// A configured digest algorithm is not enabled in this build.
     #[error("digest algorithm {0} is not enabled in this build")]
     UnsupportedDigestAlgorithm(Algorithm),
+    /// The configured software or operator holds a control character, so it cannot be written to
+    /// the `warcinfo` record.
+    #[error(transparent)]
+    UnwritableWarcinfoField(#[from] archivindex_warc::record::fields::Error),
 }
 
 /// The configured `User-Agent` is not a valid HTTP field value.
