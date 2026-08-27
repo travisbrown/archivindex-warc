@@ -5,8 +5,8 @@ the version of [`archivindex-warc`][archivindex-warc] in this repository.
 
 A path with a `.gz` extension names a gzip-compressed file, for inputs and outputs alike. A
 compressed output holds one gzip member per record. An input of `-` is standard input, which is
-decompressed when it begins with the gzip magic number; `merge` reads each of its inputs twice, so
-it takes files only.
+decompressed when it begins with the gzip magic number; `merge` and
+`propagate-identified-payload-type` read each of their inputs twice, so they take files only.
 
 `-q` logs errors only, the default adds warnings and normal program output, and `-v`, `-vv`,
 and `-vvv` raise the diagnostic level to informational, debug, and trace.
@@ -81,6 +81,18 @@ carry the same body, and carry the same fields other than `WARC-Record-ID`, `WAR
 `WARC-Date` is written where the first of them stood, and every reference to a dropped record
 (`WARC-Warcinfo-ID`, `WARC-Refers-To`, `WARC-Concurrent-To`, and `WARC-Segment-Origin-ID`) is
 redirected to it. All other records are written byte for byte as they were read.
+
+## propagate-identified-payload-type
+
+```console
+cargo run --manifest-path cli/Cargo.toml -- \
+  propagate-identified-payload-type input.warc.gz -o output.warc.gz
+```
+
+Gives each `revisit` record lacking `WARC-Identified-Payload-Type` the value declared by the
+`response` record its `WARC-Refers-To` names, when that response is in the file. The field is
+placed where the conventional header order puts it among the fields the revisit has. Every other
+record, and every revisit whose original is not such a response, is copied as read.
 
 ## rewrite
 

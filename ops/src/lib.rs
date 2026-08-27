@@ -8,6 +8,7 @@ pub mod gzip;
 pub mod header;
 pub mod lint;
 pub mod merge;
+pub mod propagate;
 pub mod rewrite;
 
 pub use error::{Error, Result};
