@@ -8,7 +8,7 @@ use http::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
 
 use crate::capture::{ArchiveSummary, CaptureControl, CaptureEvent, CaptureEventSink};
 use crate::recorder::Recorder;
-use crate::{Archiver, Config, CookieError, Error, UserAgentError};
+use crate::{Archiver, Config, ConfigError, CookieError, Error, UserAgentError};
 
 mod challenge;
 pub mod collection;
@@ -38,10 +38,20 @@ impl Archiver {
     ///
     /// # Errors
     ///
-    /// Returns [`UserAgentError`] if the configured `User-Agent` cannot be sent as a field value.
-    pub fn new(config: Config) -> Result<Self, UserAgentError> {
+    /// Returns [`ConfigError::InvalidUserAgent`] if the configured `User-Agent` cannot be sent as
+    /// a field value, or [`ConfigError::UnsupportedDigestAlgorithm`] if a configured digest
+    /// algorithm is not enabled in this build.
+    pub fn new(config: Config) -> Result<Self, ConfigError> {
         let user_agent = HeaderValue::from_str(&config.user_agent)
             .map_err(|_| UserAgentError(config.user_agent.clone()))?;
+        let digests = config.digest.formats();
+        if let Some(unsupported) = [digests.block, digests.payload]
+            .into_iter()
+            .map(|format| format.algorithm)
+            .find(|algorithm| !algorithm.is_supported())
+        {
+            return Err(ConfigError::UnsupportedDigestAlgorithm(unsupported));
+        }
         let mut headers = HeaderMap::with_capacity(2);
         headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
         headers.insert(USER_AGENT, user_agent);
@@ -56,6 +66,7 @@ impl Archiver {
             headers,
             cookies: std::sync::Arc::default(),
             config,
+            digests,
         })
     }
 
@@ -194,6 +205,7 @@ impl Archiver {
                 },
                 request_headers: self.headers.clone(),
                 persistent_index,
+                digests: self.digests,
             },
         )
     }
@@ -212,6 +224,7 @@ impl Archiver {
             warcinfo: WarcinfoOptions::archiver(&self.config.user_agent),
             request_headers: self.headers.clone(),
             persistent_index: None,
+            digests: self.digests,
         };
         let mut collection = if let Some(output) = output {
             Collection::new_for_path(output, options())?

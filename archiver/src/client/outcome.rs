@@ -5,8 +5,7 @@ use std::fmt::Write as _;
 use std::time::Instant;
 
 use archivindex_warc::record::http::combined_field;
-use archivindex_warc::value::marker::Sha256;
-use archivindex_warc::value::{LabelledDigest, Supported as _, WarcDate, WarcDatePrecision};
+use archivindex_warc::value::{DigestFormat, LabelledDigest, WarcDate, WarcDatePrecision};
 use archivindex_warc_revisit_index::payload::RevisitTarget;
 use archivindex_warc_revisit_index::resource::{ResourceKey, ResourceState, declared_vary};
 use fluent_uri::Uri;
@@ -85,7 +84,8 @@ pub struct Exchange {
     pub status: u16,
     /// The decoded entity body when it differs from the stored body.
     decoded: Option<Vec<u8>>,
-    /// The SHA-256 digest of the entity body, absent when transfer decoding fails.
+    /// The digest of the entity body in the configured payload format, absent when transfer
+    /// decoding fails.
     pub payload_digest: Option<LabelledDigest>,
     /// The earlier capture that this `304 Not Modified` response, answering a conditional request,
     /// confirms unchanged.
@@ -95,9 +95,15 @@ pub struct Exchange {
 
 impl Exchange {
     /// Record a captured exchange, decoding and digesting its entity body once.
-    pub fn new(captured: CapturedExchange, revalidated: Option<RevisitTarget>) -> Self {
+    pub fn new(
+        captured: CapturedExchange,
+        revalidated: Option<RevisitTarget>,
+        format: DigestFormat,
+    ) -> Self {
         let (decoded, payload_digest) = captured.entity_body().map_or((None, None), |payload| {
-            let mut hasher = Sha256::hasher();
+            let mut hasher = format.algorithm.hasher().expect(
+                "invariant violation: the payload digest algorithm is checked when the archiver is created",
+            );
             hasher.update(&payload);
             let decoded = match payload {
                 Cow::Owned(decoded) => Some(decoded),
@@ -106,7 +112,7 @@ impl Exchange {
                     (body.len() != captured.stored_body().len()).then(|| body.to_vec())
                 }
             };
-            (decoded, Some(hasher.finalize_labelled()))
+            (decoded, Some(hasher.finalize_labelled_in(format.encoding)))
         });
 
         Self {
@@ -393,7 +399,10 @@ impl Archiver {
             .filter(|_| status == StatusCode::NOT_MODIFIED.as_u16())
             .map(|original| original.target);
 
-        Ok((Exchange::new(captured, revalidated), follow_up))
+        Ok((
+            Exchange::new(captured, revalidated, self.digests.payload),
+            follow_up,
+        ))
     }
 }
 

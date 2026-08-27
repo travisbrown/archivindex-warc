@@ -112,6 +112,6 @@ impl Archiver {
         )?;
         let cookie = simply::clearance_cookie(&captured, verification_url);
 
-        Ok((Exchange::new(captured, None), cookie))
+        Ok((Exchange::new(captured, None, self.digests.payload), cookie))
     }
 }

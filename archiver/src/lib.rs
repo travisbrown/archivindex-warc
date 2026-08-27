@@ -38,7 +38,7 @@
 
 pub mod capture;
 mod client;
-mod config;
+pub mod config;
 mod http_date;
 pub mod recorder;
 pub mod session;
@@ -50,6 +50,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use archivindex_warc::record::BlockError;
+use archivindex_warc::value::Algorithm;
+use config::{DigestConfig, DigestFormats, SessionConfig};
 use http::header::HeaderMap;
 
 use crate::recorder::Recorder;
@@ -69,10 +71,40 @@ pub struct Archiver {
     /// the others.
     cookies: Arc<Mutex<client::cookies::CookieJar>>,
     config: Config,
+    /// The digest formats the configuration resolves to, checked to be supported by this build.
+    digests: DigestFormats,
 }
 
 /// Configuration for the archiving client.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// A configuration can be read from and written as a document such as TOML or JSON. Every field
+/// is optional, an unknown field is an error, durations are `humantime` strings such as `30s` or
+/// `10m`, and a limit that is set by default is lifted by writing `"unbounded"`. The defaults,
+/// as TOML, are:
+///
+/// ```toml
+/// user_agent = "archivindex-archiver/0.1.0"  # this crate's name and version
+/// timeout = "30s"
+/// max_capture_time = "10m"
+/// max_redirects = 10
+/// gzip_warc = false
+/// concurrency = 1
+/// max_response_length = 268435456
+///
+/// [digest]
+/// algorithm = "sha256"
+///
+/// [session]
+/// request_delay = "0s"
+/// titles = false
+///
+/// [session.retry]
+/// attempts = 3
+/// initial_backoff = "1s"
+/// max_backoff = "30s"
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// The `User-Agent` header value sent with every request.
     ///
@@ -85,6 +117,7 @@ pub struct Config {
     /// is recorded with a `WARC-Truncated` reason of `time`. Each operation is timed on its own,
     /// so a slow peer that keeps sending never trips it; [`max_capture_time`](Self::max_capture_time)
     /// bounds the whole capture.
+    #[serde(with = "humantime_serde")]
     pub timeout: Duration,
     /// The maximum time spent capturing one URL, when set.
     ///
@@ -94,6 +127,7 @@ pub struct Config {
     /// current hop, and is otherwise truncated with a `WARC-Truncated` reason of `time`. Each
     /// attempt a session makes at a URL is given the whole time. The limit is lifted when unset.
     /// The default is [`Config::DEFAULT_MAX_CAPTURE_TIME`].
+    #[serde(with = "config::bounded_duration")]
     pub max_capture_time: Option<Duration>,
     /// The maximum number of redirects followed for each URL.
     ///
@@ -118,7 +152,14 @@ pub struct Config {
     /// A response reaching the limit is truncated rather than failed: its record holds the bytes
     /// received up to the limit and carries a `WARC-Truncated` reason of `length`. Response size is
     /// unbounded when unset. The default is [`recorder::DEFAULT_MAX_RESPONSE_LENGTH`].
+    #[serde(with = "config::bounded_length")]
     pub max_response_length: Option<u64>,
+    /// The formats of the digests written for every record.
+    ///
+    /// [`Archiver::new`] rejects algorithms this build does not enable.
+    pub digest: DigestConfig,
+    /// The settings crawl sessions start from.
+    pub session: SessionConfig,
 }
 
 /// An error type for archiving.
@@ -164,9 +205,9 @@ pub enum Error {
         /// The processor's description of the failure.
         message: String,
     },
-    /// The configured `User-Agent` cannot be sent or recorded safely.
+    /// The configuration cannot be used by an archiver.
     #[error(transparent)]
-    InvalidUserAgent(#[from] UserAgentError),
+    InvalidConfig(#[from] ConfigError),
     /// A session identifier is empty or contains a non-URI-unreserved character.
     #[error(transparent)]
     InvalidSessionId(#[from] crate::session::SessionIdError),
@@ -229,6 +270,19 @@ pub enum CookieError {
         /// The length of the value in bytes.
         length: usize,
     },
+}
+
+/// The configuration cannot be used by an archiver.
+///
+/// See [`Archiver::new`].
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ConfigError {
+    /// The configured `User-Agent` cannot be sent or recorded safely.
+    #[error(transparent)]
+    InvalidUserAgent(#[from] UserAgentError),
+    /// A configured digest algorithm is not enabled in this build.
+    #[error("digest algorithm {0} is not enabled in this build")]
+    UnsupportedDigestAlgorithm(Algorithm),
 }
 
 /// The configured `User-Agent` is not a valid HTTP field value.

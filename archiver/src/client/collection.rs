@@ -19,13 +19,14 @@ use tempfile::{NamedTempFile, TempPath};
 
 use super::outcome::{CaptureOutcome, Exchange, Original, request_field};
 use super::warc_fields::{WarcinfoOptions, warcinfo_record};
-use super::warc_mapping::{MetadataOptions, write_exchange, write_record};
+use super::warc_mapping::{MetadataOptions, RecordWriter, write_exchange};
 use crate::Error;
 use crate::capture::{ArchiveSummary, CaptureSummary, Failure};
+use crate::config::DigestFormats;
 
 /// Files accumulated while captures are written to a spooled WARC file.
 pub struct Collection {
-    warc: WarcWriter<BufWriter<File>>,
+    warc: RecordWriter<BufWriter<File>>,
     spool_path: Option<TempPath>,
     warcinfo_id: Uri<String>,
     summary: ArchiveSummary,
@@ -52,6 +53,8 @@ pub struct CollectionOptions<'a> {
     pub request_headers: HeaderMap,
     /// Earlier durable crawl state, published to only after the WARC is durable.
     pub persistent_index: Option<Index>,
+    /// The formats of the digests added to every record.
+    pub digests: DigestFormats,
 }
 
 impl Collection {
@@ -98,15 +101,19 @@ impl Collection {
             warcinfo: _,
             request_headers,
             persistent_index,
+            digests,
         } = options;
         let compression = if gzip {
             Compression::gzip()
         } else {
             Compression::NONE
         };
-        let mut warc = WarcWriter::new(BufWriter::new(file)).with_compression(compression);
+        let mut warc = RecordWriter::new(
+            WarcWriter::new(BufWriter::new(file)).with_compression(compression),
+            digests,
+        );
         let warcinfo_id = warcinfo.core().record_id.clone();
-        write_record(&mut warc, warcinfo)?;
+        warc.write(warcinfo)?;
         if spool_path.is_some() {
             warc.flush()?;
         }

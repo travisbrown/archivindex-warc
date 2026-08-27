@@ -1,18 +1,19 @@
 //! Mapping captured HTTP exchanges to WARC records.
 
-use std::io::Write;
+use std::io::{BufWriter, Write};
 
 use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::record::Record;
 use archivindex_warc::record::capture::{CaptureEvent, CaptureRecords, RevisitOriginal};
 use archivindex_warc::record::header::RevisitProfile;
-use archivindex_warc::value::{LabelledDigest, WarcDate, marker};
+use archivindex_warc::value::{LabelledDigest, WarcDate};
 use archivindex_warc_revisit_index::payload::RevisitTarget;
 use fluent_uri::Uri;
 
 use super::outcome::Exchange;
 use super::warc_fields::{MetadataValues, metadata_record};
 use crate::Error;
+use crate::config::DigestFormats;
 use crate::recorder::CapturedExchange;
 
 /// Optional fields added to the metadata record accompanying an exchange.
@@ -22,11 +23,34 @@ pub struct MetadataOptions<'a> {
     pub title: Option<&'a str>,
 }
 
-/// Write a record, under whatever compression the writer was configured with.
-pub fn write_record<W: Write>(writer: &mut WarcWriter<W>, record: Record) -> Result<(), Error> {
-    writer.write(&record.into_raw_with_digests(marker::Sha256)?)?;
+/// A WARC writer that adds the configured digests to every record it writes.
+pub struct RecordWriter<W: Write> {
+    warc: WarcWriter<W>,
+    digests: DigestFormats,
+}
 
-    Ok(())
+impl<W: Write> RecordWriter<W> {
+    pub const fn new(warc: WarcWriter<W>, digests: DigestFormats) -> Self {
+        Self { warc, digests }
+    }
+
+    /// Write a record with its digests, under whatever compression the writer was configured with.
+    pub fn write(&mut self, record: Record) -> Result<(), Error> {
+        self.warc
+            .write(&record.into_raw_with_digests_in(self.digests.block, self.digests.payload)?)?;
+
+        Ok(())
+    }
+
+    pub fn flush(&mut self) -> std::io::Result<()> {
+        self.warc.flush()
+    }
+}
+
+impl<W: Write> RecordWriter<BufWriter<W>> {
+    pub fn finish(self) -> Result<W, std::io::IntoInnerError<BufWriter<W>>> {
+        self.warc.finish()
+    }
 }
 
 /// Write one exchange's request, response, and metadata records.
@@ -38,7 +62,7 @@ pub fn write_record<W: Write>(writer: &mut WarcWriter<W>, record: Record) -> Res
 /// Returns the new response as a revisit target, or `None` when writing a revisit or when the
 /// response has no payload digest.
 pub fn write_exchange<W: Write>(
-    writer: &mut WarcWriter<W>,
+    writer: &mut RecordWriter<W>,
     exchange: Exchange,
     warcinfo_id: &Uri<String>,
     metadata: MetadataOptions<'_>,
@@ -90,10 +114,10 @@ pub fn write_exchange<W: Write>(
             payload_digest,
             payload_length: Some(payload_length),
         });
-    write_record(writer, records.request)?;
-    write_record(writer, records.response)?;
+    writer.write(records.request)?;
+    writer.write(records.response)?;
     if let Some(metadata) = records.metadata {
-        write_record(writer, metadata)?;
+        writer.write(metadata)?;
     }
 
     Ok(target)
