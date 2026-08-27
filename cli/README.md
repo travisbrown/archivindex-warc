@@ -5,8 +5,9 @@ the version of [`archivindex-warc`][archivindex-warc] in this repository.
 
 A path with a `.gz` extension names a gzip-compressed file, for inputs and outputs alike. A
 compressed output holds one gzip member per record. An input of `-` is standard input, which is
-decompressed when it begins with the gzip magic number; `merge` and
-`propagate-identified-payload-type` read each of their inputs twice, so they take files only.
+decompressed when it begins with the gzip magic number; `merge`,
+`propagate-identified-payload-type`, and `remove-same-target-revisits` read each of their inputs
+twice, so they take files only.
 
 `-q` logs errors only, the default adds warnings and normal program output, and `-v`, `-vv`,
 and `-vvv` raise the diagnostic level to informational, debug, and trace.
@@ -93,6 +94,16 @@ Gives each `revisit` record lacking `WARC-Identified-Payload-Type` the value dec
 `response` record its `WARC-Refers-To` names, when that response is in the file. The field is
 placed where the conventional header order puts it among the fields the revisit has. Every other
 record, and every revisit whose original is not such a response, is copied as read.
+
+## remove-same-target-revisits
+
+```console
+cargo run --manifest-path cli/Cargo.toml -- \
+  remove-same-target-revisits input.warc.gz -o output.warc.gz
+```
+
+Removes each `revisit` record whose `WARC-Target-URI` equals that of the `response` record its
+`WARC-Refers-To` names, when that response is in the file, together with the rest of its capture.
 
 ## rewrite
 
