@@ -1,11 +1,11 @@
 //! A command-line front end for archiving URLs into WARC files.
 
+use std::ffi::OsStr;
 use std::io::BufRead;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use archivindex_archiver::capture::{CaptureControl, CaptureEvent};
 use archivindex_archiver::{Archiver, Config};
 use archivindex_cli_support::{CommandOutcome, Verbosity, exit_code, plural};
@@ -23,13 +23,13 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
     let quiet = cli.verbosity.is_quiet();
 
     match cli.command {
-        Command::Archive(options) => archive(options, quiet),
+        Command::Archive(options) => archive(&options, quiet),
     }
 }
 
 /// Archive a list of URLs read from standard input.
-fn archive(options: ArchiveOptions, quiet: bool) -> Result<CommandOutcome> {
-    let config = options.config.into_config(options.concurrency);
+fn archive(options: &ArchiveOptions, quiet: bool) -> Result<CommandOutcome> {
+    let config = load_config(options.config.as_deref())?;
     let archiver = Archiver::new(config).context("cannot configure the archiver")?;
     let mut input_error = None;
     let urls = read_urls(std::io::stdin().lock(), &mut input_error);
@@ -88,6 +88,55 @@ fn archive(options: ArchiveOptions, quiet: bool) -> Result<CommandOutcome> {
     }
 }
 
+/// Read the configuration file at `path`, or take the default configuration without one.
+fn load_config(path: Option<&Path>) -> Result<Config> {
+    path.map_or_else(
+        || Ok(Config::default()),
+        |path| {
+            let format = ConfigFormat::of(path)?;
+            let text = std::fs::read_to_string(path)
+                .with_context(|| format!("cannot read configuration file {}", path.display()))?;
+
+            format
+                .parse(&text)
+                .with_context(|| format!("cannot parse configuration file {}", path.display()))
+        },
+    )
+}
+
+/// The document formats a configuration file is read as, recognized by extension.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConfigFormat {
+    Toml,
+    Json,
+}
+
+impl ConfigFormat {
+    /// The format of the file at `path`, from its `.toml` or `.json` extension in any case.
+    fn of(path: &Path) -> Result<Self> {
+        let extension = path
+            .extension()
+            .and_then(OsStr::to_str)
+            .map(str::to_ascii_lowercase);
+
+        match extension.as_deref() {
+            Some("toml") => Ok(Self::Toml),
+            Some("json") => Ok(Self::Json),
+            _ => bail!(
+                "configuration file {} must have a .toml or .json extension",
+                path.display()
+            ),
+        }
+    }
+
+    fn parse(self, text: &str) -> Result<Config> {
+        match self {
+            Self::Toml => toml::from_str(text).map_err(anyhow::Error::from),
+            Self::Json => serde_json::from_str(text).map_err(anyhow::Error::from),
+        }
+    }
+}
+
 /// Read one URL per line, trimming surrounding whitespace and skipping blank lines.
 ///
 /// A read failure ends iteration and is stored in `error`.
@@ -140,93 +189,23 @@ enum Command {
 /// Options for archiving URLs read from standard input.
 #[derive(Debug, clap::Args)]
 struct ArchiveOptions {
-    #[command(flatten)]
-    config: ConfigOptions,
+    /// A TOML or JSON configuration file, recognized by its extension; every key is optional and
+    /// takes its default when absent (see default-config.toml).
+    #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+    config: Option<PathBuf>,
 
     /// The WARC file to write; an existing file is not overwritten.
     #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
     output: PathBuf,
-
-    /// The number of URLs downloaded concurrently (defaults to 1).
-    #[arg(long, value_name = "COUNT")]
-    concurrency: Option<usize>,
-}
-
-/// Capture settings for the archiving workflow.
-#[derive(Debug, clap::Args)]
-struct ConfigOptions {
-    /// Compress each WARC record as an independent gzip member.
-    #[arg(long)]
-    gzip: bool,
-
-    /// The User-Agent header value sent with every request (defaults to the archiver's own).
-    #[arg(long, value_name = "VALUE")]
-    user_agent: Option<String>,
-
-    /// The idle timeout in seconds for connecting and for each socket read or write (defaults to
-    /// 30).
-    #[arg(long, value_name = "SECONDS")]
-    timeout: Option<u64>,
-
-    /// The maximum time in seconds spent capturing one URL, including its redirect hops (defaults
-    /// to 600; a response still arriving at the limit is archived truncated rather than failed).
-    #[arg(long, value_name = "SECONDS")]
-    max_capture_time: Option<u64>,
-
-    /// Capture every URL to completion, however long it takes.
-    #[arg(long, conflicts_with = "max_capture_time")]
-    unbounded_capture_time: bool,
-
-    /// The maximum number of redirects followed for each URL (defaults to 10). Answering a
-    /// challenge is not a redirect.
-    #[arg(long, value_name = "COUNT")]
-    max_redirects: Option<usize>,
-
-    /// The maximum number of response bytes stored for one fetch (defaults to 256 MiB; a response
-    /// reaching the limit is archived truncated rather than failed).
-    #[arg(long, value_name = "BYTES")]
-    max_response_length: Option<u64>,
-
-    /// Store every response whole, however large.
-    #[arg(long, conflicts_with = "max_response_length")]
-    unbounded_response_length: bool,
-}
-
-impl ConfigOptions {
-    /// Build an archiver configuration, optionally overriding its concurrency.
-    fn into_config(self, concurrency: Option<usize>) -> Config {
-        let defaults = Config::default();
-
-        Config {
-            user_agent: self.user_agent.unwrap_or(defaults.user_agent),
-            timeout: self.timeout.map_or(defaults.timeout, Duration::from_secs),
-            max_capture_time: if self.unbounded_capture_time {
-                None
-            } else {
-                self.max_capture_time
-                    .map_or(defaults.max_capture_time, |seconds| {
-                        Some(Duration::from_secs(seconds))
-                    })
-            },
-            max_redirects: self.max_redirects.unwrap_or(defaults.max_redirects),
-            concurrency: concurrency.unwrap_or(defaults.concurrency),
-            max_response_length: if self.unbounded_response_length {
-                None
-            } else {
-                self.max_response_length.or(defaults.max_response_length)
-            },
-            gzip_warc: self.gzip,
-            digest: defaults.digest,
-            session: defaults.session,
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use clap::{CommandFactory, Parser};
 
-    use super::{Cli, Command, Config};
+    use super::{Cli, Command, Config, ConfigFormat, load_config};
 
     #[test]
     fn clap_definition_is_consistent() {
@@ -245,88 +224,78 @@ mod tests {
     }
 
     #[test]
-    fn archive_defaults_to_an_uncompressed_warc() {
-        let cli = Cli::try_parse_from([
+    fn archive_takes_an_optional_configuration_file() {
+        let without = Cli::try_parse_from([
             "archivindex-archiver",
             "archive",
             "--output",
             "capture.warc",
         ])
         .expect("valid options");
+        let with = Cli::try_parse_from([
+            "archivindex-archiver",
+            "archive",
+            "--config",
+            "capture.toml",
+            "--output",
+            "capture.warc",
+        ])
+        .expect("valid options");
 
-        let Command::Archive(options) = cli.command;
+        let Command::Archive(without) = without.command;
+        let Command::Archive(with) = with.command;
 
-        assert!(!options.config.gzip);
+        assert_eq!(without.config, None);
+        assert_eq!(with.config.as_deref(), Some(Path::new("capture.toml")));
     }
 
     #[test]
-    fn archive_bounds_captures_by_default() {
-        let cli = Cli::try_parse_from([
-            "archivindex-archiver",
-            "archive",
-            "--output",
-            "capture.warc",
-        ])
-        .expect("valid options");
+    fn no_configuration_file_is_the_default_configuration() {
+        let config = load_config(None).expect("the default configuration");
 
-        let Command::Archive(options) = cli.command;
-        let config = options.config.into_config(None);
+        assert_eq!(config, Config::default());
+    }
 
+    #[test]
+    fn the_default_configuration_file_is_the_default_configuration() {
+        let config = ConfigFormat::Toml
+            .parse(include_str!("../default-config.toml"))
+            .expect("a configuration");
+
+        assert_eq!(config, Config::default());
+    }
+
+    #[test]
+    fn a_configuration_file_is_recognized_by_its_extension() {
         assert_eq!(
-            config.max_response_length,
-            Some(archivindex_archiver::recorder::DEFAULT_MAX_RESPONSE_LENGTH)
+            ConfigFormat::of(Path::new("capture.toml")).ok(),
+            Some(ConfigFormat::Toml)
         );
         assert_eq!(
-            config.max_capture_time,
-            Some(Config::DEFAULT_MAX_CAPTURE_TIME)
+            ConfigFormat::of(Path::new("capture.JSON")).ok(),
+            Some(ConfigFormat::Json)
         );
+        assert!(ConfigFormat::of(Path::new("capture.yaml")).is_err());
+        assert!(ConfigFormat::of(Path::new("capture")).is_err());
     }
 
     #[test]
-    fn archive_lifts_the_capture_time_bound_on_request() {
-        let cli = Cli::try_parse_from([
-            "archivindex-archiver",
-            "archive",
-            "--output",
-            "capture.warc",
-            "--unbounded-capture-time",
-        ])
-        .expect("valid options");
+    fn a_configuration_file_lifts_a_bound_and_sets_a_flag() {
+        let toml = ConfigFormat::Toml
+            .parse("max_capture_time = \"unbounded\"\ngzip_warc = true\n")
+            .expect("a configuration");
+        let json = ConfigFormat::Json
+            .parse(r#"{"max_response_length": "unbounded", "concurrency": 4}"#)
+            .expect("a configuration");
 
-        let Command::Archive(options) = cli.command;
-
-        assert_eq!(options.config.into_config(None).max_capture_time, None);
+        assert_eq!(toml.max_capture_time, None);
+        assert!(toml.gzip_warc);
+        assert_eq!(json.max_response_length, None);
+        assert_eq!(json.concurrency, 4);
     }
 
     #[test]
-    fn archive_can_lift_the_response_bound() {
-        let cli = Cli::try_parse_from([
-            "archivindex-archiver",
-            "archive",
-            "--output",
-            "capture.warc",
-            "--unbounded-response-length",
-        ])
-        .expect("valid options");
-
-        let Command::Archive(options) = cli.command;
-        let config = options.config.into_config(None);
-
-        assert_eq!(config.max_response_length, None);
-    }
-
-    #[test]
-    fn archive_refuses_a_bound_that_is_also_lifted() {
-        let result = Cli::try_parse_from([
-            "archivindex-archiver",
-            "archive",
-            "--output",
-            "capture.warc",
-            "--max-response-length",
-            "1024",
-            "--unbounded-response-length",
-        ]);
-
-        assert!(result.is_err());
+    fn a_configuration_file_cannot_hold_an_unknown_key() {
+        assert!(ConfigFormat::Toml.parse("gzip = true\n").is_err());
     }
 }
