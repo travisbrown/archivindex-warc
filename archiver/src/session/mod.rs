@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::capture::{CaptureControl, CaptureEvent, CaptureEventSink, CaptureSummary, Failure};
+use crate::config::SessionConfig;
 use crate::{Archiver, Error};
 
 mod run;
@@ -156,13 +157,16 @@ pub trait CaptureProcessor {
 /// attempt's, and may serve as revisit targets like any other. The final attempt alone determines
 /// the capture's summary and what the processor sees. Each earlier attempt's response stays in
 /// memory until the URL's capture is written.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct RetryConfig {
     /// Total attempts, including the first. Zero is treated as one.
     pub attempts: usize,
     /// Delay before the first retry.
+    #[serde(with = "humantime_serde")]
     pub initial_backoff: Duration,
     /// Maximum retry delay.
+    #[serde(with = "humantime_serde")]
     pub max_backoff: Duration,
 }
 
@@ -229,6 +233,9 @@ pub struct Session<'a> {
 impl<'a> Session<'a> {
     /// Create a session, validating its URI-unreserved identifier.
     ///
+    /// The retry policy, request delay, capture limit, and titles start as the archiver's
+    /// [`SessionConfig`]; the builder methods override them.
+    ///
     /// # Errors
     ///
     /// Returns [`SessionIdError`] if `id` is empty or contains a character outside the URI
@@ -248,6 +255,13 @@ impl<'a> Session<'a> {
             return Err(SessionIdError(id.to_owned()));
         }
 
+        let SessionConfig {
+            retry,
+            request_delay,
+            limit,
+            titles,
+        } = archiver.config.session.clone();
+
         Ok(Self {
             archiver,
             id: id.to_owned(),
@@ -259,12 +273,12 @@ impl<'a> Session<'a> {
                 .collect(),
             output: output.into(),
             processor: None,
-            retry: RetryConfig::default(),
-            request_delay: Duration::ZERO,
-            limit: None,
+            retry,
+            request_delay,
+            limit,
             revisit_index: None,
             events: None,
-            titles: false,
+            titles,
         })
     }
 

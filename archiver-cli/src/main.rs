@@ -216,6 +216,8 @@ impl ConfigOptions {
                 self.max_response_length.or(defaults.max_response_length)
             },
             gzip_warc: self.gzip,
+            digest: defaults.digest,
+            session: defaults.session,
         }
     }
 }

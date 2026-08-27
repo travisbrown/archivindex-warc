@@ -9,11 +9,12 @@ use std::time::Duration;
 mod support;
 
 use archivindex_archiver::capture::{CaptureControl, CaptureEvent};
-use archivindex_archiver::{Archiver, Config, CookieError, Error};
+use archivindex_archiver::config::{DigestConfig, DigestOverride};
+use archivindex_archiver::{Archiver, Config, ConfigError, CookieError, Error};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::header::truncated_type::TruncatedType;
 use archivindex_warc::record::{FieldsBlock, Record};
-use archivindex_warc::value::{Algorithm, WarcDatePrecision};
+use archivindex_warc::value::{Algorithm, Encoding, WarcDatePrecision};
 use archivindex_warc::version::WarcVersion;
 use data_encoding::BASE64;
 use flate2::bufread::MultiGzDecoder;
@@ -1301,6 +1302,80 @@ fn new_rejects_an_invalid_user_agent() {
     });
 
     assert!(result.is_err());
+}
+
+#[test]
+fn archive_writes_digests_in_the_configured_formats() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, server) = serve(1)?;
+    let url = format!("http://127.0.0.1:{port}/");
+
+    let archiver = Archiver::new(Config {
+        digest: DigestConfig {
+            algorithm: Algorithm::Sha1,
+            block: DigestOverride {
+                algorithm: Some(Algorithm::Sha256),
+                encoding: Some(Encoding::Base64),
+            },
+            ..DigestConfig::default()
+        },
+        ..gzip_config()
+    })?;
+    let mut bytes = Vec::new();
+    let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
+    server.join().expect("server thread should not panic");
+
+    assert!(summary.is_complete());
+
+    let records = records(&bytes)?;
+    let block_digests = records
+        .iter()
+        .map(|record| record.core().block_digest.as_ref())
+        .collect::<Vec<_>>();
+    let payload_digests = records
+        .iter()
+        .filter_map(|record| record.payload()?.payload_digest.as_ref())
+        .collect::<Vec<_>>();
+
+    assert_eq!(records.len(), 4);
+    assert!(block_digests.iter().all(|digest| {
+        digest.is_some_and(|digest| {
+            digest.algorithm() == Some(Algorithm::Sha256)
+                && digest.encoding() == Some(Encoding::Base64)
+        })
+    }));
+    assert_eq!(payload_digests.len(), 2);
+    assert!(payload_digests.iter().all(|digest| {
+        digest.algorithm() == Some(Algorithm::Sha1) && digest.encoding() == Some(Encoding::Base32)
+    }));
+
+    Ok(())
+}
+
+/// A build enabling every algorithm leaves nothing to check.
+#[test]
+fn new_rejects_a_digest_algorithm_the_build_lacks() {
+    let Some(algorithm) = Algorithm::ALL
+        .into_iter()
+        .find(|algorithm| !algorithm.is_supported())
+    else {
+        return;
+    };
+
+    let result = Archiver::new(Config {
+        digest: DigestConfig {
+            payload: DigestOverride {
+                algorithm: Some(algorithm),
+                encoding: None,
+            },
+            ..DigestConfig::default()
+        },
+        ..gzip_config()
+    });
+
+    assert!(matches!(
+        result,
+        Err(ConfigError::UnsupportedDigestAlgorithm(unsupported)) if unsupported == algorithm
+    ));
 }
 
 #[test]

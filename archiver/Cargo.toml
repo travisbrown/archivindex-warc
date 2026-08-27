@@ -27,11 +27,14 @@ archivindex-warc = { workspace = true, features = [
   "gzip",
   "http",
   "payload-identification",
+  "serde",
 ] }
 chrono.workspace = true
 data-encoding.workspace = true
 fluent-uri.workspace = true
 http.workspace = true
+# Durations in configuration files are written as `humantime` strings, such as `30s`.
+humantime-serde = "1"
 rustls = "0.23"
 serde.workspace = true
 serde_json.workspace = true

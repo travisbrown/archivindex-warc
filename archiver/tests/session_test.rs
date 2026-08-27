@@ -8,6 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use archivindex_archiver::capture::{CaptureControl, CaptureEvent};
+use archivindex_archiver::config::SessionConfig;
 use archivindex_archiver::session::{
     Capture, CaptureProcessor, Inspection, Operator, RetryConfig, Session,
 };
@@ -1134,6 +1135,34 @@ fn session_captures_each_url_once() -> Result<(), Box<dyn std::error::Error>> {
         fields.software(),
         Some(concat!("archivindex-archiver/", env!("CARGO_PKG_VERSION")))
     );
+
+    Ok(())
+}
+
+#[test]
+fn session_starts_from_the_configured_settings() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, server) = serve(1)?;
+    let url = format!("http://127.0.0.1:{port}/");
+
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("configured.warc.gz");
+
+    let config = Config {
+        session: SessionConfig {
+            limit: Some(1),
+            ..SessionConfig::default()
+        },
+        ..gzip_config()
+    };
+    let summary = Session::new(archiver(config), "configured", operator(), [&url], &path)?
+        .processor(SiteProcessor { port })
+        .run()?;
+    let request_paths = server.join().expect("server thread should not panic");
+
+    assert_eq!(request_paths, ["/"]);
+    assert!(summary.is_complete());
+    assert_eq!(summary.seed_captures.len(), 1);
+    assert_eq!(summary.extra_captures.len(), 0);
 
     Ok(())
 }
