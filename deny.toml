@@ -35,6 +35,28 @@ allow = [
   "Unlicense",
   "Zlib",
 ]
+# Every package but the `archivindex-warc` library and its digest crate uses GPL-3.0-only; those
+# two and the third-party dependencies use only the licenses allowed above.
+exceptions = [
+  { crate = "archivindex-archiver", allow = [
+    "GPL-3.0-only",
+  ] },
+  { crate = "archivindex-archiver-cli", allow = [
+    "GPL-3.0-only",
+  ] },
+  { crate = "archivindex-warc-cli", allow = [
+    "GPL-3.0-only",
+  ] },
+  { crate = "archivindex-warc-ops", allow = [
+    "GPL-3.0-only",
+  ] },
+  { crate = "archivindex-warc-revisit-index", allow = [
+    "GPL-3.0-only",
+  ] },
+  { crate = "archivindex-warc-validator", allow = [
+    "GPL-3.0-only",
+  ] },
+]
 
 [sources]
 unknown-registry = "deny"

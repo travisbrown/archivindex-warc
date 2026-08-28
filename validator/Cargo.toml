@@ -9,7 +9,7 @@ description = "Validate WARC files with several independent validators"
 authors = ["Travis Brown <travisrobertbrown@gmail.com>"]
 edition = "2024"
 rust-version = "1.88"
-license = "MIT"
+license = "GPL-3.0-only"
 repository = "https://github.com/travisbrown/archivindex-warc"
 publish = false
 
