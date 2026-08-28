@@ -76,8 +76,8 @@ algorithm = "sha256"
 # The wait between successive queued capture requests.
 request-delay = "0s"
 
-# The persistent revisit and resource-state database used by sessions, unset
-# by default.
+# The persistent revisit and resource-state database consulted by sessions.
+# New captures are not added automatically. Unset by default.
 # revisit-index = "revisits.sqlite3"
 
 # Whether the session identifier is recorded as the warcinfo title and

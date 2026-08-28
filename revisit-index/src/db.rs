@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::payload::RevisitTarget;
 use crate::resource::{ResourceKey, ResourceState, ResourceStateUpdate, Variance};
-use crate::{DatabaseError, Error, Index, OpenError, Store, Transaction};
+use crate::{DatabaseError, Error, OpenError, Store, Transaction};
 
 /// A SQLite handle a [`Store`] can run statements through.
 ///
@@ -210,35 +210,6 @@ impl<C: Handle> Store<C> {
 }
 
 impl Transaction<'_> {
-    /// Copy every row of `source` into this transaction.
-    ///
-    /// Existing canonical payload records are preserved. A resource-state row is replaced only
-    /// when the incoming state was observed at least as recently as the stored state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when SQLite cannot read a row from `source` or write it here.
-    pub fn merge_from(&self, source: &Index) -> Result<(), DatabaseError> {
-        copy_rows(
-            source.connection(),
-            "SELECT digest_algorithm, digest, digest_text, payload_length, identified_payload_type,
-                    record_id, target_uri, warc_date
-             FROM payloads",
-            self.connection(),
-            INSERT_PAYLOAD,
-            "merge payloads",
-        )?;
-        copy_rows(
-            source.connection(),
-            "SELECT target_uri, etag, last_modified, digest_algorithm, digest, digest_text,
-                    record_id, warc_date, observed_at, observed_seconds, observed_nanos, variance
-             FROM resource_state",
-            self.connection(),
-            UPSERT_RESOURCE,
-            "merge resource state",
-        )
-    }
-
     /// Commit all changes atomically.
     ///
     /// # Errors
@@ -471,32 +442,6 @@ fn observation_parts(date: WarcDate) -> (String, i64, i64) {
     )
 }
 
-/// Copy rows selected from one connection into another.
-fn copy_rows(
-    source: &Connection,
-    select: &str,
-    target: &Connection,
-    insert: &str,
-    operation: &'static str,
-) -> Result<(), DatabaseError> {
-    let mut select = source
-        .prepare(select)
-        .map_err(DatabaseError::during(operation))?;
-    let mut insert = cached(target, insert, operation)?;
-    let columns = select.column_count();
-    let mut rows = select.query([]).map_err(DatabaseError::during(operation))?;
-    while let Some(row) = rows.next().map_err(DatabaseError::during(operation))? {
-        let values = (0..columns)
-            .map(|column| row.get::<_, rusqlite::types::Value>(column))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(DatabaseError::during(operation))?;
-        insert
-            .execute(rusqlite::params_from_iter(values))
-            .map_err(DatabaseError::during(operation))?;
-    }
-    Ok(())
-}
-
 /// Fetch `sql` from the connection's statement cache, preparing it on first use.
 fn cached<'connection>(
     connection: &'connection Connection,
@@ -575,7 +520,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::strategies;
+    use crate::{Index, strategies};
 
     #[test_strategy::proptest]
     fn integer_columns_round_trip(#[strategy(0..=u64::MAX >> 1)] value: u64) {
