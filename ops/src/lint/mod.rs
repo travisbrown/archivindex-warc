@@ -43,12 +43,15 @@
 //!     the request's `WARC-Target-URI`, and the metadata record's `application/warc-fields` body
 //!     carries a `fetchTimeMs` field. A `metadata` record outside a capture is not held to these
 //!     rules.
-//! 15. Every `revisit` record under the identical payload digest profile that carries a block
+//! 15. No other record names one in `WARC-Concurrent-To`: not a `request`, not a `metadata`
+//!     record outside a capture, and not a record of any other type. A `response` outside a
+//!     capture is reported for that alone.
+//! 16. Every `revisit` record under the identical payload digest profile that carries a block
 //!     declares it as `WARC-Truncated: length`, which clause 6.7.2 of the standard asks of the
 //!     writer.
-//! 16. Every `revisit` record names the record it revisits in `WARC-Refers-To`,
+//! 17. Every `revisit` record names the record it revisits in `WARC-Refers-To`,
 //!     `WARC-Refers-To-Target-URI`, and `WARC-Refers-To-Date`.
-//! 17. Every `revisit` record's `WARC-Refers-To` names a record that precedes it in the file. A
+//! 18. Every `revisit` record's `WARC-Refers-To` names a record that precedes it in the file. A
 //!     file whose revisits are of records held elsewhere breaks this rule by design.
 //!
 //! The rules go from the shape of the file, through what each record's header and block hold, to
@@ -344,7 +347,13 @@ mod tests {
         assert!(matches!(&items[0], Ok(Ok(id)) if id == &uri(WARCINFO_ID)));
         assert!(matches!(&items[1], Ok(Ok(id)) if id == &uri(REQUEST_ID)));
         assert!(matches!(items[2], Err(read::Error::Untyped(_))));
-        assert!(matches!(&items[3], Ok(Ok(id)) if id == &uri(METADATA_ID)));
+        // The metadata record is outside a capture now, so its link is out of place.
+        assert!(matches!(
+            &items[3],
+            Ok(Err(finding))
+                if finding.index == 3
+                    && matches!(finding.violation, Violation::UnexpectedConcurrentTo { .. })
+        ));
     }
 
     #[test]
@@ -414,6 +423,13 @@ mod tests {
                 ),
                 (2, Violation::MissingPayloadDigest),
                 (2, Violation::MissingWarcinfoId),
+                // The writer linked the request to its response, not the response to its request.
+                (
+                    2,
+                    Violation::UnexpectedConcurrentTo {
+                        found: vec![uri("urn:uuid:a96ae1a5-931d-4c45-96f3-98576d155f8b")]
+                    }
+                ),
                 (2, Violation::RequestWithoutResponse { found: None }),
             ]
         );

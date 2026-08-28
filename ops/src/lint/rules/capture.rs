@@ -1,5 +1,6 @@
-//! Rule 14: a capture is a `request`, its `response` or `revisit`, and its `metadata` record, in
-//! that order, each naming the one before it and repeating the request's target.
+//! Rules 14 and 15: a capture is a `request`, its `response` or `revisit`, and its `metadata`
+//! record, in that order, each naming the one before it and repeating the request's target, and no
+//! other record names one in `WARC-Concurrent-To`.
 
 use std::io::BufRead;
 
@@ -66,7 +67,9 @@ impl<R: BufRead> Linter<R> {
         None
     }
 
-    /// Check the capture sequence rule and set the expectation for the next record.
+    /// Check the capture sequence rule, and that a record outside the response and metadata
+    /// slots of a capture names no record in `WARC-Concurrent-To`, and set the expectation for
+    /// the next record.
     pub(crate) fn check_capture(
         &mut self,
         index: usize,
@@ -77,6 +80,7 @@ impl<R: BufRead> Linter<R> {
 
         match record {
             Record::Request { header, .. } => {
+                self.check_no_links(index, record);
                 self.pending = Some(Pending {
                     slot: Slot::Response,
                     index,
@@ -96,8 +100,8 @@ impl<R: BufRead> Linter<R> {
                 }
                 None => self.fault(index, record, Violation::ResponseWithoutRequest),
             },
-            Record::Metadata { body, .. } => {
-                if let Some(pending) = expected {
+            Record::Metadata { body, .. } => match expected {
+                Some(pending) => {
                     self.check_links(index, record, &pending);
                     let has_fetch_time = match body {
                         FieldsBlock::Fields(fields) => {
@@ -109,12 +113,27 @@ impl<R: BufRead> Linter<R> {
                         self.fault(index, record, Violation::MissingFetchTime);
                     }
                 }
-            }
+                None => self.check_no_links(index, record),
+            },
             Record::Warcinfo { .. }
             | Record::Resource { .. }
             | Record::Conversion { .. }
             | Record::Continuation { .. }
-            | Record::Other { .. } => {}
+            | Record::Other { .. } => self.check_no_links(index, record),
+        }
+    }
+
+    /// Check that a record outside the response and metadata slots of a capture names no record
+    /// in `WARC-Concurrent-To`.
+    fn check_no_links(&mut self, index: usize, record: &Record) {
+        if !record.concurrent_to().is_empty() {
+            self.fault(
+                index,
+                record,
+                Violation::UnexpectedConcurrentTo {
+                    found: record.concurrent_to().to_vec(),
+                },
+            );
         }
     }
 
@@ -167,6 +186,42 @@ mod tests {
         assert_eq!(findings(&records), []);
     }
 
+    /// A `request` linking to its response, a `metadata` record outside a capture, and a record
+    /// of another type all name a record where none should.
+    #[test]
+    fn only_a_captures_response_and_metadata_records_link_to_another() {
+        let mut records = capture();
+        records[1] = records[1]
+            .clone()
+            .with("WARC-Concurrent-To", format!("<{RESPONSE_ID}>"));
+        records.push(metadata().set("WARC-Record-ID", &format!("<{}>", other_id(1))));
+        records.push(resource(&other_id(2)).with("WARC-Concurrent-To", format!("<{REQUEST_ID}>")));
+
+        assert_eq!(
+            findings(&records),
+            [
+                (
+                    1,
+                    Violation::UnexpectedConcurrentTo {
+                        found: vec![uri(RESPONSE_ID)]
+                    }
+                ),
+                (
+                    4,
+                    Violation::UnexpectedConcurrentTo {
+                        found: vec![uri(RESPONSE_ID)]
+                    }
+                ),
+                (
+                    5,
+                    Violation::UnexpectedConcurrentTo {
+                        found: vec![uri(REQUEST_ID)]
+                    }
+                ),
+            ]
+        );
+    }
+
     #[test]
     fn a_request_is_followed_by_its_response() {
         let mut records = capture();
@@ -174,12 +229,20 @@ mod tests {
 
         assert_eq!(
             findings(&records),
-            [(
-                1,
-                Violation::RequestWithoutResponse {
-                    found: Some("metadata".to_owned())
-                }
-            )]
+            [
+                (
+                    1,
+                    Violation::RequestWithoutResponse {
+                        found: Some("metadata".to_owned())
+                    }
+                ),
+                (
+                    2,
+                    Violation::UnexpectedConcurrentTo {
+                        found: vec![uri(RESPONSE_ID)]
+                    }
+                ),
+            ]
         );
 
         let records = capture()[..2].to_vec();
@@ -195,7 +258,18 @@ mod tests {
         let mut records = capture();
         records.remove(1);
 
-        assert_eq!(findings(&records), [(1, Violation::ResponseWithoutRequest)]);
+        assert_eq!(
+            findings(&records),
+            [
+                (1, Violation::ResponseWithoutRequest),
+                (
+                    2,
+                    Violation::UnexpectedConcurrentTo {
+                        found: vec![uri(RESPONSE_ID)]
+                    }
+                ),
+            ]
+        );
     }
 
     #[test]
