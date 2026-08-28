@@ -1,4 +1,4 @@
-//! Rules 13 and 14: each record lies in a gzip member of its own, and nothing stands between one
+//! Rules 1 and 2: each record lies in a gzip member of its own, and nothing stands between one
 //! record and the next.
 
 use std::io::BufRead;
@@ -61,22 +61,20 @@ impl<R: BufRead> Linter<R> {
         record: &Record,
         placement: Option<Placement>,
     ) {
-        let record_id = &record.core().record_id;
-
         if let Some(Placement { first, members }) = placement {
             if first != index {
-                self.report(index, record_id, Violation::SharedGzipMember { first });
+                self.fault(index, record, Violation::SharedGzipMember { first });
             }
             if members > 1 {
-                self.report(index, record_id, Violation::SplitGzipMember { members });
+                self.fault(index, record, Violation::SplitGzipMember { members });
             }
         }
 
         let padding = self.records.blank_lines();
         if padding > 0 {
-            self.report(
+            self.fault(
                 index,
-                record_id,
+                record,
                 Violation::BlankLinesBefore { lines: padding },
             );
         }

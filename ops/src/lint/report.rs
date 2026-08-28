@@ -13,6 +13,30 @@ use fluent_uri::Uri;
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, thiserror::Error)]
 #[serde(tag = "rule", rename_all = "snake_case")]
 pub enum Violation {
+    /// A record is not alone in its gzip member.
+    #[error("the record shares its gzip member with record {first}")]
+    SharedGzipMember {
+        /// The position of the other record in the member.
+        first: usize,
+    },
+    /// A record's octets are spread over several gzip members.
+    #[error("the record is spread over {members} gzip members")]
+    SplitGzipMember {
+        /// The number of members the record lies in.
+        members: usize,
+    },
+    /// Blank lines stand before a record.
+    #[error("the record is preceded by {}", blank_lines(*lines))]
+    BlankLinesBefore {
+        /// The number of blank lines standing before the record.
+        lines: usize,
+    },
+    /// Blank lines stand after the last record of the file.
+    #[error("{} follow the record, at the end of the file", blank_lines(*lines))]
+    TrailingBlankLines {
+        /// The number of blank lines the file ends with.
+        lines: usize,
+    },
     /// Two adjacent fields appear in the opposite of canonical order.
     #[error("`{following}` should appear before `{preceding}`")]
     NonCanonicalHeaderOrder {
@@ -20,6 +44,79 @@ pub enum Violation {
         preceding: String,
         /// The later field, whose canonical rank is earlier.
         following: String,
+    },
+    /// A record's `WARC-Record-ID` is one an earlier record already used.
+    #[error("`WARC-Record-ID` is the identifier of record {first}")]
+    DuplicateRecordId {
+        /// The position of the record that used the identifier first.
+        first: usize,
+    },
+    /// A record is dated earlier than the record before it.
+    #[error("`WARC-Date` is {found}, which precedes the {expected} of record {preceding}")]
+    DateOutOfOrder {
+        /// The position of the record before this one.
+        preceding: usize,
+        /// The date of the record before this one.
+        #[serde(serialize_with = "serialize_display")]
+        expected: WarcDate,
+        /// The date of this record.
+        #[serde(serialize_with = "serialize_display")]
+        found: WarcDate,
+    },
+    /// A record with a block carries no `Content-Type`.
+    #[error("the record has a block but carries no `Content-Type`")]
+    MissingContentType,
+    /// A record's `Content-Type` is not the one its type calls for.
+    #[error("`Content-Type` should be `{expected}`, but is `{found}`")]
+    WrongContentType {
+        /// The media type the record's type calls for.
+        #[serde(serialize_with = "serialize_display")]
+        expected: MediaType,
+        /// The media type the record declares.
+        #[serde(serialize_with = "serialize_display")]
+        found: MediaType,
+    },
+    /// A record carries no `WARC-Block-Digest`.
+    #[error("the record carries no `WARC-Block-Digest`")]
+    MissingBlockDigest,
+    /// A record whose block determines its payload carries no `WARC-Payload-Digest`.
+    #[error("the record has a payload but carries no `WARC-Payload-Digest`")]
+    MissingPayloadDigest,
+    /// A record's `WARC-Block-Digest` is not the digest of the block it carries.
+    #[error("`WARC-Block-Digest` is `{declared}`, but the block digests as `{computed}`")]
+    BlockDigestMismatch {
+        /// The digest the record declares.
+        #[serde(serialize_with = "serialize_display")]
+        declared: LabelledDigest,
+        /// The digest of the block it carries.
+        #[serde(serialize_with = "serialize_display")]
+        computed: LabelledDigest,
+    },
+    /// A record's `WARC-Payload-Digest` is not the digest of the payload its block determines.
+    #[error("`WARC-Payload-Digest` is `{declared}`, but the payload digests as `{computed}`")]
+    PayloadDigestMismatch {
+        /// The digest the record declares.
+        #[serde(serialize_with = "serialize_display")]
+        declared: LabelledDigest,
+        /// The digest of the payload its block determines.
+        #[serde(serialize_with = "serialize_display")]
+        computed: LabelledDigest,
+    },
+    /// A record declares a digest the algorithm it names cannot have produced.
+    #[error("`{field}` is `{found}`, which the algorithm it names cannot have produced")]
+    MalformedDigest {
+        /// The field the digest is declared in.
+        #[serde(serialize_with = "serialize_display")]
+        field: Field,
+        /// The digest the record declares.
+        #[serde(serialize_with = "serialize_display")]
+        found: LabelledDigest,
+    },
+    /// A record declares a `WARC-Payload-Digest` over a block whose payload cannot be read.
+    #[error("the payload the declared digest covers cannot be read: {reason}")]
+    UnreadablePayload {
+        /// Why the block does not yield a payload.
+        reason: String,
     },
     /// The first record of the file is not a `warcinfo` record.
     #[error("the first record is a `{found}` record, not a `warcinfo` record")]
@@ -41,24 +138,34 @@ pub enum Violation {
         #[serde(serialize_with = "serialize_display")]
         found: Uri<String>,
     },
-    /// A record whose block determines its payload carries no `WARC-Payload-Digest`.
-    #[error("the record has a payload but carries no `WARC-Payload-Digest`")]
-    MissingPayloadDigest,
-    /// A record carries no `WARC-Block-Digest`.
-    #[error("the record carries no `WARC-Block-Digest`")]
-    MissingBlockDigest,
-    /// A record with a block carries no `Content-Type`.
-    #[error("the record has a block but carries no `Content-Type`")]
-    MissingContentType,
-    /// A record's `Content-Type` is not the one its type calls for.
-    #[error("`Content-Type` should be `{expected}`, but is `{found}`")]
-    WrongContentType {
-        /// The media type the record's type calls for.
-        #[serde(serialize_with = "serialize_display")]
-        expected: MediaType,
-        /// The media type the record declares.
-        #[serde(serialize_with = "serialize_display")]
-        found: MediaType,
+    /// A `warcinfo` record carries no `isPartOf` field.
+    #[error("the warcinfo record carries no `isPartOf` field")]
+    MissingCollectionId,
+    /// A `warcinfo` record's `isPartOf` is not a host, path parts, and a timestamp joined by `-`.
+    #[error(
+        "`isPartOf` should be a host, path parts, and a timestamp joined by `-`, but is `{found}`"
+    )]
+    MalformedCollectionId {
+        /// The collection identifier the record names.
+        found: String,
+    },
+    /// A `warcinfo` record's `WARC-Filename` is not its collection identifier followed by
+    /// `.warc.gz`.
+    #[error("`WARC-Filename` should be `{expected}`, but {}", filename(found.as_ref()))]
+    WrongFilename {
+        /// The file name the collection identifier calls for.
+        expected: String,
+        /// The record's file name, or `None` if it carries none.
+        #[serde(serialize_with = "serialize_optional_display")]
+        found: Option<Text>,
+    },
+    /// A `request` record's target URI does not have the collection's host as its host.
+    #[error("the target URI's host should be `{expected}`, but {}", host(found.as_deref()))]
+    WrongRequestHost {
+        /// The host of the collection identifier the `warcinfo` record names.
+        expected: String,
+        /// The target URI's host, or `None` if it has none.
+        found: Option<String>,
     },
     /// A `request` record is not immediately followed by its `response` or `revisit` record.
     #[error("the request is not followed by its response: {}", next_record(found.as_deref()))]
@@ -101,118 +208,11 @@ pub enum Violation {
     /// A capture's `metadata` record carries no `fetchTimeMs` field.
     #[error("the capture's metadata record carries no `fetchTimeMs` field")]
     MissingFetchTime,
-    /// A `warcinfo` record carries no `isPartOf` field.
-    #[error("the warcinfo record carries no `isPartOf` field")]
-    MissingCollectionId,
-    /// A `warcinfo` record's `isPartOf` is not a host, path parts, and a timestamp joined by `-`.
-    #[error(
-        "`isPartOf` should be a host, path parts, and a timestamp joined by `-`, but is `{found}`"
-    )]
-    MalformedCollectionId {
-        /// The collection identifier the record names.
-        found: String,
-    },
-    /// A `warcinfo` record's `WARC-Filename` is not its collection identifier followed by
-    /// `.warc.gz`.
-    #[error("`WARC-Filename` should be `{expected}`, but {}", filename(found.as_ref()))]
-    WrongFilename {
-        /// The file name the collection identifier calls for.
-        expected: String,
-        /// The record's file name, or `None` if it carries none.
-        #[serde(serialize_with = "serialize_optional_display")]
-        found: Option<Text>,
-    },
     /// A `revisit` record carries a block it does not declare truncated.
     #[error("the revisit carries a block of {length} octets without declaring it truncated")]
     UndeclaredRevisitTruncation {
         /// The length of the block the record carries.
         length: u64,
-    },
-    /// A record's `WARC-Block-Digest` is not the digest of the block it carries.
-    #[error("`WARC-Block-Digest` is `{declared}`, but the block digests as `{computed}`")]
-    BlockDigestMismatch {
-        /// The digest the record declares.
-        #[serde(serialize_with = "serialize_display")]
-        declared: LabelledDigest,
-        /// The digest of the block it carries.
-        #[serde(serialize_with = "serialize_display")]
-        computed: LabelledDigest,
-    },
-    /// A record's `WARC-Payload-Digest` is not the digest of the payload its block determines.
-    #[error("`WARC-Payload-Digest` is `{declared}`, but the payload digests as `{computed}`")]
-    PayloadDigestMismatch {
-        /// The digest the record declares.
-        #[serde(serialize_with = "serialize_display")]
-        declared: LabelledDigest,
-        /// The digest of the payload its block determines.
-        #[serde(serialize_with = "serialize_display")]
-        computed: LabelledDigest,
-    },
-    /// A record declares a digest the algorithm it names cannot have produced.
-    #[error("`{field}` is `{found}`, which the algorithm it names cannot have produced")]
-    MalformedDigest {
-        /// The field the digest is declared in.
-        #[serde(serialize_with = "serialize_display")]
-        field: Field,
-        /// The digest the record declares.
-        #[serde(serialize_with = "serialize_display")]
-        found: LabelledDigest,
-    },
-    /// A record declares a `WARC-Payload-Digest` over a block whose payload cannot be read.
-    #[error("the payload the declared digest covers cannot be read: {reason}")]
-    UnreadablePayload {
-        /// Why the block does not yield a payload.
-        reason: String,
-    },
-    /// A record's `WARC-Record-ID` is one an earlier record already used.
-    #[error("`WARC-Record-ID` is the identifier of record {first}")]
-    DuplicateRecordId {
-        /// The position of the record that used the identifier first.
-        first: usize,
-    },
-    /// A record is not alone in its gzip member.
-    #[error("the record shares its gzip member with record {first}")]
-    SharedGzipMember {
-        /// The position of the other record in the member.
-        first: usize,
-    },
-    /// A record's octets are spread over several gzip members.
-    #[error("the record is spread over {members} gzip members")]
-    SplitGzipMember {
-        /// The number of members the record lies in.
-        members: usize,
-    },
-    /// A `request` record's target URI does not have the collection's host as its host.
-    #[error("the target URI's host should be `{expected}`, but {}", host(found.as_deref()))]
-    WrongRequestHost {
-        /// The host of the collection identifier the `warcinfo` record names.
-        expected: String,
-        /// The target URI's host, or `None` if it has none.
-        found: Option<String>,
-    },
-    /// Blank lines stand before a record.
-    #[error("the record is preceded by {}", blank_lines(*lines))]
-    BlankLinesBefore {
-        /// The number of blank lines standing before the record.
-        lines: usize,
-    },
-    /// Blank lines stand after the last record of the file.
-    #[error("{} follow the record, at the end of the file", blank_lines(*lines))]
-    TrailingBlankLines {
-        /// The number of blank lines the file ends with.
-        lines: usize,
-    },
-    /// A record is dated earlier than the record before it.
-    #[error("`WARC-Date` is {found}, which precedes the {expected} of record {preceding}")]
-    DateOutOfOrder {
-        /// The position of the record before this one.
-        preceding: usize,
-        /// The date of the record before this one.
-        #[serde(serialize_with = "serialize_display")]
-        expected: WarcDate,
-        /// The date of this record.
-        #[serde(serialize_with = "serialize_display")]
-        found: WarcDate,
     },
     /// A `revisit` record lacks a `WARC-Refers-To` field.
     #[error("the revisit carries no {}", fields(missing))]
@@ -235,35 +235,35 @@ impl Violation {
     #[must_use]
     pub const fn rule(&self) -> &'static str {
         match self {
+            Self::SharedGzipMember { .. } => "shared_gzip_member",
+            Self::SplitGzipMember { .. } => "split_gzip_member",
+            Self::BlankLinesBefore { .. } => "blank_lines_before",
+            Self::TrailingBlankLines { .. } => "trailing_blank_lines",
             Self::NonCanonicalHeaderOrder { .. } => "non_canonical_header_order",
+            Self::DuplicateRecordId { .. } => "duplicate_record_id",
+            Self::DateOutOfOrder { .. } => "date_out_of_order",
+            Self::MissingContentType => "missing_content_type",
+            Self::WrongContentType { .. } => "wrong_content_type",
+            Self::MissingBlockDigest => "missing_block_digest",
+            Self::MissingPayloadDigest => "missing_payload_digest",
+            Self::BlockDigestMismatch { .. } => "block_digest_mismatch",
+            Self::PayloadDigestMismatch { .. } => "payload_digest_mismatch",
+            Self::MalformedDigest { .. } => "malformed_digest",
+            Self::UnreadablePayload { .. } => "unreadable_payload",
             Self::FirstRecordNotWarcinfo { .. } => "first_record_not_warcinfo",
             Self::MissingWarcinfoId => "missing_warcinfo_id",
             Self::WrongWarcinfoId { .. } => "wrong_warcinfo_id",
-            Self::MissingPayloadDigest => "missing_payload_digest",
-            Self::MissingBlockDigest => "missing_block_digest",
-            Self::MissingContentType => "missing_content_type",
-            Self::WrongContentType { .. } => "wrong_content_type",
+            Self::MissingCollectionId => "missing_collection_id",
+            Self::MalformedCollectionId { .. } => "malformed_collection_id",
+            Self::WrongFilename { .. } => "wrong_filename",
+            Self::WrongRequestHost { .. } => "wrong_request_host",
             Self::RequestWithoutResponse { .. } => "request_without_response",
             Self::ResponseWithoutRequest => "response_without_request",
             Self::ResponseWithoutMetadata { .. } => "response_without_metadata",
             Self::WrongConcurrentTo { .. } => "wrong_concurrent_to",
             Self::WrongTargetUri { .. } => "wrong_target_uri",
             Self::MissingFetchTime => "missing_fetch_time",
-            Self::MissingCollectionId => "missing_collection_id",
-            Self::MalformedCollectionId { .. } => "malformed_collection_id",
-            Self::WrongFilename { .. } => "wrong_filename",
             Self::UndeclaredRevisitTruncation { .. } => "undeclared_revisit_truncation",
-            Self::BlockDigestMismatch { .. } => "block_digest_mismatch",
-            Self::PayloadDigestMismatch { .. } => "payload_digest_mismatch",
-            Self::MalformedDigest { .. } => "malformed_digest",
-            Self::UnreadablePayload { .. } => "unreadable_payload",
-            Self::DuplicateRecordId { .. } => "duplicate_record_id",
-            Self::SharedGzipMember { .. } => "shared_gzip_member",
-            Self::SplitGzipMember { .. } => "split_gzip_member",
-            Self::WrongRequestHost { .. } => "wrong_request_host",
-            Self::BlankLinesBefore { .. } => "blank_lines_before",
-            Self::TrailingBlankLines { .. } => "trailing_blank_lines",
-            Self::DateOutOfOrder { .. } => "date_out_of_order",
             Self::MissingRefersToFields { .. } => "missing_refers_to_fields",
             Self::RefersToUnknownRecord { .. } => "refers_to_unknown_record",
         }
