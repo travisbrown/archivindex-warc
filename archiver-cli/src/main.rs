@@ -4,11 +4,12 @@ use std::ffi::OsStr;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::Ordering;
 
 use anyhow::{Context, Result, bail};
 use archivindex_archiver::capture::{CaptureControl, CaptureEvent};
 use archivindex_archiver::{Archiver, Config};
-use archivindex_cli_support::{CommandOutcome, Verbosity, exit_code, plural};
+use archivindex_cli_support::{CommandOutcome, Verbosity, exit_code, interrupt_flag, plural};
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -34,11 +35,16 @@ fn archive(options: &ArchiveOptions, quiet: bool) -> Result<CommandOutcome> {
     let mut input_error = None;
     let urls = read_urls(std::io::stdin().lock(), &mut input_error);
     let progress = progress_spinner("Archiving", "URLs");
+    let interrupted = interrupt_flag();
     let mut events = |event: CaptureEvent<'_>| {
         if matches!(event, CaptureEvent::Written { .. }) {
             progress.inc(1);
         }
-        CaptureControl::Continue
+        if interrupted.load(Ordering::Relaxed) {
+            CaptureControl::Cancel
+        } else {
+            CaptureControl::Continue
+        }
     };
     let result = archiver.archive_to_path_with_events(urls, &options.output, &mut events);
     progress.finish_and_clear();
@@ -46,6 +52,9 @@ fn archive(options: &ArchiveOptions, quiet: bool) -> Result<CommandOutcome> {
         result.with_context(|| format!("cannot archive to {}", options.output.display()))?;
     if let Some(error) = &input_error {
         log::warn!("stopped reading input early: {error}");
+    }
+    if summary.cancelled {
+        log::warn!("stopped archiving at an interrupt");
     }
 
     for failure in &summary.failures {
