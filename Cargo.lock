@@ -130,6 +130,7 @@ dependencies = [
 [[package]]
 name = "archivindex-cli-support"
 version = "0.1.0"
+source = "git+https://github.com/travisbrown/archivindex-core#fa28d7d9c60a35cc97c1a705cb19aa595ccfd933"
 dependencies = [
  "clap",
  "log",
@@ -139,6 +140,10 @@ dependencies = [
 [[package]]
 name = "archivindex-test-support"
 version = "0.1.0"
+source = "git+https://github.com/travisbrown/archivindex-core#fa28d7d9c60a35cc97c1a705cb19aa595ccfd933"
+dependencies = [
+ "proptest",
+]
 
 [[package]]
 name = "archivindex-warc"

@@ -26,8 +26,8 @@ missing_errors_doc = "allow"
 
 [dependencies]
 anyhow = "1"
-# The command-line behavior the repository's other applications share.
-archivindex-cli-support = { path = "../cli-support" }
+# The command-line behavior the Archivindex applications share.
+archivindex-cli-support = { git = "https://github.com/travisbrown/archivindex-core" }
 # The crate under test, read from its own source tree rather than from a published release.
 archivindex-warc = { path = ".." }
 archivindex-warc-ops = { path = "../ops" }

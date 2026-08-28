@@ -151,7 +151,7 @@ fn same_target_captures(input: &Path) -> Result<HashSet<Vec<u8>>> {
 
 #[cfg(test)]
 mod tests {
-    use archivindex_test_support::render;
+    use archivindex_test_support::warc::render;
     use archivindex_warc::parse::raw;
 
     use super::*;

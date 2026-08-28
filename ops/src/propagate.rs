@@ -133,7 +133,7 @@ fn insert_field(header: &mut raw::RecordHeader, field: Field, value: Vec<u8>) {
 
 #[cfg(test)]
 mod tests {
-    use archivindex_test_support::render;
+    use archivindex_test_support::warc::render;
 
     use super::*;
     use crate::file::open;

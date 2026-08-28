@@ -62,7 +62,7 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
 
-    use archivindex_test_support::render;
+    use archivindex_test_support::warc::render;
 
     use super::*;
     use crate::Error;
