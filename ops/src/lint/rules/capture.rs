@@ -1,4 +1,4 @@
-//! Rule 7: a capture is a `request`, its `response` or `revisit`, and its `metadata` record, in
+//! Rule 14: a capture is a `request`, its `response` or `revisit`, and its `metadata` record, in
 //! that order, each naming the one before it and repeating the request's target.
 
 use std::io::BufRead;
@@ -31,6 +31,24 @@ pub enum Slot {
     Metadata,
 }
 
+impl Slot {
+    /// Whether a record is of the kind expected.
+    const fn accepts(self, record: &Record) -> bool {
+        match self {
+            Self::Response => matches!(record, Record::Response { .. } | Record::Revisit { .. }),
+            Self::Metadata => matches!(record, Record::Metadata { .. }),
+        }
+    }
+
+    /// The rule broken when `found`, or the end of the file, stands where this kind was expected.
+    const fn unmet(self, found: Option<String>) -> Violation {
+        match self {
+            Self::Response => Violation::RequestWithoutResponse { found },
+            Self::Metadata => Violation::ResponseWithoutMetadata { found },
+        }
+    }
+}
+
 impl<R: BufRead> Linter<R> {
     /// Resolve a waiting capture expectation against the record just read.
     ///
@@ -38,19 +56,11 @@ impl<R: BufRead> Linter<R> {
     /// that set the expectation gets a finding, and the expectation is dropped.
     pub(crate) fn settle(&mut self, record: &Record) -> Option<Pending> {
         let pending = self.pending.take()?;
-        let met = match pending.slot {
-            Slot::Response => is_response_slot(record),
-            Slot::Metadata => matches!(record, Record::Metadata { .. }),
-        };
-        if met {
+        if pending.slot.accepts(record) {
             return Some(pending);
         }
 
-        let found = Some(record.type_name().to_owned());
-        let violation = match pending.slot {
-            Slot::Response => Violation::RequestWithoutResponse { found },
-            Slot::Metadata => Violation::ResponseWithoutMetadata { found },
-        };
+        let violation = pending.slot.unmet(Some(record.type_name().to_owned()));
         self.report(pending.index, &pending.record_id, violation);
 
         None
@@ -84,7 +94,7 @@ impl<R: BufRead> Linter<R> {
                         target_uri: pending.target_uri,
                     });
                 }
-                None => self.report(index, record_id, Violation::ResponseWithoutRequest),
+                None => self.fault(index, record, Violation::ResponseWithoutRequest),
             },
             Record::Metadata { body, .. } => {
                 if let Some(pending) = expected {
@@ -96,7 +106,7 @@ impl<R: BufRead> Linter<R> {
                         FieldsBlock::Raw(_) => false,
                     };
                     if !has_fetch_time {
-                        self.report(index, record_id, Violation::MissingFetchTime);
+                        self.fault(index, record, Violation::MissingFetchTime);
                     }
                 }
             }
@@ -110,12 +120,10 @@ impl<R: BufRead> Linter<R> {
 
     /// Check that a capture record names the record before it and repeats the request's target.
     fn check_links(&mut self, index: usize, record: &Record, pending: &Pending) {
-        let record_id = &record.core().record_id;
-
         if record.concurrent_to() != std::slice::from_ref(&pending.record_id) {
-            self.report(
+            self.fault(
                 index,
-                record_id,
+                record,
                 Violation::WrongConcurrentTo {
                     expected: pending.record_id.clone(),
                     found: record.concurrent_to().to_vec(),
@@ -124,9 +132,9 @@ impl<R: BufRead> Linter<R> {
         }
 
         if record.target_uri() != Some(&pending.target_uri) {
-            self.report(
+            self.fault(
                 index,
-                record_id,
+                record,
                 Violation::WrongTargetUri {
                     expected: pending.target_uri.clone(),
                     found: record.target_uri().cloned(),
@@ -138,18 +146,10 @@ impl<R: BufRead> Linter<R> {
     /// Report a capture left waiting at the end of the file.
     pub(crate) fn finish_capture(&mut self) {
         if let Some(pending) = self.pending.take() {
-            let violation = match pending.slot {
-                Slot::Response => Violation::RequestWithoutResponse { found: None },
-                Slot::Metadata => Violation::ResponseWithoutMetadata { found: None },
-            };
+            let violation = pending.slot.unmet(None);
             self.report(pending.index, &pending.record_id, violation);
         }
     }
-}
-
-/// Whether a record can stand in the response position of a capture.
-const fn is_response_slot(record: &Record) -> bool {
-    matches!(record, Record::Response { .. } | Record::Revisit { .. })
 }
 
 #[cfg(test)]

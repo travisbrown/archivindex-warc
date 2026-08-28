@@ -1,4 +1,4 @@
-//! Rules 2, 3, 8, and 9: the `warcinfo` record that opens a file, the one each record names, the
+//! Rules 10, 11, 12, and 13: the `warcinfo` record that opens a file, the one each record names, the
 //! collection a `warcinfo` record names, and the host the requests under it target.
 
 use std::io::BufRead;
@@ -17,12 +17,10 @@ impl<R: BufRead> Linter<R> {
     /// closest one, that a `warcinfo` record names its collection and is in the file named for
     /// it, and that a `request` record targets the collection's host.
     pub(crate) fn check_warcinfo(&mut self, index: usize, record: &Record) {
-        let record_id = &record.core().record_id;
-
         if index == 0 && !matches!(record, Record::Warcinfo { .. }) {
-            self.report(
+            self.fault(
                 index,
-                record_id,
+                record,
                 Violation::FirstRecordNotWarcinfo {
                     found: record.type_name().to_owned(),
                 },
@@ -30,14 +28,14 @@ impl<R: BufRead> Linter<R> {
         }
 
         if let Record::Warcinfo { header, body } = record {
-            self.warcinfo_id = Some(record_id.clone());
+            self.warcinfo_id = Some(header.core.record_id.clone());
             self.check_collection(index, header, body);
         } else {
             match record.warcinfo_id() {
-                None => self.report(index, record_id, Violation::MissingWarcinfoId),
-                Some(found) if Some(found) != self.warcinfo_id.as_ref() => self.report(
+                None => self.fault(index, record, Violation::MissingWarcinfoId),
+                Some(found) if Some(found) != self.warcinfo_id.as_ref() => self.fault(
                     index,
-                    record_id,
+                    record,
                     Violation::WrongWarcinfoId {
                         expected: self.warcinfo_id.clone(),
                         found: found.clone(),
@@ -53,7 +51,7 @@ impl<R: BufRead> Linter<R> {
                 .as_deref()
                 .and_then(|expected| wrong_host(expected, &header.target_uri))
         {
-            self.report(index, record_id, violation);
+            self.fault(index, record, violation);
         }
     }
 
@@ -65,17 +63,14 @@ impl<R: BufRead> Linter<R> {
         header: &WarcinfoHeader,
         body: &FieldsBlock<WarcinfoField>,
     ) {
+        let record_id = &header.core.record_id;
         let collection = match body {
             FieldsBlock::Fields(fields) => fields.get(&WarcinfoField::Dcmi(DcmiTerm::IsPartOf)),
             FieldsBlock::Raw(_) => None,
         };
         self.collection_host = None;
         let Some(collection) = collection else {
-            self.report(
-                index,
-                &header.core.record_id,
-                Violation::MissingCollectionId,
-            );
+            self.report(index, record_id, Violation::MissingCollectionId);
             return;
         };
 
@@ -83,7 +78,7 @@ impl<R: BufRead> Linter<R> {
             Some(host) => self.collection_host = Some(host.to_owned()),
             None => self.report(
                 index,
-                &header.core.record_id,
+                record_id,
                 Violation::MalformedCollectionId {
                     found: collection.to_owned(),
                 },
@@ -99,7 +94,7 @@ impl<R: BufRead> Linter<R> {
         if !named_for_collection {
             self.report(
                 index,
-                &header.core.record_id,
+                record_id,
                 Violation::WrongFilename {
                     expected: format!("{collection}.warc.gz"),
                     found: header.filename.clone(),

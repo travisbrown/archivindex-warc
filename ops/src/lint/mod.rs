@@ -3,57 +3,62 @@
 //! [`Linter`] reads a file at the semantic level and checks every record that the standard accepts
 //! against these rules:
 //!
-//! 1. Header fields appear in canonical order. Standard fields precede extension fields; repeated
+//! 1. Every record of a gzip file lies in a gzip member of its own, which is what lets a record be
+//!    found and decompressed without reading the ones before it. A file read without its member
+//!    framing, as an uncompressed file is, is not held to this rule.
+//! 2. Nothing stands between one record and the next. A record ends with the two line endings that
+//!    close it, so a blank line before a record, or at the end of the file, is padding that some
+//!    writers emit and that concatenating files leaves behind.
+//! 3. Header fields appear in canonical order. Standard fields precede extension fields; repeated
 //!    and extension fields retain their relative order.
-//! 2. The first record is a `warcinfo` record.
-//! 3. Every other record names, in `WARC-Warcinfo-ID`, the `warcinfo` record that most closely
-//!    precedes it.
-//! 4. Every record with a payload the block determines carries a `WARC-Payload-Digest`. Those are
-//!    `resource` and `conversion` records, and `request` and `response` records holding HTTP
-//!    messages. A `revisit` record's payload lies elsewhere, and a `continuation` record's payload
-//!    is digested in its first segment, so neither is held to this rule.
-//! 5. Every record carries a `WARC-Block-Digest`.
+//! 4. No two records share a `WARC-Record-ID`, which clause 5.2 of the standard requires to be
+//!    globally unique. Concatenating files record by record is what usually breaks this.
+//! 5. Every record is dated no earlier than the record before it.
 //! 6. Every record with a block carries a `Content-Type` fitting its type: `application/warc-fields`
 //!    for `warcinfo` and `metadata`, `application/http;msgtype=request` for `request`, and
 //!    `application/http;msgtype=response` for `response` and for a `revisit` with a block.
 //!    A `continuation` record carries no `Content-Type`, as the standard says.
-//! 7. A capture is written as three consecutive records: a `request`, then the `response` (or the
-//!    `revisit` standing in for it) naming the request alone in `WARC-Concurrent-To`, then a
-//!    `metadata` record naming the response alone. The response and the metadata record repeat the
-//!    request's `WARC-Target-URI`, and the metadata record's `application/warc-fields` body carries
-//!    a `fetchTimeMs` field. A `metadata` record outside a capture is not held to these rules.
-//! 8. Every `warcinfo` record names its collection in an `isPartOf` field, as a host, any number of
-//!    path parts, and a timestamp of digits, all joined by `-`, and its `WARC-Filename` is that
-//!    identifier followed by `.warc.gz`. A path part such as `en` holds no `.`, which tells it from
-//!    the host.
-//! 9. Every `request` record's target URI has, as its host, exactly the host of the collection
-//!    identifier named by the `warcinfo` record that most closely precedes it. A request that no
-//!    well-formed collection identifier governs is not held to this rule.
-//! 10. Every `revisit` record under the identical payload digest profile that carries a block
+//! 7. Every record carries a `WARC-Block-Digest`.
+//! 8. Every record with a payload the block determines carries a `WARC-Payload-Digest`. Those are
+//!    `resource` and `conversion` records, and `request` and `response` records holding HTTP
+//!    messages. A `revisit` record's payload lies elsewhere, and a `continuation` record's payload
+//!    is digested in its first segment, so neither is held to this rule.
+//! 9. Every `WARC-Block-Digest` is the digest of the block the record carries, and every
+//!    `WARC-Payload-Digest` the digest of the payload its block determines. A digest under an
+//!    algorithm this build does not compute is not checked, and neither is the payload digest of a
+//!    segment or of a record that declares its block truncated.
+//! 10. The first record is a `warcinfo` record.
+//! 11. Every other record names, in `WARC-Warcinfo-ID`, the `warcinfo` record that most closely
+//!     precedes it.
+//! 12. Every `warcinfo` record names its collection in an `isPartOf` field, as a host, any number
+//!     of path parts, and a timestamp of digits, all joined by `-`, and its `WARC-Filename` is that
+//!     identifier followed by `.warc.gz`. A path part such as `en` holds no `.`, which tells it
+//!     from the host.
+//! 13. Every `request` record's target URI has, as its host, exactly the host of the collection
+//!     identifier named by the `warcinfo` record that most closely precedes it. A request that no
+//!     well-formed collection identifier governs is not held to this rule.
+//! 14. A capture is written as three consecutive records: a `request`, then the `response` (or the
+//!     `revisit` standing in for it) naming the request alone in `WARC-Concurrent-To`, then a
+//!     `metadata` record naming the response alone. The response and the metadata record repeat
+//!     the request's `WARC-Target-URI`, and the metadata record's `application/warc-fields` body
+//!     carries a `fetchTimeMs` field. A `metadata` record outside a capture is not held to these
+//!     rules.
+//! 15. Every `revisit` record under the identical payload digest profile that carries a block
 //!     declares it as `WARC-Truncated: length`, which clause 6.7.2 of the standard asks of the
 //!     writer.
-//! 11. Every `WARC-Block-Digest` is the digest of the block the record carries, and every
-//!     `WARC-Payload-Digest` the digest of the payload its block determines. A digest under an
-//!     algorithm this build does not compute is not checked, and neither is the payload digest of a
-//!     segment or of a record that declares its block truncated.
-//! 12. No two records share a `WARC-Record-ID`, which clause 5.2 of the standard requires to be
-//!     globally unique. Concatenating files record by record is what usually breaks this.
-//! 13. Every record of a gzip file lies in a gzip member of its own, which is what lets a record be
-//!     found and decompressed without reading the ones before it. A file read without its member
-//!     framing, as an uncompressed file is, is not held to this rule.
-//! 14. Nothing stands between one record and the next. A record ends with the two line endings that
-//!     close it, so a blank line before a record, or at the end of the file, is padding that some
-//!     writers emit and that concatenating files leaves behind.
-//! 15. Every record is dated no earlier than the record before it.
 //! 16. Every `revisit` record names the record it revisits in `WARC-Refers-To`,
 //!     `WARC-Refers-To-Target-URI`, and `WARC-Refers-To-Date`.
 //! 17. Every `revisit` record's `WARC-Refers-To` names a record that precedes it in the file. A
 //!     file whose revisits are of records held elsewhere breaks this rule by design.
 //!
+//! The rules go from the shape of the file, through what each record's header and block hold, to
+//! how records relate: to the `warcinfo` record governing them, within a capture, and to the
+//! record a `revisit` stands for. A record's findings come in that order.
+//!
 //! Each rule a record breaks is one [`Finding`]. A record that breaks none is reported by its
 //! identifier alone.
 //!
-//! The rules live in one module each, or one for a family, under `rules`; what they report is in
+//! The rules live in one module per family under `rules`, in that order; what they report is in
 //! `report`.
 
 mod report;
@@ -87,19 +92,6 @@ pub struct Linter<R> {
     records: UntypedIter<R>,
     /// The position of the next record read.
     index: usize,
-    /// The identifier of the most recent `warcinfo` record.
-    warcinfo_id: Option<Uri<String>>,
-    /// The host of the collection identifier the most recent `warcinfo` record names, if it
-    /// names a well-formed one.
-    collection_host: Option<String>,
-    /// The capture record expected next, if a capture is under way.
-    pending: Option<Pending>,
-    /// The preceding record, if it broke no rule and the record after it may still fault it.
-    clean: Option<Uri<String>>,
-    /// Where each identifier the file has used was used first.
-    record_ids: HashMap<Uri<String>, usize>,
-    /// The position and date of the record read last, if one has.
-    previous_date: Option<(usize, WarcDate)>,
     /// Where the gzip members of the file end, when its framing is checked.
     framing: Option<Framing>,
     /// Where the record read last ended in the decompressed stream.
@@ -110,6 +102,19 @@ pub struct Linter<R> {
     member_first: usize,
     /// The position and identifier of the record read last, if it read.
     last_record: Option<(usize, Uri<String>)>,
+    /// Where each identifier the file has used was used first.
+    record_ids: HashMap<Uri<String>, usize>,
+    /// The position and date of the record read last, if one has.
+    previous_date: Option<(usize, WarcDate)>,
+    /// The identifier of the most recent `warcinfo` record.
+    warcinfo_id: Option<Uri<String>>,
+    /// The host of the collection identifier the most recent `warcinfo` record names, if it
+    /// names a well-formed one.
+    collection_host: Option<String>,
+    /// The capture record expected next, if a capture is under way.
+    pending: Option<Pending>,
+    /// The preceding record, if it broke no rule and the record after it may still fault it.
+    clean: Option<Uri<String>>,
     /// Results not yet yielded, since one record can produce several.
     queue: VecDeque<Checked>,
     /// A read error to yield once the results queued before it have been.
@@ -122,17 +127,17 @@ impl<R: BufRead> Linter<R> {
         Self {
             records: WarcReader::new(reader).iter_untyped_records(),
             index: 0,
-            warcinfo_id: None,
-            collection_host: None,
-            pending: None,
-            clean: None,
-            record_ids: HashMap::new(),
-            previous_date: None,
             framing: None,
             read_through: 0,
             boundaries: VecDeque::new(),
             member_first: 0,
             last_record: None,
+            record_ids: HashMap::new(),
+            previous_date: None,
+            warcinfo_id: None,
+            collection_host: None,
+            pending: None,
+            clean: None,
             queue: VecDeque::new(),
             deferred: None,
         }
@@ -157,7 +162,8 @@ impl<R: BufRead> Linter<R> {
         self.index
     }
 
-    /// Check one record against every rule and queue what it yields.
+    /// Check one record against every rule, in the order the rules are listed, and queue what it
+    /// yields.
     fn check(
         &mut self,
         record: &Record,
@@ -173,11 +179,13 @@ impl<R: BufRead> Linter<R> {
         self.settle_clean(mark);
 
         let mark = self.queue.len();
-        if let Some(violation) = order_violation {
-            self.report(index, &record.core().record_id, violation);
-        }
-        self.check_record(index, record, placement);
+        self.check_framing(index, record, placement);
+        self.check_header(index, record, order_violation);
+        self.check_block(index, record);
+        self.check_digests(index, record);
+        self.check_warcinfo(index, record);
         self.check_capture(index, record, expected);
+        self.check_revisit(index, record);
         self.last_record = Some((index, record.core().record_id.clone()));
         if self.queue.len() == mark {
             self.clean = Some(record.core().record_id.clone());
@@ -200,17 +208,6 @@ impl<R: BufRead> Linter<R> {
         }
     }
 
-    /// Check the rules that look at one record at a time.
-    fn check_record(&mut self, index: usize, record: &Record, placement: Option<Placement>) {
-        self.check_framing(index, record, placement);
-        self.check_record_id(index, record);
-        self.check_date(index, record);
-        self.check_warcinfo(index, record);
-        self.check_digests(index, record);
-        self.check_block(index, record);
-        self.check_revisit(index, record);
-    }
-
     /// Report a capture left waiting at the end of the file, and the blank lines it ends with.
     fn finish(&mut self) {
         let mark = self.queue.len();
@@ -231,7 +228,12 @@ impl<R: BufRead> Linter<R> {
         self.deferred = Some(error);
     }
 
-    /// Queue a finding.
+    /// Queue a finding against the record being checked.
+    fn fault(&mut self, index: usize, record: &Record, violation: Violation) {
+        self.report(index, &record.core().record_id, violation);
+    }
+
+    /// Queue a finding against a record by its position and identifier.
     fn report(&mut self, index: usize, record_id: &Uri<String>, violation: Violation) {
         self.queue.push_back(Err(Box::new(Finding {
             index,
@@ -383,8 +385,8 @@ mod tests {
                         following: "WARC-Type".to_owned(),
                     }
                 ),
-                (0, Violation::MissingCollectionId),
                 (0, Violation::MissingBlockDigest),
+                (0, Violation::MissingCollectionId),
                 (
                     1,
                     Violation::NonCanonicalHeaderOrder {
@@ -392,7 +394,6 @@ mod tests {
                         following: "WARC-Date".to_owned(),
                     }
                 ),
-                (1, Violation::MissingWarcinfoId),
                 // The writer digested the message body as it was framed, where clause 5.9 has the
                 // payload be the entity-body, which is that body dechunked.
                 (
@@ -402,6 +403,7 @@ mod tests {
                         computed: labelled("sha1:RBDPEPHJIOR3OAEJ7BRUKYTHPDGZH4I6"),
                     }
                 ),
+                (1, Violation::MissingWarcinfoId),
                 (1, Violation::ResponseWithoutRequest),
                 (
                     2,
@@ -410,8 +412,8 @@ mod tests {
                         following: "WARC-Date".to_owned(),
                     }
                 ),
-                (2, Violation::MissingWarcinfoId),
                 (2, Violation::MissingPayloadDigest),
+                (2, Violation::MissingWarcinfoId),
                 (2, Violation::RequestWithoutResponse { found: None }),
             ]
         );

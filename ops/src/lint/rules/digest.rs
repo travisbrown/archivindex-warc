@@ -1,11 +1,11 @@
-//! Rules 4, 5, and 11: the digests a record declares, and what they digest.
+//! Rules 7, 8, and 9: the digests a record declares, and what they digest.
 
 use std::io::BufRead;
 
 use archivindex_warc::parse::untyped::name::Field;
 use archivindex_warc::record::{BlockError, Record};
 
-use super::block::has_http_target;
+use super::has_http_target;
 use crate::lint::{Linter, Violation};
 
 impl<R: BufRead> Linter<R> {
@@ -15,67 +15,57 @@ impl<R: BufRead> Linter<R> {
     /// Each digest is recomputed under the algorithm the record itself names. A digest this build
     /// cannot compute, and a payload digest the record layer does not check, yield nothing.
     pub(crate) fn check_digests(&mut self, index: usize, record: &Record) {
-        let record_id = record.core().record_id.clone();
-
+        if record.core().block_digest.is_none() {
+            self.fault(index, record, Violation::MissingBlockDigest);
+        }
         if has_payload(record)
             && record
                 .payload()
                 .is_some_and(|payload| payload.payload_digest.is_none())
         {
-            self.report(index, &record_id, Violation::MissingPayloadDigest);
-        }
-        if record.core().block_digest.is_none() {
-            self.report(index, &record_id, Violation::MissingBlockDigest);
+            self.fault(index, record, Violation::MissingPayloadDigest);
         }
 
-        match record.incorrect_block_digest() {
-            Some(BlockError::BlockDigestMismatch { declared, actual }) => self.report(
-                index,
-                &record_id,
-                Violation::BlockDigestMismatch {
-                    declared: *declared,
-                    computed: *actual,
-                },
-            ),
-            Some(BlockError::MalformedBlockDigest(found)) => self.report(
-                index,
-                &record_id,
-                Violation::MalformedDigest {
-                    field: Field::BlockDigest,
-                    found: *found,
-                },
-            ),
-            // The block digest check reports no other failure.
-            Some(_) | None => {}
+        let incorrect = [
+            record.incorrect_block_digest(),
+            record.incorrect_payload_digest(),
+        ];
+        for violation in incorrect.into_iter().flatten().filter_map(digest_violation) {
+            self.fault(index, record, violation);
         }
+    }
+}
 
-        match record.incorrect_payload_digest() {
-            Some(BlockError::PayloadDigestMismatch { declared, actual }) => self.report(
-                index,
-                &record_id,
-                Violation::PayloadDigestMismatch {
-                    declared: *declared,
-                    computed: *actual,
-                },
-            ),
-            Some(BlockError::MalformedPayloadDigest(found)) => self.report(
-                index,
-                &record_id,
-                Violation::MalformedDigest {
-                    field: Field::PayloadDigest,
-                    found: *found,
-                },
-            ),
-            Some(BlockError::Payload(error)) => self.report(
-                index,
-                &record_id,
-                Violation::UnreadablePayload {
-                    reason: error.to_string(),
-                },
-            ),
-            // The payload digest check reports no other failure.
-            Some(_) | None => {}
+/// The rule a digest check's failure breaks, if it breaks one.
+fn digest_violation(error: BlockError) -> Option<Violation> {
+    match error {
+        BlockError::BlockDigestMismatch { declared, actual } => {
+            Some(Violation::BlockDigestMismatch {
+                declared: *declared,
+                computed: *actual,
+            })
         }
+        BlockError::PayloadDigestMismatch { declared, actual } => {
+            Some(Violation::PayloadDigestMismatch {
+                declared: *declared,
+                computed: *actual,
+            })
+        }
+        BlockError::MalformedBlockDigest(found) => Some(Violation::MalformedDigest {
+            field: Field::BlockDigest,
+            found: *found,
+        }),
+        BlockError::MalformedPayloadDigest(found) => Some(Violation::MalformedDigest {
+            field: Field::PayloadDigest,
+            found: *found,
+        }),
+        BlockError::Payload(error) => Some(Violation::UnreadablePayload {
+            reason: error.to_string(),
+        }),
+        // The digest checks report no other failure.
+        BlockError::ContentLengthMismatch { .. }
+        | BlockError::UndeclaredRevisitTruncation(_)
+        | BlockError::Fields(_) => None,
     }
 }
 

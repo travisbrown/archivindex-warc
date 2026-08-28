@@ -1,42 +1,29 @@
-//! Rules 6 and 10: the `Content-Type` a record's block calls for, and the truncation a `revisit`
-//! record's block is.
+//! Rule 6: the `Content-Type` a record's block calls for.
 
 use std::io::BufRead;
 
 use archivindex_warc::record::Record;
-use archivindex_warc::record::header::RevisitProfile;
-use archivindex_warc::record::header::truncated_type::TruncatedType;
 use archivindex_warc::value::MediaType;
 
+use super::has_http_target;
 use crate::lint::{Linter, Violation};
 
 impl<R: BufRead> Linter<R> {
-    /// Check that a `revisit` record declares the truncation its block is, and that a record with
-    /// a block declares the `Content-Type` its type calls for.
+    /// Check that a record with a block declares the `Content-Type` its type calls for.
     pub(crate) fn check_block(&mut self, index: usize, record: &Record) {
-        let record_id = &record.core().record_id;
-
-        if let Some(length) = undeclared_revisit_truncation(record) {
-            self.report(
-                index,
-                record_id,
-                Violation::UndeclaredRevisitTruncation { length },
-            );
-        }
-
         match &record.core().content_type {
             None => {
                 if record.content_length() > 0 && !matches!(record, Record::Continuation { .. }) {
-                    self.report(index, record_id, Violation::MissingContentType);
+                    self.fault(index, record, Violation::MissingContentType);
                 }
             }
             Some(found) => {
                 if let Some(expected) = expected_content_type(record)
                     && !fits(found, &expected)
                 {
-                    self.report(
+                    self.fault(
                         index,
-                        record_id,
+                        record,
                         Violation::WrongContentType {
                             expected,
                             found: found.clone(),
@@ -46,30 +33,6 @@ impl<R: BufRead> Linter<R> {
             }
         }
     }
-}
-
-/// The length of a block a `revisit` record carries without declaring the truncation it is.
-///
-/// Clause 6.7.2 of the WARC 1.1 standard has a record under the identical payload digest profile
-/// carry either no block or the beginning of the response it stands for, declared as
-/// `WARC-Truncated: length`. No rule here applies to another profile.
-fn undeclared_revisit_truncation(record: &Record) -> Option<u64> {
-    let Record::Revisit { header, body } = record else {
-        return None;
-    };
-
-    (!body.is_empty()
-        && header.profile == RevisitProfile::IDENTICAL_PAYLOAD_DIGEST
-        && !matches!(header.core.truncated, Some(TruncatedType::Length)))
-    .then_some(body.len() as u64)
-}
-
-/// Whether a record captures an exchange in a protocol whose messages this crate reads.
-pub fn has_http_target(record: &Record) -> bool {
-    record.target_uri().is_some_and(|target_uri| {
-        let scheme = target_uri.scheme().as_str();
-        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
-    })
 }
 
 /// The media type a record's type calls for, or `None` for a type this module does not constrain.
@@ -107,26 +70,6 @@ fn fits(found: &MediaType, expected: &MediaType) -> bool {
 mod tests {
     use super::*;
     use crate::lint::fixtures::*;
-
-    /// Clause 6.7.2 obliges the writer, so a record that omits the field is read and reported
-    /// rather than refused.
-    #[test]
-    fn a_revisit_declares_the_truncation_its_block_is() {
-        let mut records = capture();
-        let mut later = copies(&capture()[1..], 1);
-        later[1] = revisit_of(later[1].clone(), RESPONSE_ID).set("WARC-Truncated", "time");
-        records.extend(later);
-
-        assert_eq!(
-            findings(&records),
-            [(
-                5,
-                Violation::UndeclaredRevisitTruncation {
-                    length: records[5].body.len() as u64
-                }
-            )]
-        );
-    }
 
     /// WARC 1.1 clause 5.6 contemplates a capture of another protocol, whose block is its own.
     #[test]
@@ -197,7 +140,6 @@ mod tests {
         assert_eq!(
             findings(&records),
             [
-                (0, Violation::MissingCollectionId),
                 (
                     0,
                     Violation::WrongContentType {
@@ -205,6 +147,7 @@ mod tests {
                         found: MediaType::TEXT_PLAIN
                     }
                 ),
+                (0, Violation::MissingCollectionId),
                 (
                     1,
                     Violation::WrongContentType {
