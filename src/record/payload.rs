@@ -50,6 +50,15 @@ pub fn entity_body(message: &[u8]) -> Result<Cow<'_, [u8]>, Error> {
     }
 }
 
+/// The HTTP message body as framed, with any transfer-coding still applied.
+///
+/// # Errors
+///
+/// Returns [`Error::UnterminatedHeaders`] if the header section has no terminating empty line.
+pub fn message_body(message: &[u8]) -> Result<&[u8], Error> {
+    split_message(message).map(|(body, _)| body)
+}
+
 /// Whether a body opens with a chunk size line.
 ///
 /// Capturing tools commonly store a body they have already dechunked while keeping the

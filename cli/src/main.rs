@@ -63,6 +63,25 @@ enum Command {
         output: PathBuf,
     },
 
+    /// Rewrite payload digests over HTTP message bodies as framed, transfer-coding included.
+    ///
+    /// WARC 1.1 makes the payload of an HTTP message its entity-body, which is the message body
+    /// with any transfer-coding removed. Several other tools digest the body as it was framed,
+    /// chunk sizes and trailers included. Each request or response record capturing an HTTP
+    /// exchange that declares WARC-Payload-Digest has it recomputed that way under the algorithm
+    /// and encoding it declares, so that those tools accept the output. Every other record is
+    /// copied as read.
+    DigestFramedPayloads {
+        /// The WARC file to read, or - for standard input; a .gz extension, or the gzip magic
+        /// number on standard input, selects gzip decompression.
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+        input: PathBuf,
+
+        /// The file to write; a .gz extension selects record-at-a-time gzip compression.
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+        output: PathBuf,
+    },
+
     /// Write the records of a WARC file to standard output in a chosen format.
     Export {
         /// The WARC file to export, or - for standard input; a .gz extension, or the gzip magic
@@ -269,14 +288,7 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
 
     match cli.command {
         Command::Canonicalize { input, output } => {
-            let summary = archivindex_warc_ops::canonicalize::canonicalize(&input, &output)?;
-            if !quiet {
-                println!(
-                    "Wrote {} with canonical headers to {}.",
-                    plural(summary.records, "record"),
-                    output.display(),
-                );
-            }
+            canonicalize(&input, &output, quiet)?;
         }
         Command::Compress {
             input,
@@ -327,6 +339,9 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
                 );
             }
         }
+        Command::DigestFramedPayloads { input, output } => {
+            digest_framed_payloads(&input, &output, quiet)?;
+        }
         Command::PropagateIdentifiedPayloadType { input, output } => {
             propagate_identified_payload_type(&input, &output, quiet)?;
         }
@@ -367,6 +382,38 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
     }
 
     Ok(CommandOutcome::Success)
+}
+
+/// Canonicalize the record headers of `input`, writing the records to `output`.
+fn canonicalize(input: &Path, output: &Path, quiet: bool) -> Result<()> {
+    let summary = archivindex_warc_ops::canonicalize::canonicalize(input, output)?;
+
+    if !quiet {
+        println!(
+            "Wrote {} with canonical headers to {}.",
+            plural(summary.records, "record"),
+            output.display(),
+        );
+    }
+
+    Ok(())
+}
+
+/// Rewrite the payload digests of `input` over HTTP message bodies as framed, writing the records
+/// to `output`.
+fn digest_framed_payloads(input: &Path, output: &Path, quiet: bool) -> Result<()> {
+    let summary = archivindex_warc_ops::digest::framed_payloads(input, output)?;
+
+    if !quiet {
+        println!(
+            "Wrote {} to {}, rewriting {}.",
+            plural(summary.records, "record"),
+            output.display(),
+            plural(summary.rewritten, "payload digest"),
+        );
+    }
+
+    Ok(())
 }
 
 /// Propagate identified payload types from the responses of `input` to its revisits, writing the
@@ -735,6 +782,26 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn digest_framed_payloads_takes_an_input_and_output() {
+        let cli = Cli::try_parse_from([
+            "archivindex-warc",
+            "digest-framed-payloads",
+            "-i",
+            "input.warc.gz",
+            "-o",
+            "output.warc",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::DigestFramedPayloads { input, output }
+                if input.as_path() == Path::new("input.warc.gz")
+                    && output.as_path() == Path::new("output.warc")
+        ));
     }
 
     #[test]

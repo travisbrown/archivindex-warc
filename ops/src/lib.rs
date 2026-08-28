@@ -2,6 +2,7 @@
 
 pub mod canonicalize;
 pub mod compress;
+pub mod digest;
 mod error;
 pub mod file;
 pub mod gzip;
