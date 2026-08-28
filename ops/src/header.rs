@@ -16,6 +16,12 @@ pub fn is_warcinfo(header: &raw::RecordHeader) -> bool {
     declares_type(header, b"warcinfo")
 }
 
+/// Whether a header block declares the `request` record type.
+#[must_use]
+pub fn is_request(header: &raw::RecordHeader) -> bool {
+    declares_type(header, b"request")
+}
+
 /// Whether a header block declares the `response` record type.
 #[must_use]
 pub fn is_response(header: &raw::RecordHeader) -> bool {

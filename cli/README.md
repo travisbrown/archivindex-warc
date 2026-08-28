@@ -32,6 +32,23 @@ cargo run --manifest-path cli/Cargo.toml -- compress -i input.warc -o output.war
 Compresses each record as a separate gzip member. The output name must end in `.gz`; use
 `--level` to choose a compression level from 0 through 9.
 
+## digest-framed-payloads
+
+```console
+cargo run --manifest-path cli/Cargo.toml -- \
+  digest-framed-payloads -i input.warc.gz -o output.warc.gz
+```
+
+WARC 1.1 makes the payload of an HTTP message its entity-body, which is the message body with any
+transfer-coding removed. Several other tools digest the message body as it was framed, chunk sizes
+and trailers included, and expect the same of the files they validate. Each `request` or
+`response` record with an HTTP or HTTPS target and a `Content-Type` of `application/http` or none
+that declares `WARC-Payload-Digest` has it recomputed over the framed body under the algorithm and
+encoding it declares, keeping the label as read. A segmented or truncated record, a record whose
+digest is malformed or names an algorithm this build does not compute, and a record whose message
+has no end of header section are copied as read, the last three with a warning. Every other record
+is copied as read.
+
 ## export
 
 ```console
