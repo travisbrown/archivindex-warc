@@ -8,7 +8,7 @@ version = "0.1.0"
 authors = ["Travis Brown <travisrobertbrown@gmail.com>"]
 edition = "2024"
 rust-version = "1.88"
-license = "MIT"
+license = "GPL-3.0-only"
 repository = "https://github.com/travisbrown/archivindex-warc"
 
 [workspace.dependencies]
@@ -49,7 +49,9 @@ description = "A Rust library for reading and writing WARC files"
 readme = "README.md"
 repository.workspace = true
 documentation = "https://docs.rs/crate/archivindex-warc/"
-license.workspace = true
+# The library derives from the `warc` crate and keeps its license, and so does the digest crate
+# split out of it; the other packages are GPL.
+license = "MIT"
 authors = ["Reza Akhavan <reza@akhavan.me>", "Travis Brown <travisrobertbrown@gmail.com>"]
 keywords = ["warc", "web", "archive"]
 categories = ["encoding", "parser-implementations"]

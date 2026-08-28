@@ -1,12 +1,12 @@
 # archivindex-warc
 
-![GitHub last commit](https://img.shields.io/github/last-commit/travisbrown/archivindex-warc)
-[![build](https://github.com/travisbrown/archivindex-warc/actions/workflows/ci.yml/badge.svg)](https://github.com/travisbrown/archivindex-warc/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/travisbrown/archivindex-warc/branch/main/graph/badge.svg)](https://codecov.io/gh/travisbrown/archivindex-warc)
-[![license](https://img.shields.io/github/license/travisbrown/archivindex-warc)](https://github.com/travisbrown/archivindex-warc/blob/main/LICENSE)
-[![crates.io](https://img.shields.io/crates/v/archivindex-warc.svg)](https://crates.io/crates/archivindex-warc/)
-[![crates.io](https://img.shields.io/crates/d/archivindex-warc)](https://crates.io/crates/archivindex-warc/)
-[![API Docs](https://docs.rs/archivindex-warc/badge.svg)](https://docs.rs/archivindex-warc/)
+![GitHub last commit][last-commit-badge]
+[![build][build-badge]][build]
+[![codecov][codecov-badge]][codecov]
+[![license][license-badge]][gpl-3.0]
+[![crates.io][crates-version-badge]][crates]
+[![crates.io][crates-downloads-badge]][crates]
+[![API Docs][docs-badge]][docs]
 
 A Rust library for reading and writing WARC 1.0 and 1.1 files. It provides raw, grammar-checked,
 and semantic record representations, with support for record-at-a-time gzip compression.
@@ -39,11 +39,29 @@ Prototype Fund][prototype-fund].
 
 ## License
 
-This project is licensed under the [MIT License](https://opensource.org/license/mit). See
-[LICENSE](LICENSE) for the full text.
+The `archivindex-warc` library and the `archivindex-warc-digest` crate it depends on are licensed
+under the [MIT License][mit]; see [LICENSE][license] and [digest/LICENSE][digest-license] for the
+full text. Every other package in this repository is licensed under the
+[GNU General Public License, version 3][gpl-3.0]; see the `LICENSE` file in each package's
+directory for the full text.
 
 [archivindex-prototype-fund]: https://www.prototypefund.de/en/projects/archivindex-builder
+[build]: https://github.com/travisbrown/archivindex-warc/actions/workflows/ci.yml
+[build-badge]: https://github.com/travisbrown/archivindex-warc/actions/workflows/ci.yml/badge.svg
+[codecov]: https://codecov.io/gh/travisbrown/archivindex-warc
+[digest-license]: digest/LICENSE
+[codecov-badge]: https://codecov.io/gh/travisbrown/archivindex-warc/branch/main/graph/badge.svg
+[crates]: https://crates.io/crates/archivindex-warc/
+[crates-downloads-badge]: https://img.shields.io/crates/d/archivindex-warc
+[crates-version-badge]: https://img.shields.io/crates/v/archivindex-warc.svg
+[docs]: https://docs.rs/archivindex-warc/
+[docs-badge]: https://docs.rs/archivindex-warc/badge.svg
+[gpl-3.0]: https://www.gnu.org/licenses/gpl-3.0.html
 [jedireza]: https://github.com/jedireza
+[last-commit-badge]: https://img.shields.io/github/last-commit/travisbrown/archivindex-warc
+[license]: LICENSE
+[license-badge]: https://img.shields.io/badge/license-GPL--v3-blue
+[mit]: https://opensource.org/license/mit
 [prototype-fund]: https://www.prototypefund.de/en/
 [warc-crate]: https://crates.io/crates/warc/
 [warc-unmaintained]: https://github.com/jedireza/warc/issues/54

@@ -6,7 +6,7 @@ categories = ["cryptography", "encoding"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 
 [lints]
