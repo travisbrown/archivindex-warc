@@ -21,7 +21,7 @@ use super::outcome::{CaptureOutcome, Exchange, Original, request_field};
 use super::warc_fields::{WarcinfoOptions, warcinfo_record};
 use super::warc_mapping::{MetadataOptions, RecordWriter, write_exchange};
 use crate::Error;
-use crate::capture::{ArchiveSummary, CaptureSummary, Failure};
+use crate::capture::{ArchiveSummary, CaptureSummary, Failure, Origin};
 use crate::config::DigestFormats;
 
 /// Files accumulated while captures are written to a spooled WARC file.
@@ -222,6 +222,7 @@ impl Collection {
         &mut self,
         url: String,
         outcome: CaptureOutcome,
+        origin: Origin,
         title: Option<&str>,
         via: Option<&str>,
     ) -> Result<(), Error> {
@@ -239,6 +240,8 @@ impl Collection {
                 } = last.expect("a successful capture has at least one exchange");
                 self.summary.captures.push(CaptureSummary {
                     url,
+                    origin,
+                    via: via.map(str::to_owned),
                     date,
                     status,
                     size,
@@ -248,7 +251,12 @@ impl Collection {
             }
             CaptureOutcome::Failed { exchanges, error } => {
                 self.record_exchanges(exchanges, title, via)?;
-                self.summary.failures.push(Failure { url, error });
+                self.summary.failures.push(Failure {
+                    url,
+                    origin,
+                    via: via.map(str::to_owned),
+                    error,
+                });
             }
         }
 

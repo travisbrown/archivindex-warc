@@ -24,11 +24,11 @@
 //! # }
 //! ```
 //!
-//! The [`session`] module provides queue-driven crawls. A user-supplied processor can inspect each
-//! response, discover URLs, request recaptures, and propose titles for optional metadata. Sessions
-//! retry transient network failures, archiving the exchanges of every attempt, and can use a
-//! persistent revisit index to deduplicate captures and reuse HTTP validators across runs. A
-//! `304 Not Modified` response becomes a `server-not-modified` revisit record.
+//! The [`session`] module provides depth-first crawls. A user-supplied processor can inspect each
+//! response, discover URLs, and propose titles for metadata. Sessions retry transient network
+//! failures, archiving the exchanges of every attempt, and can use a persistent revisit index to
+//! deduplicate captures and reuse HTTP validators across runs. A `304 Not Modified` response
+//! becomes a `server-not-modified` revisit record.
 //!
 //! # Modules
 //!
@@ -106,7 +106,7 @@ pub struct Archiver {
 /// [session]
 /// request-delay = "0s"
 /// # revisit-index = "revisits.sqlite3"  # none by default
-/// titles = false
+/// dedupe-discoveries = true
 ///
 /// [session.retry]
 /// attempts = 3

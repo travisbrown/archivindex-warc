@@ -7,7 +7,6 @@ use archivindex_warc::record::extension::NoExtension;
 use archivindex_warc::record::fields::Error as FieldsError;
 use archivindex_warc::record::fields::dcmi::DcmiTerm;
 use archivindex_warc::record::fields::metadata::MetadataField;
-use archivindex_warc::record::fields::warcinfo::WarcinfoField;
 use archivindex_warc::value::WarcDate;
 use chrono::Utc;
 use fluent_uri::Uri;
@@ -22,7 +21,6 @@ pub struct WarcinfoOptions<'a> {
     pub software: &'a Software,
     pub operator: Option<&'a Operator>,
     pub session_id: Option<&'a str>,
-    pub title: Option<&'a str>,
 }
 
 impl<'a> WarcinfoOptions<'a> {
@@ -33,7 +31,6 @@ impl<'a> WarcinfoOptions<'a> {
             software: &config.software,
             operator: config.operator.as_ref(),
             session_id: None,
-            title: None,
         }
     }
 }
@@ -70,9 +67,6 @@ pub fn warcinfo_record(warc_name: &str, options: &WarcinfoOptions<'_>) -> Result
     builder = builder.http_header_user_agent(options.user_agent)?;
     if let Some(session_id) = options.session_id {
         builder = builder.is_part_of(session_id)?;
-    }
-    if let Some(title) = options.title {
-        builder = builder.field(WarcinfoField::Dcmi(DcmiTerm::Title), title)?;
     }
 
     Ok(builder.build())

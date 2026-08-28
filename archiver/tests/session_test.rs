@@ -1,13 +1,12 @@
 //! End-to-end crawl session tests against a local HTTP server serving canned responses.
 
-use std::collections::HashSet;
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use archivindex_archiver::capture::{CaptureControl, CaptureEvent};
+use archivindex_archiver::capture::{CaptureControl, CaptureEvent, Origin};
 use archivindex_archiver::config::{Operator, SessionConfig, Software};
 use archivindex_archiver::session::{Capture, CaptureProcessor, Inspection, RetryConfig, Session};
 use archivindex_archiver::{Archiver, Config, Error};
@@ -227,14 +226,14 @@ impl CaptureProcessor for FixedLinksProcessor {
     }
 }
 
-/// Ask for the first successful URL a fixed number of additional times, optionally recording the
-/// status and payload of every capture seen.
-struct RecaptureProcessor<'a> {
+/// Discover the captured URL itself a fixed number of times, optionally recording the status and
+/// payload of every capture seen. The session must repeat discoveries for it to have any effect.
+struct RepeatingProcessor<'a> {
     remaining: usize,
     observed: Option<&'a mut Vec<(u16, String)>>,
 }
 
-impl CaptureProcessor for RecaptureProcessor<'_> {
+impl CaptureProcessor for RepeatingProcessor<'_> {
     fn inspect(&mut self, capture: &Capture<'_>) -> Inspection {
         if let Some(observed) = self.observed.as_deref_mut() {
             observed.push((
@@ -242,7 +241,7 @@ impl CaptureProcessor for RecaptureProcessor<'_> {
                 String::from_utf8_lossy(capture.payload).into_owned(),
             ));
         }
-        let recaptures = if self.remaining == 0 {
+        let links = if self.remaining == 0 {
             Vec::new()
         } else {
             self.remaining -= 1;
@@ -250,7 +249,7 @@ impl CaptureProcessor for RecaptureProcessor<'_> {
         };
 
         Inspection {
-            recaptures,
+            links,
             ..Inspection::default()
         }
     }
@@ -547,8 +546,8 @@ fn resource_state_for_another_variant_does_not_drive_revalidation()
     Ok(())
 }
 
-/// Crawl a page whose representation is selected by the `Vary` lines given and recapture it. The
-/// recapture repeats the first request, so it must send the validators the crawl recorded, and the
+/// Crawl a page whose representation is selected by the `Vary` lines given and repeat it. The
+/// repeat matches the first request, so it must send the validators the crawl recorded, and the
 /// server meets it with a challenge whose cookie the request is then repeated with, so that repeat
 /// selects another representation and must not send them.
 fn assert_validators_follow_the_cookie(
@@ -591,14 +590,16 @@ fn assert_validators_follow_the_cookie(
         [&url],
         &output,
     )?
-    .processor(RecaptureProcessor {
+    .dedupe_discoveries(false)
+    .processor(RepeatingProcessor {
         remaining: 1,
         observed: None,
     })
     .run()?;
 
     let requests = server.join().expect("server thread");
-    assert_eq!(summary.seed_captures.len(), 2);
+    assert_eq!(summary.seed_captures.len(), 1);
+    assert_eq!(summary.extra_captures.len(), 1);
     assert_eq!(
         request_header(&requests[1], "cookie").as_deref(),
         Some(COOKIE)
@@ -642,22 +643,29 @@ fn vary_cookie_records_the_cookie_the_request_carried() -> Result<(), Box<dyn st
 }
 
 #[test]
-fn processor_can_explicitly_recapture_a_seen_url() -> Result<(), Box<dyn std::error::Error>> {
+fn a_repeated_discovery_is_an_identical_payload_revisit() -> Result<(), Box<dyn std::error::Error>>
+{
     let (port, server) = serve(2)?;
     let url = format!("http://127.0.0.1:{port}/about");
     let directory = tempfile::tempdir()?;
-    let output = directory.path().join("recapture.warc.gz");
+    let output = directory.path().join("repeat.warc.gz");
 
-    let summary = Session::new(archiver(revisiting_config()), "recapture", [&url], &output)?
-        .processor(RecaptureProcessor {
+    let summary = Session::new(archiver(revisiting_config()), "repeat", [&url], &output)?
+        .dedupe_discoveries(false)
+        .processor(RepeatingProcessor {
             remaining: 1,
             observed: None,
         })
         .run()?;
 
     assert_eq!(server.join().expect("server thread"), ["/about", "/about"]);
-    assert_eq!(summary.seed_captures.len(), 2);
     assert!(summary.is_complete());
+    assert_eq!(summary.seed_captures.len(), 1);
+    assert_eq!(summary.seed_captures[0].origin, Origin::Seed);
+    assert_eq!(summary.seed_captures[0].via, None);
+    assert_eq!(summary.extra_captures.len(), 1);
+    assert_eq!(summary.extra_captures[0].origin, Origin::Discovered);
+    assert_eq!(summary.extra_captures[0].via.as_deref(), Some(url.as_str()));
 
     // The second capture's payload matches the first, so it is stored as a revisit record.
     let records = records(&std::fs::read(&output)?)?;
@@ -714,7 +722,7 @@ fn processor_can_explicitly_recapture_a_seen_url() -> Result<(), Box<dyn std::er
 }
 
 #[test]
-fn recapture_of_a_validated_response_is_a_server_not_modified_revisit()
+fn a_repeat_of_a_validated_response_is_a_server_not_modified_revisit()
 -> Result<(), Box<dyn std::error::Error>> {
     let (port, server) = serve_with(2, |head| (respond_versioned(head, 1), head.to_owned()))?;
     let url = format!("http://127.0.0.1:{port}/page");
@@ -723,13 +731,14 @@ fn recapture_of_a_validated_response_is_a_server_not_modified_revisit()
     let mut observed = Vec::new();
 
     let summary = Session::new(archiver(gzip_config()), "revalidate", [&url], &output)?
-        .processor(RecaptureProcessor {
+        .dedupe_discoveries(false)
+        .processor(RepeatingProcessor {
             remaining: 1,
             observed: Some(&mut observed),
         })
         .run()?;
 
-    // The first request is unconditional; the recapture carries the stored response's validators.
+    // The first request is unconditional; the repeat carries the stored response's validators.
     let heads = server.join().expect("server thread");
     assert_eq!(heads.len(), 2);
     assert_eq!(request_header(&heads[0], "if-none-match"), None);
@@ -743,7 +752,7 @@ fn recapture_of_a_validated_response_is_a_server_not_modified_revisit()
         Some(LAST_MODIFIED.to_ascii_lowercase().as_str())
     );
 
-    // The processor sees the revalidated recapture as a 304 with no payload.
+    // The processor sees the revalidated repeat as a 304 with no payload.
     assert_eq!(
         observed,
         [
@@ -756,6 +765,7 @@ fn recapture_of_a_validated_response_is_a_server_not_modified_revisit()
         summary
             .seed_captures
             .iter()
+            .chain(&summary.extra_captures)
             .map(|capture| capture.status)
             .collect::<Vec<_>>(),
         [200, 304]
@@ -781,7 +791,7 @@ fn recapture_of_a_validated_response_is_a_server_not_modified_revisit()
         body: revisit_body,
     } = &records[5]
     else {
-        panic!("the revalidated recapture should store a revisit record");
+        panic!("the revalidated repeat should store a revisit record");
     };
 
     // The revisit uses the server-not-modified profile, points back at the original record, and
@@ -811,7 +821,7 @@ fn recapture_of_a_validated_response_is_a_server_not_modified_revisit()
 }
 
 #[test]
-fn changed_content_is_recaptured_in_full_and_revalidated_by_its_new_validators()
+fn changed_content_is_repeated_in_full_and_revalidated_by_its_new_validators()
 -> Result<(), Box<dyn std::error::Error>> {
     let (port, server) = serve_with(3, |head| (respond_versioned(head, 2), head.to_owned()))?;
     let url = format!("http://127.0.0.1:{port}/page");
@@ -819,14 +829,15 @@ fn changed_content_is_recaptured_in_full_and_revalidated_by_its_new_validators()
     let output = directory.path().join("changed.warc.gz");
 
     let summary = Session::new(archiver(gzip_config()), "changed", [&url], &output)?
-        .processor(RecaptureProcessor {
+        .dedupe_discoveries(false)
+        .processor(RepeatingProcessor {
             remaining: 2,
             observed: None,
         })
         .run()?;
 
-    // Each recapture is conditional on the latest stored version: the first finds the page
-    // changed and is answered in full, and the second confirms the new version unchanged.
+    // Each repeat is conditional on the latest stored version: the first finds the page changed
+    // and is answered in full, and the second confirms the new version unchanged.
     let heads = server.join().expect("server thread");
     assert_eq!(
         heads
@@ -840,6 +851,7 @@ fn changed_content_is_recaptured_in_full_and_revalidated_by_its_new_validators()
         summary
             .seed_captures
             .iter()
+            .chain(&summary.extra_captures)
             .map(|capture| capture.status)
             .collect::<Vec<_>>(),
         [200, 200, 304]
@@ -864,7 +876,7 @@ fn changed_content_is_recaptured_in_full_and_revalidated_by_its_new_validators()
         header: revisit, ..
     } = &records[8]
     else {
-        panic!("the revalidated recapture should store a revisit record");
+        panic!("the revalidated repeat should store a revisit record");
     };
 
     assert_ne!(first.payload.payload_digest, second.payload.payload_digest);
@@ -912,10 +924,9 @@ fn session_waits_between_queued_requests() -> Result<(), Box<dyn std::error::Err
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn session_crawls_discovered_urls_into_extra_pages() -> Result<(), Box<dyn std::error::Error>> {
+fn session_crawls_discovered_urls_depth_first() -> Result<(), Box<dyn std::error::Error>> {
     // The seeds are the home page and a redirect whose final URL is /about. The home page links
-    // directly to /about and /missing; both are discoveries because seed identity uses the
-    // requested URL rather than a redirect target.
+    // directly to /about and /missing, which are requested before the second seed.
     let (port, server) = serve(5)?;
     let seeds = [
         format!("http://127.0.0.1:{port}/"),
@@ -936,15 +947,14 @@ fn session_crawls_discovered_urls_into_extra_pages() -> Result<(), Box<dyn std::
     )?
     .software("session-test-crawler", "9.9")
     .processor(SiteProcessor { port })
-    .titles()
     .run()?;
     let request_paths = server.join().expect("server thread should not panic");
 
-    // Seeds are captured first, including the redirect to /about, followed by discoveries in
-    // processor order. Rediscovered seed URLs are discarded.
+    // The home page's discoveries are requested in processor order before the redirect seed, and
+    // the link back to the home page from /about repeats a seed, so it is skipped.
     assert_eq!(
         request_paths,
-        ["/", "/redirect", "/about", "/about", "/missing"]
+        ["/", "/about", "/missing", "/redirect", "/about"]
     );
 
     assert!(summary.is_complete());
@@ -990,7 +1000,6 @@ fn session_crawls_discovered_urls_into_extra_pages() -> Result<(), Box<dyn std::
             "operator",
             "http-header-user-agent",
             "isPartOf",
-            "title",
         ]
     );
 
@@ -1006,10 +1015,6 @@ fn session_crawls_discovered_urls_into_extra_pages() -> Result<(), Box<dyn std::
         fields.get(&WarcinfoField::Dcmi(DcmiTerm::IsPartOf)),
         Some("crawl-2026.08")
     );
-    assert_eq!(
-        fields.get(&WarcinfoField::Dcmi(DcmiTerm::Title)),
-        Some("crawl-2026.08")
-    );
     assert_eq!(fields.software(), Some("session-test-crawler/9.9"));
     assert_eq!(
         fields.operator(),
@@ -1017,8 +1022,8 @@ fn session_crawls_discovered_urls_into_extra_pages() -> Result<(), Box<dyn std::
     );
 
     // One warcinfo record, then request, response, and metadata records for each of the five
-    // exchanges (the redirect seed contributes two hops). The second /about capture repeats the
-    // first's payload, so its response is stored as a revisit record.
+    // exchanges (the redirect seed contributes two hops). The redirect's /about response repeats
+    // the discovered capture's payload, so it is stored as a revisit record.
     assert_eq!(records.len(), 16);
     assert_eq!(
         records
@@ -1030,7 +1035,7 @@ fn session_crawls_discovered_urls_into_extra_pages() -> Result<(), Box<dyn std::
 
     // Discovered captures carry the URI of the page they were discovered on as `via` in their
     // metadata records; seed captures (redirect hops included) carry none. Both discoveries came
-    // from the home page's payload.
+    // from the home page's payload, and a processor title goes on the final hop.
     let metadata = records
         .iter()
         .filter(|record| record.type_name() == "metadata")
@@ -1054,10 +1059,10 @@ fn session_crawls_discovered_urls_into_extra_pages() -> Result<(), Box<dyn std::
         metadata,
         vec![
             (None, Some("Home")),
-            (None, None),
-            (None, Some("About")),
             (Some(seeds[0].as_str()), Some("About")),
             (Some(seeds[0].as_str()), None),
+            (None, None),
+            (None, Some("About")),
         ]
     );
 
@@ -1065,10 +1070,72 @@ fn session_crawls_discovered_urls_into_extra_pages() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn session_captures_each_url_once() -> Result<(), Box<dyn std::error::Error>> {
-    // Both seeds link to each other and themselves, and one seed repeats; every URL is still
-    // captured exactly once.
-    let (port, server) = serve(2)?;
+fn extras_are_captured_before_the_seeds_with_their_via() -> Result<(), Box<dyn std::error::Error>> {
+    // The extra repeating the seed is captured as given, so the seed is requested twice.
+    let (port, server) = serve(3)?;
+    let home = format!("http://127.0.0.1:{port}/");
+    let about = format!("http://127.0.0.1:{port}/about");
+    let directory = tempfile::tempdir()?;
+    let output = directory.path().join("extras.warc.gz");
+
+    let summary = Session::new(archiver(gzip_config()), "extras", [&home], &output)?
+        .extras([(&about, "https://example.com/links"), (&home, &about)])
+        .run()?;
+
+    assert_eq!(server.join().expect("server thread"), ["/about", "/", "/"]);
+    assert!(summary.is_complete());
+    assert_eq!(
+        summary
+            .seed_captures
+            .iter()
+            .map(|capture| (capture.url.as_str(), capture.origin, capture.via.as_deref()))
+            .collect::<Vec<_>>(),
+        [(home.as_str(), Origin::Seed, None)]
+    );
+    assert_eq!(
+        summary
+            .extra_captures
+            .iter()
+            .map(|capture| (capture.url.as_str(), capture.origin, capture.via.as_deref()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                about.as_str(),
+                Origin::Extra,
+                Some("https://example.com/links")
+            ),
+            (home.as_str(), Origin::Extra, Some(about.as_str())),
+        ]
+    );
+
+    let records = records(&std::fs::read(&output)?)?;
+    let via = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::Metadata {
+                body: FieldsBlock::Fields(fields),
+                ..
+            } => Some(fields.via()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        via,
+        [
+            Some("https://example.com/links"),
+            Some(about.as_str()),
+            None
+        ]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn session_skips_discoveries_that_repeat_a_given_url() -> Result<(), Box<dyn std::error::Error>> {
+    // Every page links to both seeds and itself, and one seed repeats: the seeds are requested as
+    // given, and no discovery is requested.
+    let (port, server) = serve(3)?;
     let seeds = [
         format!("http://127.0.0.1:{port}/"),
         format!("http://127.0.0.1:{port}/"),
@@ -1084,9 +1151,9 @@ fn session_captures_each_url_once() -> Result<(), Box<dyn std::error::Error>> {
         .run()?;
     let request_paths = server.join().expect("server thread should not panic");
 
-    assert_eq!(request_paths, ["/", "/about"]);
+    assert_eq!(request_paths, ["/", "/", "/about"]);
     assert!(summary.is_complete());
-    assert_eq!(summary.seed_captures.len(), 2);
+    assert_eq!(summary.seed_captures.len(), 3);
     assert!(summary.extra_captures.is_empty());
 
     // An operator override without an email replaces the configured operator and is recorded by
@@ -1227,31 +1294,16 @@ fn session_limit_stops_with_discoveries_still_queued() -> Result<(), Box<dyn std
     assert_eq!(summary.seed_captures.len(), 1);
     assert_eq!(summary.extra_captures.len(), 0);
 
-    let records = records(&std::fs::read(&path)?)?;
-
-    assert_eq!(records.len(), 4);
-    let Record::Warcinfo {
-        body: FieldsBlock::Fields(warcinfo),
-        ..
-    } = &records[0]
-    else {
-        panic!("the first record should be a warcinfo record with warc-fields");
-    };
-    assert!(
-        warcinfo
-            .get(&WarcinfoField::Dcmi(DcmiTerm::Title))
-            .is_none()
+    // The home page's discoveries are left for a later session, in the order they would have been
+    // requested.
+    assert_eq!(
+        summary.unrequested,
+        [
+            (format!("http://127.0.0.1:{port}/about"), Some(url.clone())),
+            (format!("http://127.0.0.1:{port}/missing"), Some(url)),
+        ]
     );
-    assert!(records.iter().all(|record| {
-        let Record::Metadata {
-            body: FieldsBlock::Fields(fields),
-            ..
-        } = record
-        else {
-            return true;
-        };
-        fields.get(&MetadataField::Dcmi(DcmiTerm::Title)).is_none()
-    }));
+    assert_eq!(records(&std::fs::read(&path)?)?.len(), 4);
 
     Ok(())
 }
@@ -1533,10 +1585,12 @@ fn session_cancelled_during_a_retry_keeps_the_completed_attempt()
         .run()?;
     server.join().expect("server thread should not panic");
 
-    // The cancelled capture is neither a capture nor a failure, but its 503 exchange is archived.
+    // The cancelled capture is neither a capture nor a failure, but its 503 exchange is archived,
+    // and the URL is left to request again.
     assert!(summary.cancelled);
     assert!(summary.seed_captures.is_empty());
     assert!(summary.failures.is_empty());
+    assert_eq!(summary.unrequested, [(url, None)]);
     assert_eq!(
         records(&std::fs::read(&path)?)?
             .iter()
@@ -1729,15 +1783,14 @@ fn session_processor_sees_the_final_response_of_a_chain() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn session_seed_set_is_by_requested_url() -> Result<(), Box<dyn std::error::Error>> {
-    // A discovered URL that repeats a seed is dropped even when found before the seed itself is
-    // captured; membership is by the requested URL, not the final one.
+fn session_skips_a_discovery_that_repeats_a_later_seed() -> Result<(), Box<dyn std::error::Error>> {
+    // A discovered URL that repeats a seed is skipped even when found before the seed itself is
+    // requested, and the seed is still requested in its turn.
     let (port, server) = serve(3)?;
     let seeds = [
         format!("http://127.0.0.1:{port}/"),
         format!("http://127.0.0.1:{port}/about"),
     ];
-    let seed_set = seeds.iter().cloned().collect::<HashSet<_>>();
 
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("session.warc.gz");
@@ -1748,7 +1801,11 @@ fn session_seed_set_is_by_requested_url() -> Result<(), Box<dyn std::error::Erro
     let summary = Session::new(archiver(gzip_config()), "seed-set", &seeds, &path)?
         .processor(FixedLinksProcessor { links: discovered })
         .run()?;
-    server.join().expect("server thread should not panic");
+
+    assert_eq!(
+        server.join().expect("server thread should not panic"),
+        ["/", "/missing", "/about"]
+    );
 
     assert!(
         summary.is_complete(),
@@ -1760,11 +1817,13 @@ fn session_seed_set_is_by_requested_url() -> Result<(), Box<dyn std::error::Erro
             .collect::<Vec<_>>(),
         summary.fatal_error
     );
-    assert!(
+    assert_eq!(
         summary
             .seed_captures
             .iter()
-            .all(|capture| seed_set.contains(&capture.url))
+            .map(|capture| capture.url.as_str())
+            .collect::<Vec<_>>(),
+        seeds.iter().map(String::as_str).collect::<Vec<_>>()
     );
     assert_eq!(
         summary
