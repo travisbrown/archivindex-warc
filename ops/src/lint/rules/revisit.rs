@@ -1,4 +1,4 @@
-//! Rules 15, 16, and 17: a `revisit` record declares the truncation its block is, names the record
+//! Rules 16, 17, and 18: a `revisit` record declares the truncation its block is, names the record
 //! it revisits in all three `WARC-Refers-To` fields, and revisits a record that precedes it.
 
 use std::io::BufRead;

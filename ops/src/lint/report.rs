@@ -205,6 +205,17 @@ pub enum Violation {
         #[serde(serialize_with = "serialize_optional_display")]
         found: Option<Uri<String>>,
     },
+    /// A record outside the response and metadata slots of a capture names a record in
+    /// `WARC-Concurrent-To`.
+    #[error(
+        "`WARC-Concurrent-To` names {}, but only a capture's response and metadata records name one",
+        listed(found)
+    )]
+    UnexpectedConcurrentTo {
+        /// The records the field names.
+        #[serde(serialize_with = "serialize_display_sequence")]
+        found: Vec<Uri<String>>,
+    },
     /// A capture's `metadata` record carries no `fetchTimeMs` field.
     #[error("the capture's metadata record carries no `fetchTimeMs` field")]
     MissingFetchTime,
@@ -263,6 +274,7 @@ impl Violation {
             Self::WrongConcurrentTo { .. } => "wrong_concurrent_to",
             Self::WrongTargetUri { .. } => "wrong_target_uri",
             Self::MissingFetchTime => "missing_fetch_time",
+            Self::UnexpectedConcurrentTo { .. } => "unexpected_concurrent_to",
             Self::UndeclaredRevisitTruncation { .. } => "undeclared_revisit_truncation",
             Self::MissingRefersToFields { .. } => "missing_refers_to_fields",
             Self::RefersToUnknownRecord { .. } => "refers_to_unknown_record",
@@ -480,6 +492,16 @@ mod tests {
             }
             .to_string(),
             format!("the target URI's host should be `{HOST}`, but the URI has none")
+        );
+        assert_eq!(
+            Violation::UnexpectedConcurrentTo {
+                found: vec![uri(RESPONSE_ID)],
+            }
+            .to_string(),
+            format!(
+                "`WARC-Concurrent-To` names {RESPONSE_ID}, but only a capture's response and \
+                 metadata records name one"
+            )
         );
         assert_eq!(
             Violation::DateOutOfOrder {
