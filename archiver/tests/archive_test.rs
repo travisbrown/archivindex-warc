@@ -1,7 +1,7 @@
 //! End-to-end archiving tests against a local HTTP server serving canned responses.
 
-use std::io::{BufReader, Cursor};
-use std::net::{IpAddr, Ipv4Addr, TcpListener};
+use std::io::Cursor;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -11,6 +11,7 @@ mod support;
 use archivindex_archiver::capture::{CaptureControl, CaptureEvent};
 use archivindex_archiver::config::{DigestConfig, DigestOverride, Operator, Software};
 use archivindex_archiver::{Archiver, Config, ConfigError, CookieError, Error};
+use archivindex_test_support::http::{dead_port, response, serve_concurrently_with, serve_with};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::header::RevisitProfile;
 use archivindex_warc::record::header::truncated_type::TruncatedType;
@@ -18,11 +19,8 @@ use archivindex_warc::record::{FieldsBlock, Record};
 use archivindex_warc::value::{Algorithm, Encoding, WarcDatePrecision};
 use archivindex_warc::version::WarcVersion;
 use data_encoding::BASE64;
-use flate2::bufread::MultiGzDecoder;
 use fluent_uri::Uri;
-use support::{
-    plain, records, request_header, request_path, serve_concurrently_with, serve_with, sha256,
-};
+use support::{records, sha256};
 
 fn gzip_config() -> Config {
     Config {
@@ -38,50 +36,61 @@ const PNG_PAYLOAD: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01";
 fn respond(path: &str) -> Vec<u8> {
     // Redirects to an address that refuses connections carry the target port in the path.
     if let Some(port) = path.strip_prefix("/dead/") {
-        return plain(
+        return response(
             "302 Found",
-            &format!("location: http://127.0.0.1:{port}/"),
+            &[("location", &format!("http://127.0.0.1:{port}/"))],
             "",
         );
     }
 
     // Canned responses are chosen by path alone, so a query string never changes them.
     match path.split('?').next().unwrap_or(path) {
-        "/" => plain("200 OK", "content-type: text/html", "<html>home</html>"),
-        "/redirect" => plain(
+        "/" => response(
+            "200 OK",
+            &[("content-type", "text/html")],
+            "<html>home</html>",
+        ),
+        "/redirect" => response(
             "302 Found",
-            "content-type: text/plain\r\nlocation: /target",
+            &[("content-type", "text/plain"), ("location", "/target")],
             "",
         ),
-        "/target" => plain(
+        "/target" => response(
             "200 OK",
-            "content-type: text/plain; charset=utf-8",
+            &[("content-type", "text/plain; charset=utf-8")],
             "arrived",
         ),
-        "/loop" => plain(
+        "/loop" => response(
             "302 Found",
-            "content-type: text/plain\r\nlocation: /loop",
+            &[("content-type", "text/plain"), ("location", "/loop")],
             "",
         ),
-        "/bad-target" => plain(
+        "/bad-target" => response(
             "302 Found",
-            "content-type: text/plain\r\nlocation: ftp://127.0.0.1/file",
+            &[
+                ("content-type", "text/plain"),
+                ("location", "ftp://127.0.0.1/file"),
+            ],
             "",
         ),
-        "/multiple-choices" => plain(
+        "/multiple-choices" => response(
             "300 Multiple Choices",
-            "content-type: text/plain\r\nlocation: /target",
+            &[("content-type", "text/plain"), ("location", "/target")],
             "list",
         ),
-        "/nonstandard" => plain("520 Origin Error", "content-type: text/plain", "err"),
-        "/cookies" => plain(
+        "/nonstandard" => response("520 Origin Error", &[("content-type", "text/plain")], "err"),
+        "/cookies" => response(
             "200 OK",
-            "content-type: text/plain\r\nset-cookie: a=1\r\nset-cookie: b=2",
+            &[
+                ("content-type", "text/plain"),
+                ("set-cookie", "a=1"),
+                ("set-cookie", "b=2"),
+            ],
             "ok",
         ),
         "/slow" => {
             thread::sleep(Duration::from_millis(500));
-            plain("200 OK", "content-type: text/plain", "late")
+            response("200 OK", &[("content-type", "text/plain")], "late")
         }
         // A chunked body, so that de-chunking is exercised against a real wire exchange.
         "/chunked" => b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\n\
@@ -114,15 +123,15 @@ fn respond(path: &str) -> Vec<u8> {
             response.extend_from_slice(PNG_PAYLOAD);
             response
         }
-        _ => plain("404 Not Found", "content-type: text/plain", "gone"),
+        _ => response("404 Not Found", &[("content-type", "text/plain")], "gone"),
     }
 }
 
 /// Serve the given number of connections on an ephemeral local port, returning the raw bytes of
 /// each request as received.
 fn serve(connections: usize) -> std::io::Result<(u16, thread::JoinHandle<Vec<Vec<u8>>>)> {
-    serve_with(connections, |head| {
-        (respond(request_path(head)), head.as_bytes().to_vec())
+    serve_with(connections, |request| {
+        (respond(request.path()), request.bytes().to_vec())
     })
 }
 
@@ -329,7 +338,7 @@ fn archive_and_read_back() -> Result<(), Box<dyn std::error::Error>> {
     // The written form is checked at the raw layer, since URI angle brackets are applied when a
     // record is rendered rather than being part of its value: WARC 1.1 brackets record identifiers
     // and leaves target URIs bare.
-    let raw_records = WarcReader::new(BufReader::new(MultiGzDecoder::new(bytes.as_slice())))
+    let raw_records = WarcReader::from_gzip(bytes.as_slice())
         .iter_raw_records()
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -365,21 +374,21 @@ fn archive_solves_and_retains_sucuri_cookie_challenges() -> Result<(), Box<dyn s
     let challenge =
         format!("<html><script>var sucuri_cloudproxy_js='',S='{encoded}';</script></html>");
     let attempt = AtomicUsize::new(0);
-    let (port, server) = serve_with(3, move |head| {
-        let response = if attempt.fetch_add(1, Ordering::Relaxed) == 0 {
-            plain(
+    let (port, server) = serve_with(3, move |request| {
+        let reply = if attempt.fetch_add(1, Ordering::Relaxed) == 0 {
+            response(
                 "307 Temporary Redirect",
-                "content-type: text/html\r\nx-sucuri-id: 12005",
+                &[("content-type", "text/html"), ("x-sucuri-id", "12005")],
                 &challenge,
             )
         } else {
-            plain("200 OK", "content-type: text/plain", "accepted")
+            response("200 OK", &[("content-type", "text/plain")], "accepted")
         };
         (
-            response,
+            reply,
             (
-                request_path(head).to_owned(),
-                request_header(head, "cookie"),
+                request.path().to_owned(),
+                request.header("cookie").map(str::to_owned),
             ),
         )
     })?;
@@ -425,25 +434,25 @@ fn archive_solves_simply_clearance_challenges_behind_a_proxy()
          x.open(\"POST\",\"/.sc-verify/\");</script></html>"
     );
     let attempt = AtomicUsize::new(0);
-    let (port, server) = serve_with(4, move |head| {
-        let response = match attempt.fetch_add(1, Ordering::Relaxed) {
-            0 => plain(
+    let (port, server) = serve_with(4, move |request| {
+        let reply = match attempt.fetch_add(1, Ordering::Relaxed) {
+            0 => response(
                 "454 Request blocked",
-                "content-type: text/html\r\nserver: cloudflare",
+                &[("content-type", "text/html"), ("server", "cloudflare")],
                 &challenge,
             ),
-            1 => plain(
+            1 => response(
                 "200 OK",
-                "content-type: application/json",
+                &[("content-type", "application/json")],
                 r#"{"ok":true,"cookie":"clearance-value"}"#,
             ),
-            _ => plain("200 OK", "content-type: text/plain", "accepted"),
+            _ => response("200 OK", &[("content-type", "text/plain")], "accepted"),
         };
         (
-            response,
+            reply,
             (
-                head.lines().next().unwrap_or_default().to_owned(),
-                request_header(head, "cookie"),
+                request.head().lines().next().unwrap_or_default().to_owned(),
+                request.header("cookie").map(str::to_owned),
             ),
         )
     })?;
@@ -505,24 +514,28 @@ fn archive_solves_and_retains_varnish_proof_of_work_challenges()
          cookie_duration:'3600',cookie_domain:'127.0.0.1'}};</script>"
     );
     let attempt = AtomicUsize::new(0);
-    let (port, server) = serve_with(3, move |head| {
-        let response = if attempt.fetch_add(1, Ordering::Relaxed) == 0 {
-            plain(
+    let (port, server) = serve_with(3, move |request| {
+        let reply = if attempt.fetch_add(1, Ordering::Relaxed) == 0 {
+            response(
                 "202 Verifying",
-                &format!(
-                    "content-type: text/html\r\nserver: Varnish\r\n\
-                     set-cookie: pow_trace={trace_nonce}|{issued_at}; path=/; Secure"
-                ),
+                &[
+                    ("content-type", "text/html"),
+                    ("server", "Varnish"),
+                    (
+                        "set-cookie",
+                        &format!("pow_trace={trace_nonce}|{issued_at}; path=/; Secure"),
+                    ),
+                ],
                 &challenge,
             )
         } else {
-            plain("200 OK", "content-type: text/plain", "accepted")
+            response("200 OK", &[("content-type", "text/plain")], "accepted")
         };
         (
-            response,
+            reply,
             (
-                request_path(head).to_owned(),
-                request_header(head, "cookie"),
+                request.path().to_owned(),
+                request.header("cookie").map(str::to_owned),
             ),
         )
     })?;
@@ -564,13 +577,13 @@ fn archive_stops_answering_a_challenge_the_host_repeats() -> Result<(), Box<dyn 
     let challenge =
         format!("<html><script>var sucuri_cloudproxy_js='',S='{encoded}';</script></html>");
     // The first request and three answers, each met by the challenge again.
-    let (port, server) = serve_with(4, move |head| {
-        let response = plain(
+    let (port, server) = serve_with(4, move |request| {
+        let reply = response(
             "307 Temporary Redirect",
-            "content-type: text/html\r\nx-sucuri-id: 12005",
+            &[("content-type", "text/html"), ("x-sucuri-id", "12005")],
             &challenge,
         );
-        (response, request_header(head, "cookie"))
+        (reply, request.header("cookie").map(str::to_owned))
     })?;
     let url = format!("http://127.0.0.1:{port}/first");
     let mut output = Vec::new();
@@ -606,14 +619,14 @@ fn archive_captures_an_unrecognized_challenge_as_the_response_it_is()
     let script = "document.cookie='other=value;path=/'; location.reload();";
     let encoded = BASE64.encode(script.as_bytes());
     let challenge = format!("<html><script>var sucuri_cloudproxy_js='{encoded}';</script></html>");
-    let (port, server) = serve_with(1, move |head| {
+    let (port, server) = serve_with(1, move |request| {
         (
-            plain(
+            response(
                 "307 Temporary Redirect",
-                "content-type: text/html\r\nx-sucuri-id: 12005",
+                &[("content-type", "text/html"), ("x-sucuri-id", "12005")],
                 &challenge,
             ),
-            request_header(head, "cookie"),
+            request.header("cookie").map(str::to_owned),
         )
     })?;
     let mut output = Vec::new();
@@ -735,8 +748,7 @@ fn archive_writes_a_plain_warc_when_gzip_is_off() -> Result<(), Box<dyn std::err
 
 #[test]
 fn archive_records_unreachable_urls_as_failures() -> Result<(), Box<dyn std::error::Error>> {
-    // Bind and immediately drop a listener so that the port refuses connections.
-    let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+    let port = dead_port()?;
     let url = format!("http://127.0.0.1:{port}/");
 
     let archiver = Archiver::new(gzip_config())?;
@@ -923,8 +935,7 @@ fn archive_rejects_credentialed_urls_without_leaking_the_secret()
 
 #[test]
 fn archive_records_hops_captured_before_a_failure() -> Result<(), Box<dyn std::error::Error>> {
-    // Bind and immediately drop a listener so that the redirect target refuses connections.
-    let dead_port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+    let dead_port = dead_port()?;
     let (port, server) = serve(1)?;
     let url = format!("http://127.0.0.1:{port}/dead/{dead_port}");
 
@@ -1234,10 +1245,10 @@ fn archive_records_urls_without_a_host_as_failures() -> Result<(), Box<dyn std::
 
 #[test]
 fn supplied_cookie_is_scoped_to_its_host_and_recorded() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(1, |head| {
+    let (port, server) = serve_with(1, |request| {
         (
-            plain("200 OK", "content-type: text/plain", "accepted"),
-            request_header(head, "cookie"),
+            response("200 OK", &[("content-type", "text/plain")], "accepted"),
+            request.header("cookie").map(str::to_owned),
         )
     })?;
     let url = format!("http://127.0.0.1:{port}/");
@@ -1260,10 +1271,10 @@ fn supplied_cookie_is_scoped_to_its_host_and_recorded() -> Result<(), Box<dyn st
 
 #[test]
 fn supplied_cookie_is_withheld_from_other_hosts() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(1, |head| {
+    let (port, server) = serve_with(1, |request| {
         (
-            plain("200 OK", "content-type: text/plain", "accepted"),
-            request_header(head, "cookie"),
+            response("200 OK", &[("content-type", "text/plain")], "accepted"),
+            request.header("cookie").map(str::to_owned),
         )
     })?;
     let archiver = Archiver::new(gzip_config())?
@@ -1510,8 +1521,8 @@ fn archive_concurrently_bounds_the_captures_a_slow_one_holds_back()
     // capture the bound allows behind it has completed.
     let (release, released) = std::sync::mpsc::channel::<()>();
     let released = std::sync::Mutex::new(released);
-    let (port, server) = serve_concurrently_with(URLS, move |_, head| {
-        if request_path(head) == "/0" {
+    let (port, server) = serve_concurrently_with(URLS, move |_, request| {
+        if request.path() == "/0" {
             let _ = released
                 .lock()
                 .map(|released| released.recv_timeout(Duration::from_secs(10)));
@@ -1633,7 +1644,7 @@ fn archive_repeats_a_short_payload_rather_than_revisiting_it()
     // Three archives of two URLs answered identically, under different minimum lengths.
     let (port, server) = serve_with(6, |_| {
         (
-            plain("200 OK", "content-type: application/json", PAYLOAD),
+            response("200 OK", &[("content-type", "application/json")], PAYLOAD),
             (),
         )
     })?;

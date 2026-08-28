@@ -45,7 +45,7 @@ url.workspace = true
 webpki-roots = "1"
 
 [dev-dependencies]
-flate2.workspace = true
+archivindex-test-support.workspace = true
 proptest.workspace = true
 # The recorder's TLS test serves a self-signed certificate.
 rcgen = "0.14"

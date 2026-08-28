@@ -1,6 +1,5 @@
 //! End-to-end crawl session tests against a local HTTP server serving canned responses.
 
-use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -10,6 +9,9 @@ use archivindex_archiver::capture::{CaptureControl, CaptureEvent, Origin};
 use archivindex_archiver::config::{Operator, SessionConfig, Software};
 use archivindex_archiver::session::{Capture, CaptureProcessor, Inspection, RetryConfig, Session};
 use archivindex_archiver::{Archiver, Config, Error};
+use archivindex_test_support::http::{
+    Request, dead_port, response, serve_concurrently_with, serve_with,
+};
 use archivindex_warc::record::fields::Field;
 use archivindex_warc::record::fields::dcmi::DcmiTerm;
 use archivindex_warc::record::fields::metadata::MetadataField;
@@ -27,9 +29,7 @@ use fluent_uri::Uri;
 
 mod support;
 
-use support::{
-    plain, records, request_header, request_path, serve_concurrently_with, serve_with, sha256,
-};
+use support::{records, sha256};
 
 /// A gzip-compressed archive whose sessions run as the test operator.
 fn gzip_config() -> Config {
@@ -65,30 +65,30 @@ fn archiver(config: Config) -> Archiver {
 /// pages, one of which links back to the home page.
 fn respond(path: &str) -> Vec<u8> {
     match path {
-        "/" => plain(
+        "/" => response(
             "200 OK",
-            "content-type: text/html",
+            &[("content-type", "text/html")],
             "<html>home links: /about /missing</html>",
         ),
-        "/about" => plain(
+        "/about" => response(
             "200 OK",
-            "content-type: text/html",
+            &[("content-type", "text/html")],
             "<html>about links: /</html>",
         ),
-        "/redirect" => plain(
+        "/redirect" => response(
             "302 Found",
-            "content-type: text/plain\r\nlocation: /about",
+            &[("content-type", "text/plain"), ("location", "/about")],
             "",
         ),
-        _ => plain("404 Not Found", "content-type: text/plain", "gone"),
+        _ => response("404 Not Found", &[("content-type", "text/plain")], "gone"),
     }
 }
 
 /// Serve the given number of connections on an ephemeral local port, returning the request paths in
 /// the order they arrived.
 fn serve(connections: usize) -> std::io::Result<(u16, thread::JoinHandle<Vec<String>>)> {
-    serve_with(connections, |head| {
-        let path = request_path(head);
+    serve_with(connections, |request| {
+        let path = request.path();
         (respond(path), path.to_owned())
     })
 }
@@ -107,8 +107,9 @@ fn warc_date(value: &str) -> WarcDate {
 /// Answer a request for a versioned page, whose `ETag` advances once: an unconditional request or
 /// one for a stale version gets the current page in full, while one for the current version gets
 /// `304 Not Modified`, carrying the page's validators without a body.
-fn respond_versioned(head: &str, versions: usize) -> Vec<u8> {
-    let requested = request_header(head, "if-none-match")
+fn respond_versioned(request: &Request, versions: usize) -> Vec<u8> {
+    let requested = request
+        .header("if-none-match")
         .and_then(|etag| etag.trim_matches('"').parse::<usize>().ok());
     let current = requested.map_or(1, |etag| versions.min(etag + 1));
 
@@ -119,11 +120,13 @@ fn respond_versioned(head: &str, versions: usize) -> Vec<u8> {
         )
         .into_bytes()
     } else {
-        plain(
+        response(
             "200 OK",
-            &format!(
-                "content-type: text/html\r\netag: \"{current}\"\r\nlast-modified: {LAST_MODIFIED}"
-            ),
+            &[
+                ("content-type", "text/html"),
+                ("etag", &format!("\"{current}\"")),
+                ("last-modified", LAST_MODIFIED),
+            ],
             &format!("<html>version {current}</html>"),
         )
     }
@@ -274,8 +277,8 @@ fn persistent_index_is_read_only_and_supplies_historical_and_same_session_revisi
         warc_date: warc_date("2025-01-01T00:00:00Z"),
     };
     Index::open(&database)?.insert_payload(&historical_target)?;
-    let (port, server) = serve_with(3, move |head| {
-        let path = request_path(head);
+    let (port, server) = serve_with(3, move |request| {
+        let path = request.path();
         let body = if path == "/historical" {
             HISTORICAL
         } else {
@@ -287,7 +290,7 @@ fn persistent_index_is_read_only_and_supplies_historical_and_same_session_revisi
             .expect("inspect durable revisit index")
             .is_some();
         (
-            plain("200 OK", "content-type: text/plain", body),
+            response("200 OK", &[("content-type", "text/plain")], body),
             format!("{path}:{new_payload_is_durable}"),
         )
     })?;
@@ -380,7 +383,9 @@ fn persistent_index_is_read_only_and_supplies_historical_and_same_session_revisi
 #[test]
 fn persistent_resource_state_drives_conditional_requests_and_not_modified_revisits()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(1, |head| (respond_versioned(head, 1), head.to_owned()))?;
+    let (port, server) = serve_with(1, |request| {
+        (respond_versioned(request, 1), request.clone())
+    })?;
     let url = format!("http://127.0.0.1:{port}/page");
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("resource-state.sqlite3");
@@ -420,14 +425,8 @@ fn persistent_resource_state_drives_conditional_requests_and_not_modified_revisi
     .run()?;
 
     let requests = server.join().expect("server thread");
-    assert_eq!(
-        request_header(&requests[0], "if-none-match").as_deref(),
-        Some("\"1\"")
-    );
-    assert_eq!(
-        request_header(&requests[0], "if-modified-since").as_deref(),
-        Some(LAST_MODIFIED.to_ascii_lowercase().as_str())
-    );
+    assert_eq!(requests[0].header("if-none-match"), Some("\"1\""));
+    assert_eq!(requests[0].header("if-modified-since"), Some(LAST_MODIFIED));
     assert_eq!(summary.seed_captures[0].status, 304);
 
     let records = records(&std::fs::read(&output)?)?;
@@ -460,16 +459,18 @@ fn resource_state_for_another_variant_does_not_drive_revalidation()
     const MOBILE_AGENT: &str = "MobileBot/1.0";
     const MOBILE: &str = "<html>mobile</html>";
 
-    let (port, server) = serve_with(1, |head| {
-        let response = plain(
+    let (port, server) = serve_with(1, |request| {
+        let reply = response(
             "200 OK",
-            &format!(
-                "content-type: text/html\r\netag: \"mobile\"\r\n\
-                 last-modified: {LAST_MODIFIED}\r\nvary: User-Agent"
-            ),
+            &[
+                ("content-type", "text/html"),
+                ("etag", "\"mobile\""),
+                ("last-modified", LAST_MODIFIED),
+                ("vary", "User-Agent"),
+            ],
             MOBILE,
         );
-        (response, head.to_owned())
+        (reply, request.clone())
     })?;
     let url = format!("http://127.0.0.1:{port}/page");
     let directory = tempfile::tempdir()?;
@@ -514,8 +515,8 @@ fn resource_state_for_another_variant_does_not_drive_revalidation()
         .run()?;
 
     let requests = server.join().expect("server thread");
-    assert_eq!(request_header(&requests[0], "if-none-match"), None);
-    assert_eq!(request_header(&requests[0], "if-modified-since"), None);
+    assert_eq!(requests[0].header("if-none-match"), None);
+    assert_eq!(requests[0].header("if-modified-since"), None);
     assert_eq!(summary.seed_captures[0].status, 200);
 
     let records = records(&std::fs::read(&output)?)?;
@@ -546,12 +547,12 @@ fn resource_state_for_another_variant_does_not_drive_revalidation()
     Ok(())
 }
 
-/// Crawl a page whose representation is selected by the `Vary` lines given and repeat it. The
+/// Crawl a page whose representation is selected by the `Vary` values given and repeat it. The
 /// repeat matches the first request, so it must send the validators the crawl recorded, and the
 /// server meets it with a challenge whose cookie the request is then repeated with, so that repeat
 /// selects another representation and must not send them.
 fn assert_validators_follow_the_cookie(
-    vary: &str,
+    vary: &'static [&'static str],
     output: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     const COOKIE: &str = "session=clearance";
@@ -564,21 +565,26 @@ fn assert_validators_follow_the_cookie(
         "<html><script>var sucuri_cloudproxy_js='',S='{}';</script></html>",
         BASE64.encode(script.as_bytes())
     );
-    let headers = format!(
-        "content-type: text/html\r\netag: \"v1\"\r\nlast-modified: {LAST_MODIFIED}\r\n{vary}"
-    );
+    let headers = [
+        ("content-type", "text/html"),
+        ("etag", "\"v1\""),
+        ("last-modified", LAST_MODIFIED),
+    ]
+    .into_iter()
+    .chain(vary.iter().map(|value| ("vary", *value)))
+    .collect::<Vec<_>>();
     let attempt = AtomicUsize::new(0);
-    let (port, server) = serve_with(3, move |head| {
-        let response = if attempt.fetch_add(1, Ordering::Relaxed) == 1 {
-            plain(
+    let (port, server) = serve_with(3, move |request| {
+        let reply = if attempt.fetch_add(1, Ordering::Relaxed) == 1 {
+            response(
                 "307 Temporary Redirect",
-                "content-type: text/html\r\nx-sucuri-id: 12005",
+                &[("content-type", "text/html"), ("x-sucuri-id", "12005")],
                 &challenge,
             )
         } else {
-            plain("200 OK", &headers, BODY)
+            response("200 OK", &headers, BODY)
         };
-        (response, head.to_owned())
+        (reply, request.clone())
     })?;
     let url = format!("http://127.0.0.1:{port}/page");
     let directory = tempfile::tempdir()?;
@@ -600,24 +606,15 @@ fn assert_validators_follow_the_cookie(
     let requests = server.join().expect("server thread");
     assert_eq!(summary.seed_captures.len(), 1);
     assert_eq!(summary.extra_captures.len(), 1);
+    assert_eq!(requests[1].header("cookie"), Some(COOKIE));
+    assert_eq!(requests[1].header("if-none-match"), Some("\"v1\""));
+    assert_eq!(requests[1].header("if-modified-since"), Some(LAST_MODIFIED));
     assert_eq!(
-        request_header(&requests[1], "cookie").as_deref(),
-        Some(COOKIE)
-    );
-    assert_eq!(
-        request_header(&requests[1], "if-none-match").as_deref(),
-        Some("\"v1\"")
-    );
-    assert_eq!(
-        request_header(&requests[1], "if-modified-since").as_deref(),
-        Some(LAST_MODIFIED.to_ascii_lowercase().as_str())
-    );
-    assert_eq!(
-        request_header(&requests[2], "cookie").as_deref(),
+        requests[2].header("cookie"),
         Some("session=clearance; sucuri_cloudproxy_uuid_test=cookie-value")
     );
-    assert_eq!(request_header(&requests[2], "if-none-match"), None);
-    assert_eq!(request_header(&requests[2], "if-modified-since"), None);
+    assert_eq!(requests[2].header("if-none-match"), None);
+    assert_eq!(requests[2].header("if-modified-since"), None);
 
     Ok(())
 }
@@ -628,10 +625,7 @@ fn assert_validators_follow_the_cookie(
 #[test]
 fn vary_sent_as_several_lines_selects_on_every_field_it_names()
 -> Result<(), Box<dyn std::error::Error>> {
-    assert_validators_follow_the_cookie(
-        "vary: User-Agent\r\nvary: Cookie",
-        "multiline-vary.warc.gz",
-    )
+    assert_validators_follow_the_cookie(&["User-Agent", "Cookie"], "multiline-vary.warc.gz")
 }
 
 /// A challenge cookie is injected per request rather than configured, so a response selected by
@@ -639,7 +633,7 @@ fn vary_sent_as_several_lines_selects_on_every_field_it_names()
 /// Resolving it against the configured fields alone would record the cookie as absent.
 #[test]
 fn vary_cookie_records_the_cookie_the_request_carried() -> Result<(), Box<dyn std::error::Error>> {
-    assert_validators_follow_the_cookie("vary: Cookie", "cookie-vary.warc.gz")
+    assert_validators_follow_the_cookie(&["Cookie"], "cookie-vary.warc.gz")
 }
 
 #[test]
@@ -724,7 +718,9 @@ fn a_repeated_discovery_is_an_identical_payload_revisit() -> Result<(), Box<dyn 
 #[test]
 fn a_repeat_of_a_validated_response_is_a_server_not_modified_revisit()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(2, |head| (respond_versioned(head, 1), head.to_owned()))?;
+    let (port, server) = serve_with(2, |request| {
+        (respond_versioned(request, 1), request.clone())
+    })?;
     let url = format!("http://127.0.0.1:{port}/page");
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("revalidate.warc.gz");
@@ -739,18 +735,12 @@ fn a_repeat_of_a_validated_response_is_a_server_not_modified_revisit()
         .run()?;
 
     // The first request is unconditional; the repeat carries the stored response's validators.
-    let heads = server.join().expect("server thread");
-    assert_eq!(heads.len(), 2);
-    assert_eq!(request_header(&heads[0], "if-none-match"), None);
-    assert_eq!(request_header(&heads[0], "if-modified-since"), None);
-    assert_eq!(
-        request_header(&heads[1], "if-none-match").as_deref(),
-        Some("\"1\"")
-    );
-    assert_eq!(
-        request_header(&heads[1], "if-modified-since").as_deref(),
-        Some(LAST_MODIFIED.to_ascii_lowercase().as_str())
-    );
+    let requests = server.join().expect("server thread");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].header("if-none-match"), None);
+    assert_eq!(requests[0].header("if-modified-since"), None);
+    assert_eq!(requests[1].header("if-none-match"), Some("\"1\""));
+    assert_eq!(requests[1].header("if-modified-since"), Some(LAST_MODIFIED));
 
     // The processor sees the revalidated repeat as a 304 with no payload.
     assert_eq!(
@@ -823,7 +813,9 @@ fn a_repeat_of_a_validated_response_is_a_server_not_modified_revisit()
 #[test]
 fn changed_content_is_repeated_in_full_and_revalidated_by_its_new_validators()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(3, |head| (respond_versioned(head, 2), head.to_owned()))?;
+    let (port, server) = serve_with(3, |request| {
+        (respond_versioned(request, 2), request.clone())
+    })?;
     let url = format!("http://127.0.0.1:{port}/page");
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("changed.warc.gz");
@@ -838,13 +830,13 @@ fn changed_content_is_repeated_in_full_and_revalidated_by_its_new_validators()
 
     // Each repeat is conditional on the latest stored version: the first finds the page changed
     // and is answered in full, and the second confirms the new version unchanged.
-    let heads = server.join().expect("server thread");
+    let requests = server.join().expect("server thread");
     assert_eq!(
-        heads
+        requests
             .iter()
-            .map(|head| request_header(head, "if-none-match"))
+            .map(|request| request.header("if-none-match"))
             .collect::<Vec<_>>(),
-        [None, Some("\"1\"".to_owned()), Some("\"2\"".to_owned())]
+        [None, Some("\"1\""), Some("\"2\"")]
     );
     assert!(summary.is_complete());
     assert_eq!(
@@ -894,7 +886,7 @@ fn changed_content_is_repeated_in_full_and_revalidated_by_its_new_validators()
 fn session_waits_between_queued_requests() -> Result<(), Box<dyn std::error::Error>> {
     let (port, server) = serve_with(2, |_| {
         (
-            plain("200 OK", "content-type: text/plain", "ok"),
+            response("200 OK", &[("content-type", "text/plain")], "ok"),
             Instant::now(),
         )
     })?;
@@ -1335,11 +1327,11 @@ fn session_rejects_an_unwritable_operator_before_writing() -> Result<(), Box<dyn
 fn session_retries_transient_failures_with_backoff() -> Result<(), Box<dyn std::error::Error>> {
     // The first connection stalls past the client timeout before responding; the retry is then
     // served promptly.
-    let (port, server) = serve_concurrently_with(2, |attempt, head| {
+    let (port, server) = serve_concurrently_with(2, |attempt, request| {
         if attempt == 0 {
             thread::sleep(Duration::from_millis(300));
         }
-        (respond(request_path(head)), ())
+        (respond(request.path()), ())
     })?;
 
     let url = format!("http://127.0.0.1:{port}/");
@@ -1377,18 +1369,18 @@ fn session_retries_transient_failures_with_backoff() -> Result<(), Box<dyn std::
 fn session_retries_retryable_http_statuses() -> Result<(), Box<dyn std::error::Error>> {
     let attempts = Arc::new(AtomicUsize::new(0));
     let server_attempts = Arc::clone(&attempts);
-    let (port, server) = serve_with(2, move |head| {
+    let (port, server) = serve_with(2, move |request| {
         let attempt = server_attempts.fetch_add(1, Ordering::Relaxed);
-        let response = if attempt == 0 {
-            plain(
+        let reply = if attempt == 0 {
+            response(
                 "503 Service Unavailable",
-                "content-type: text/plain\r\nretry-after: 0",
+                &[("content-type", "text/plain"), ("retry-after", "0")],
                 "try later",
             )
         } else {
-            plain("200 OK", "content-type: text/plain", "complete")
+            response("200 OK", &[("content-type", "text/plain")], "complete")
         };
-        (response, request_path(head).to_owned())
+        (reply, request.path().to_owned())
     })?;
     let url = format!("http://127.0.0.1:{port}/");
     let directory = tempfile::tempdir()?;
@@ -1456,21 +1448,24 @@ fn session_retries_retryable_http_statuses() -> Result<(), Box<dyn std::error::E
 fn session_honours_an_http_date_retry_after() -> Result<(), Box<dyn std::error::Error>> {
     let attempts = Arc::new(AtomicUsize::new(0));
     let server_attempts = Arc::clone(&attempts);
-    let (port, server) = serve_with(2, move |head| {
+    let (port, server) = serve_with(2, move |request| {
         let attempt = server_attempts.fetch_add(1, Ordering::Relaxed);
-        let response = if attempt == 0 {
+        let reply = if attempt == 0 {
             // A real `Retry-After` date is an IMF-fixdate in GMT, not RFC 2822's `+0000` form.
             let retry_at = (chrono::Utc::now() + chrono::Duration::seconds(2))
                 .format("%a, %d %b %Y %H:%M:%S GMT");
-            plain(
+            response(
                 "503 Service Unavailable",
-                &format!("content-type: text/plain\r\nretry-after: {retry_at}"),
+                &[
+                    ("content-type", "text/plain"),
+                    ("retry-after", &retry_at.to_string()),
+                ],
                 "try later",
             )
         } else {
-            plain("200 OK", "content-type: text/plain", "complete")
+            response("200 OK", &[("content-type", "text/plain")], "complete")
         };
-        (response, request_path(head).to_owned())
+        (reply, request.path().to_owned())
     })?;
     let url = format!("http://127.0.0.1:{port}/");
     let directory = tempfile::tempdir()?;
@@ -1505,14 +1500,14 @@ fn session_honours_an_http_date_retry_after() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn session_reports_exhausted_http_status_retries() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(2, |head| {
+    let (port, server) = serve_with(2, |request| {
         (
-            plain(
+            response(
                 "503 Service Unavailable",
-                "content-type: text/plain",
+                &[("content-type", "text/plain")],
                 "busy",
             ),
-            request_path(head).to_owned(),
+            request.path().to_owned(),
         )
     })?;
     let url = format!("http://127.0.0.1:{port}/");
@@ -1555,14 +1550,14 @@ fn session_reports_exhausted_http_status_retries() -> Result<(), Box<dyn std::er
 #[test]
 fn session_cancelled_during_a_retry_keeps_the_completed_attempt()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(1, |head| {
+    let (port, server) = serve_with(1, |request| {
         (
-            plain(
+            response(
                 "503 Service Unavailable",
-                "content-type: text/plain",
+                &[("content-type", "text/plain")],
                 "busy",
             ),
-            request_path(head).to_owned(),
+            request.path().to_owned(),
         )
     })?;
     let url = format!("http://127.0.0.1:{port}/");
@@ -1622,8 +1617,7 @@ fn processor_failure_stops_with_an_incomplete_summary() -> Result<(), Box<dyn st
 
 #[test]
 fn session_reports_exhausted_retries_as_failures() -> Result<(), Box<dyn std::error::Error>> {
-    // Bind and immediately drop a listener so that the port refuses connections.
-    let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+    let port = dead_port()?;
     let url = format!("http://127.0.0.1:{port}/");
 
     let directory = tempfile::tempdir()?;
