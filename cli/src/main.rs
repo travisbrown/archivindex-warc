@@ -15,7 +15,7 @@ use archivindex_warc::io::write::{DEFAULT_GZIP_COMPRESSION_LEVEL, MAX_GZIP_COMPR
 use archivindex_warc::value::{Text, TextError};
 use archivindex_warc_ops::lint::{Finding, Linter};
 use archivindex_warc_ops::rewrite::WarcinfoValues;
-use archivindex_warc_revisit_index::Index;
+use archivindex_warc_revisit_index::{Index, LoadSummary};
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
@@ -456,25 +456,27 @@ fn load_revisit_index(database: &Path, input: &Path, quiet: bool) -> Result<()> 
     let files = index::warc_files(input)?;
     let mut index = Index::open(database)
         .with_context(|| format!("cannot open revisit index {}", database.display()))?;
-    let mut total = index::LoadSummary::default();
+    let mut total = LoadSummary::default();
 
     for file in &files {
         let summary = index::load(&mut index, file)?;
         if !quiet {
             println!(
-                "Indexed {} of {}: {summary}.",
+                "Indexed {} of {}: {}.",
                 plural(summary.records, "record"),
-                file.display()
+                file.display(),
+                index::describe(&summary)
             );
         }
         total += summary;
     }
     if !quiet && files.len() != 1 {
         println!(
-            "Indexed {} of {} into {}: {total}.",
+            "Indexed {} of {} into {}: {}.",
             plural(total.records, "record"),
             plural(files.len(), "WARC file"),
-            database.display()
+            database.display(),
+            index::describe(&total)
         );
     }
 

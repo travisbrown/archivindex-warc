@@ -14,7 +14,50 @@ use crate::db::{
 };
 use crate::payload::RevisitTarget;
 use crate::resource::{ResourceKey, ResourceStateUpdate, Variance, declared_vary};
-use crate::{IndexRecordOutcome, IngestError, Store};
+use crate::{Index, IndexRecordOutcome, IngestError, LoadError, LoadSummary, Store};
+
+impl Index {
+    /// Index a sequence of semantic WARC records in one transaction.
+    ///
+    /// Each record is indexed as by [`Store::index_record`]. A record with a malformed HTTP head
+    /// or WARC payload is counted as skipped and passed to `skipped` with its error rather than
+    /// ending the load. The transaction is committed once the records run out.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoadError::Read`] when a record cannot be read, [`LoadError::Index`] when the
+    /// index fails for a record, and [`LoadError::Transaction`] when the transaction cannot be
+    /// begun or committed. The transaction is rolled back on every error.
+    pub fn load_records<E: Extension>(
+        &mut self,
+        records: impl IntoIterator<Item = Result<Record<E>, archivindex_warc::io::read::Error>>,
+        mut skipped: impl FnMut(&Record<E>, &IngestError),
+    ) -> Result<LoadSummary, LoadError> {
+        let transaction = self.begin()?;
+        let mut summary = LoadSummary::default();
+
+        for (position, result) in records.into_iter().enumerate() {
+            let record = result.map_err(|source| LoadError::Read { position, source })?;
+            summary.records += 1;
+            match transaction.index_record(&record) {
+                Ok(outcome) => {
+                    summary.payloads += usize::from(outcome.payload_inserted);
+                    summary.resources += usize::from(outcome.resource_updated);
+                }
+                Err(IngestError::Index(source)) => {
+                    return Err(LoadError::Index { position, source });
+                }
+                Err(error) => {
+                    skipped(&record, &error);
+                    summary.skipped += 1;
+                }
+            }
+        }
+        transaction.commit()?;
+
+        Ok(summary)
+    }
+}
 
 impl<C: Handle> Store<C> {
     /// Index one semantic WARC record.

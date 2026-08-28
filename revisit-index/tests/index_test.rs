@@ -9,7 +9,9 @@ use archivindex_warc::record::header::truncated_type::TruncatedType;
 use archivindex_warc::value::{Algorithm, Encoding, LabelledDigest, MediaType, WarcDate};
 use archivindex_warc_revisit_index::payload::RevisitTarget;
 use archivindex_warc_revisit_index::resource::{ResourceKey, ResourceStateUpdate, Variance};
-use archivindex_warc_revisit_index::{Error, Index, IngestError, OpenError};
+use archivindex_warc_revisit_index::{
+    Error, Index, IngestError, LoadError, LoadSummary, OpenError,
+};
 use fluent_uri::Uri;
 use sha2::Digest as _;
 
@@ -932,5 +934,69 @@ fn dropped_transaction_rolls_back() -> Result<(), Box<dyn StdError>> {
     }
 
     assert!(index.lookup_payload(&one.payload_digest)?.is_none());
+    Ok(())
+}
+
+#[test]
+fn load_records_indexes_each_record_and_skips_malformed_ones() -> Result<(), Box<dyn StdError>> {
+    let mut index = Index::open_in_memory()?;
+    let malformed = Record::<NoExtension>::response(URI_B, date("2025-01-01T00:00:00Z"))?
+        .record_id(uri(RECORD_B))
+        .payload_digest(sha256(b""))
+        .body(b"HTTP/1.1 200\r\nno colon\r\n\r\n".to_vec())?;
+    let mut skipped = Vec::new();
+
+    let summary = index.load_records(
+        [
+            Ok(response(
+                URI_A,
+                RECORD_A,
+                "2025-01-01T00:00:00Z",
+                "",
+                b"hello",
+            )?),
+            Ok(malformed),
+        ],
+        |record, error| skipped.push((record.core().record_id.clone(), error.to_string())),
+    )?;
+
+    assert_eq!(
+        summary,
+        LoadSummary {
+            records: 2,
+            payloads: 1,
+            resources: 1,
+            skipped: 1,
+        }
+    );
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].0, uri(RECORD_B));
+    assert!(skipped[0].1.starts_with("malformed archived HTTP response"));
+    assert!(index.lookup_payload(&sha256(b"hello"))?.is_some());
+    Ok(())
+}
+
+#[test]
+fn load_records_rolls_back_on_a_read_error() -> Result<(), Box<dyn StdError>> {
+    let mut index = Index::open_in_memory()?;
+
+    let error = index
+        .load_records(
+            [
+                Ok(response(
+                    URI_A,
+                    RECORD_A,
+                    "2025-01-01T00:00:00Z",
+                    "",
+                    b"hello",
+                )?),
+                Err(archivindex_warc::io::read::Error::EmptyFrame),
+            ],
+            |_, _| {},
+        )
+        .unwrap_err();
+
+    assert!(matches!(error, LoadError::Read { position: 1, .. }));
+    assert!(index.lookup_payload(&sha256(b"hello"))?.is_none());
     Ok(())
 }
