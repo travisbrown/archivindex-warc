@@ -113,21 +113,16 @@ mod tests {
     #[test]
     fn a_revisit_declares_the_truncation_its_block_is() {
         let mut records = capture();
-        records[2] = records[2]
-            .clone()
-            .set("WARC-Type", "revisit")
-            .with(
-                "WARC-Profile",
-                "http://netpreserve.org/warc/1.1/revisit/identical-payload-digest",
-            )
-            .with("WARC-Truncated", "time");
+        let mut later = copies(&capture()[1..], 1);
+        later[1] = revisit_of(later[1].clone(), RESPONSE_ID).set("WARC-Truncated", "time");
+        records.extend(later);
 
         assert_eq!(
             findings(&records),
             [(
-                2,
+                5,
                 Violation::UndeclaredRevisitTruncation {
-                    length: records[2].body.len() as u64
+                    length: records[5].body.len() as u64
                 }
             )]
         );
@@ -171,7 +166,10 @@ mod tests {
                 .with(
                     "WARC-Profile",
                     "http://netpreserve.org/warc/1.1/revisit/identical-payload-digest",
-                ),
+                )
+                .with("WARC-Refers-To", format!("<{RESPONSE_ID}>"))
+                .with("WARC-Refers-To-Target-URI", TARGET)
+                .with("WARC-Refers-To-Date", DATE),
         );
 
         assert_eq!(

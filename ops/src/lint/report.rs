@@ -3,7 +3,7 @@
 use std::fmt::{self, Display, Formatter};
 
 use archivindex_warc::parse::untyped::name::Field;
-use archivindex_warc::value::{LabelledDigest, MediaType, Text};
+use archivindex_warc::value::{LabelledDigest, MediaType, Text, WarcDate};
 use fluent_uri::Uri;
 
 /// A rule a record breaks.
@@ -202,6 +202,32 @@ pub enum Violation {
         /// The number of blank lines the file ends with.
         lines: usize,
     },
+    /// A record is dated earlier than the record before it.
+    #[error("`WARC-Date` is {found}, which precedes the {expected} of record {preceding}")]
+    DateOutOfOrder {
+        /// The position of the record before this one.
+        preceding: usize,
+        /// The date of the record before this one.
+        #[serde(serialize_with = "serialize_display")]
+        expected: WarcDate,
+        /// The date of this record.
+        #[serde(serialize_with = "serialize_display")]
+        found: WarcDate,
+    },
+    /// A `revisit` record lacks a `WARC-Refers-To` field.
+    #[error("the revisit carries no {}", fields(missing))]
+    MissingRefersToFields {
+        /// The fields the record lacks, in conventional order.
+        #[serde(serialize_with = "serialize_field_names")]
+        missing: Vec<Field>,
+    },
+    /// A `revisit` record's `WARC-Refers-To` names no record that precedes it.
+    #[error("`WARC-Refers-To` names {found}, which is the identifier of no preceding record")]
+    RefersToUnknownRecord {
+        /// The record the field names.
+        #[serde(serialize_with = "serialize_display")]
+        found: Uri<String>,
+    },
 }
 
 impl Violation {
@@ -237,6 +263,9 @@ impl Violation {
             Self::WrongRequestHost { .. } => "wrong_request_host",
             Self::BlankLinesBefore { .. } => "blank_lines_before",
             Self::TrailingBlankLines { .. } => "trailing_blank_lines",
+            Self::DateOutOfOrder { .. } => "date_out_of_order",
+            Self::MissingRefersToFields { .. } => "missing_refers_to_fields",
+            Self::RefersToUnknownRecord { .. } => "refers_to_unknown_record",
         }
     }
 }
@@ -330,6 +359,24 @@ fn blank_lines(lines: usize) -> String {
     } else {
         format!("{lines} blank lines")
     }
+}
+
+/// List header fields in a message, by their standard names.
+fn fields(fields: &[Field]) -> String {
+    fields
+        .iter()
+        .map(|field| format!("`{}`", field.standard_name()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Serialize header fields by their standard names.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn serialize_field_names<S: serde::ser::Serializer>(
+    fields: &[Field],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(fields.iter().map(|field| field.standard_name()))
 }
 
 /// Describe a target URI's host in a message.
@@ -433,6 +480,22 @@ mod tests {
             }
             .to_string(),
             format!("the target URI's host should be `{HOST}`, but the URI has none")
+        );
+        assert_eq!(
+            Violation::DateOutOfOrder {
+                preceding: 1,
+                expected: date(DATE),
+                found: date("2024-04-01T11:59:59Z"),
+            }
+            .to_string(),
+            format!("`WARC-Date` is 2024-04-01T11:59:59Z, which precedes the {DATE} of record 1")
+        );
+        assert_eq!(
+            Violation::MissingRefersToFields {
+                missing: vec![Field::RefersToTargetURI, Field::RefersToDate],
+            }
+            .to_string(),
+            "the revisit carries no `WARC-Refers-To-Target-URI`, `WARC-Refers-To-Date`"
         );
     }
 

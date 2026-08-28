@@ -44,6 +44,11 @@
 //! 14. Nothing stands between one record and the next. A record ends with the two line endings that
 //!     close it, so a blank line before a record, or at the end of the file, is padding that some
 //!     writers emit and that concatenating files leaves behind.
+//! 15. Every record is dated no earlier than the record before it.
+//! 16. Every `revisit` record names the record it revisits in `WARC-Refers-To`,
+//!     `WARC-Refers-To-Target-URI`, and `WARC-Refers-To-Date`.
+//! 17. Every `revisit` record's `WARC-Refers-To` names a record that precedes it in the file. A
+//!     file whose revisits are of records held elsewhere breaks this rule by design.
 //!
 //! Each rule a record breaks is one [`Finding`]. A record that breaks none is reported by its
 //! identifier alone.
@@ -63,6 +68,7 @@ use std::io::BufRead;
 use archivindex_warc::io::read::{self, UntypedIter, WarcReader};
 use archivindex_warc::record::Record;
 use archivindex_warc::record::extension::NoExtension;
+use archivindex_warc::value::WarcDate;
 use fluent_uri::Uri;
 pub use report::{Checked, Finding, Violation};
 use rules::capture::Pending;
@@ -92,6 +98,8 @@ pub struct Linter<R> {
     clean: Option<Uri<String>>,
     /// Where each identifier the file has used was used first.
     record_ids: HashMap<Uri<String>, usize>,
+    /// The position and date of the record read last, if one has.
+    previous_date: Option<(usize, WarcDate)>,
     /// Where the gzip members of the file end, when its framing is checked.
     framing: Option<Framing>,
     /// Where the record read last ended in the decompressed stream.
@@ -119,6 +127,7 @@ impl<R: BufRead> Linter<R> {
             pending: None,
             clean: None,
             record_ids: HashMap::new(),
+            previous_date: None,
             framing: None,
             read_through: 0,
             boundaries: VecDeque::new(),
@@ -195,9 +204,11 @@ impl<R: BufRead> Linter<R> {
     fn check_record(&mut self, index: usize, record: &Record, placement: Option<Placement>) {
         self.check_framing(index, record, placement);
         self.check_record_id(index, record);
+        self.check_date(index, record);
         self.check_warcinfo(index, record);
         self.check_digests(index, record);
         self.check_block(index, record);
+        self.check_revisit(index, record);
     }
 
     /// Report a capture left waiting at the end of the file, and the blank lines it ends with.

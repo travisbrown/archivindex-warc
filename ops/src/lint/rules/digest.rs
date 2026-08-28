@@ -127,7 +127,10 @@ mod tests {
                 .with(
                     "WARC-Profile",
                     "http://netpreserve.org/warc/1.1/revisit/server-not-modified",
-                ),
+                )
+                .with("WARC-Refers-To", format!("<{RESPONSE_ID}>"))
+                .with("WARC-Refers-To-Target-URI", TARGET)
+                .with("WARC-Refers-To-Date", DATE),
         );
 
         assert_eq!(

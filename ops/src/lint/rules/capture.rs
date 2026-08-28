@@ -160,14 +160,9 @@ mod tests {
     #[test]
     fn a_revisit_stands_in_for_the_response() {
         let mut records = capture();
-        records[2] = records[2]
-            .clone()
-            .set("WARC-Type", "revisit")
-            .with(
-                "WARC-Profile",
-                "http://netpreserve.org/warc/1.1/revisit/identical-payload-digest",
-            )
-            .with("WARC-Truncated", "length");
+        let mut later = copies(&capture()[1..], 1);
+        later[1] = revisit_of(later[1].clone(), RESPONSE_ID);
+        records.extend(later);
 
         assert_eq!(findings(&records), []);
     }

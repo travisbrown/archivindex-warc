@@ -3,7 +3,8 @@
 use std::io::Write;
 
 use archivindex_warc::parse::untyped::name::Field;
-use archivindex_warc::value::{Algorithm, LabelledDigest};
+use archivindex_warc::value::{Algorithm, LabelledDigest, WarcDate};
+use archivindex_warc::version::WarcVersion;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use fluent_uri::Uri;
@@ -170,6 +171,28 @@ pub(super) fn resource(id: &str) -> TestRecord {
         .with("WARC-Warcinfo-ID", format!("<{WARCINFO_ID}>"))
         .with("WARC-Payload-Digest", DIGEST)
         .with("Content-Type", "text/plain")
+}
+
+/// A `response` record made the `revisit` of the record `original` identifies, under the
+/// identical payload digest profile.
+///
+/// The block is kept and declared truncated, as clause 6.7.2 asks.
+pub(super) fn revisit_of(response: TestRecord, original: &str) -> TestRecord {
+    response
+        .set("WARC-Type", "revisit")
+        .with(
+            "WARC-Profile",
+            "http://netpreserve.org/warc/1.1/revisit/identical-payload-digest",
+        )
+        .with("WARC-Truncated", "length")
+        .with("WARC-Refers-To", format!("<{original}>"))
+        .with("WARC-Refers-To-Target-URI", TARGET)
+        .with("WARC-Refers-To-Date", DATE)
+}
+
+/// A WARC 1.1 date.
+pub(super) fn date(value: &str) -> WarcDate {
+    WarcDate::parse(value, WarcVersion::V1_1).expect("a valid date")
 }
 
 /// A clean capture: a warcinfo record followed by a request, response, metadata triple.
