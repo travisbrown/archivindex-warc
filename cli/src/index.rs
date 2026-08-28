@@ -1,47 +1,21 @@
 //! The `load-revisit-index` command.
 
 use std::ffi::OsStr;
-use std::fmt::{self, Display, Formatter};
-use std::ops::AddAssign;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use archivindex_cli_support::plural;
 use archivindex_warc::record::extension::NoExtension;
-use archivindex_warc_revisit_index::{Index, IngestError};
+use archivindex_warc_revisit_index::{Index, LoadSummary};
 
-/// What loading one or more WARC files changed in an index.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct LoadSummary {
-    /// The records read.
-    pub records: usize,
-    /// The records that established a canonical payload.
-    pub payloads: usize,
-    /// The records that updated a resource's state.
-    pub resources: usize,
-    /// The records skipped as malformed.
-    pub skipped: usize,
-}
-
-impl AddAssign for LoadSummary {
-    fn add_assign(&mut self, other: Self) {
-        self.records += other.records;
-        self.payloads += other.payloads;
-        self.resources += other.resources;
-        self.skipped += other.skipped;
-    }
-}
-
-impl Display for LoadSummary {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} inserted, {} updated, {} skipped",
-            plural(self.payloads, "payload"),
-            plural(self.resources, "resource"),
-            plural(self.skipped, "malformed record")
-        )
-    }
+/// What a load changed, for the console.
+pub fn describe(summary: &LoadSummary) -> String {
+    format!(
+        "{} inserted, {} updated, {} skipped",
+        plural(summary.payloads, "payload"),
+        plural(summary.resources, "resource"),
+        plural(summary.skipped, "malformed record")
+    )
 }
 
 /// The WARC files `path` names.
@@ -92,39 +66,19 @@ fn is_warc(name: &Path) -> bool {
 ///
 /// Returns an error when the file cannot be opened or read, or when the index fails; the
 /// transaction is then rolled back. A record with a malformed HTTP head or WARC payload is
-/// counted as skipped rather than failing the load.
+/// logged and counted as skipped rather than failing the load.
 pub fn load(index: &mut Index, input: &Path) -> Result<LoadSummary> {
     let reader = archivindex_warc_ops::file::open(input)?;
-    let transaction = index.begin()?;
-    let mut summary = LoadSummary::default();
 
-    for (position, result) in reader.iter_records::<NoExtension>().enumerate() {
-        let record = result
-            .with_context(|| format!("cannot read record {position} of {}", input.display()))?;
-        summary.records += 1;
-        match transaction.index_record(&record) {
-            Ok(outcome) => {
-                summary.payloads += usize::from(outcome.payload_inserted);
-                summary.resources += usize::from(outcome.resource_updated);
-            }
-            Err(IngestError::Index(error)) => {
-                return Err(error).with_context(|| {
-                    format!("cannot index record {position} of {}", input.display())
-                });
-            }
-            Err(error) => {
-                log::warn!(
-                    "skipping record {} of {}: {error}",
-                    record.core().record_id,
-                    input.display()
-                );
-                summary.skipped += 1;
-            }
-        }
-    }
-    transaction.commit()?;
-
-    Ok(summary)
+    index
+        .load_records(reader.iter_records::<NoExtension>(), |record, error| {
+            log::warn!(
+                "skipping record {} of {}: {error}",
+                record.core().record_id,
+                input.display()
+            );
+        })
+        .with_context(|| format!("cannot index {}", input.display()))
 }
 
 #[cfg(test)]

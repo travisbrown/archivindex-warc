@@ -77,6 +77,28 @@ pub struct IndexRecordOutcome {
     pub resource_updated: bool,
 }
 
+/// The changes made while indexing a sequence of WARC records.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LoadSummary {
+    /// The records read.
+    pub records: usize,
+    /// The records that established a canonical payload.
+    pub payloads: usize,
+    /// The records that updated a resource's state.
+    pub resources: usize,
+    /// The records skipped as malformed.
+    pub skipped: usize,
+}
+
+impl std::ops::AddAssign for LoadSummary {
+    fn add_assign(&mut self, other: Self) {
+        self.records += other.records;
+        self.payloads += other.payloads;
+        self.resources += other.resources;
+        self.skipped += other.skipped;
+    }
+}
+
 /// A SQLite operation failed.
 #[derive(Debug, thiserror::Error)]
 #[error("SQLite operation `{operation}` failed: {source}")]
@@ -210,4 +232,30 @@ pub enum IngestError {
     /// A WARC record's declared payload could not be extracted.
     #[error("malformed WARC payload: {0}")]
     MalformedWarcPayload(#[source] archivindex_warc::record::payload::Error),
+}
+
+/// An error indexing a sequence of WARC records.
+#[derive(Debug, thiserror::Error)]
+pub enum LoadError {
+    /// A record could not be read.
+    #[error("cannot read record {position}: {source}")]
+    Read {
+        /// The position of the record among those read, counting from zero.
+        position: usize,
+        /// The read error.
+        #[source]
+        source: archivindex_warc::io::read::Error,
+    },
+    /// Reading or updating the index failed for a record.
+    #[error("cannot index record {position}: {source}")]
+    Index {
+        /// The position of the record among those read, counting from zero.
+        position: usize,
+        /// The index error.
+        #[source]
+        source: Error,
+    },
+    /// The transaction holding the records could not be begun or committed.
+    #[error(transparent)]
+    Transaction(#[from] DatabaseError),
 }
