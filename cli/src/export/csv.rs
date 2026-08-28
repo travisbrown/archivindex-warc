@@ -58,7 +58,7 @@ fn record_uuid(uri: &Uri<String>) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use archivindex_test_support::render;
+    use archivindex_test_support::warc::render;
 
     use super::*;
 

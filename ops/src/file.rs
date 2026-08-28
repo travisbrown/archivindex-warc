@@ -252,7 +252,7 @@ fn is_same_file(input: &Path, output: &Path) -> bool {
 mod tests {
     use std::collections::VecDeque;
 
-    use archivindex_test_support::render;
+    use archivindex_test_support::warc::render;
 
     use super::*;
 

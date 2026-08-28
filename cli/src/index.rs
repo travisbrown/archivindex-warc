@@ -129,7 +129,7 @@ pub fn load(index: &mut Index, input: &Path) -> Result<LoadSummary> {
 
 #[cfg(test)]
 mod tests {
-    use archivindex_test_support::render;
+    use archivindex_test_support::warc::render;
 
     use super::*;
 

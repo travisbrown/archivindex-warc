@@ -348,7 +348,7 @@ mod tests {
     use std::io::Write;
     use std::path::PathBuf;
 
-    use archivindex_test_support::render;
+    use archivindex_test_support::warc::render;
 
     use super::*;
 

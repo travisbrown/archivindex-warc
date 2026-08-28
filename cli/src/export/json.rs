@@ -76,7 +76,7 @@ fn single_line(payload: &[u8]) -> Option<&[u8]> {
 
 #[cfg(test)]
 mod tests {
-    use archivindex_test_support::render;
+    use archivindex_test_support::warc::render;
 
     use super::*;
 

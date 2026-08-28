@@ -93,7 +93,7 @@ pub fn compress_path(input: &Path, level: u32, output: &Path) -> crate::Result<C
 mod tests {
     use std::io::Read;
 
-    use archivindex_test_support::render;
+    use archivindex_test_support::warc::render;
     use archivindex_warc::parse::raw;
     use flate2::bufread::GzDecoder;
 

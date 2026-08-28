@@ -255,7 +255,7 @@ fn refreshed_digest(
 
 #[cfg(test)]
 mod tests {
-    use archivindex_test_support::render;
+    use archivindex_test_support::warc::render;
     use archivindex_warc::record::fields::Field as _;
     use archivindex_warc::value::Algorithm;
 

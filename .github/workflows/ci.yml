@@ -85,8 +85,6 @@ jobs:
       - name: Package
         run: >-
           cargo package --locked --workspace --no-verify
-          --exclude archivindex-cli-support
-          --exclude archivindex-test-support
           --exclude archivindex-warc-ops
           --exclude archivindex-warc-cli
           --exclude archivindex-archiver-cli

@@ -4,22 +4,18 @@ members = [
   "archiver",
   "archiver-cli",
   "cli",
-  "cli-support",
   "digest",
   "ops",
   "revisit-index",
-  "test-support",
 ]
 default-members = [
   ".",
   "archiver",
   "archiver-cli",
   "cli",
-  "cli-support",
   "digest",
   "ops",
   "revisit-index",
-  "test-support",
 ]
 resolver = "3"
 
@@ -32,8 +28,8 @@ license = "MIT"
 repository = "https://github.com/travisbrown/archivindex-warc"
 
 [workspace.dependencies]
-archivindex-cli-support = { path = "cli-support" }
-archivindex-test-support = { path = "test-support" }
+archivindex-cli-support = { git = "https://github.com/travisbrown/archivindex-core" }
+archivindex-test-support = { git = "https://github.com/travisbrown/archivindex-core" }
 archivindex-warc = { version = "0.1.0", path = "." }
 chrono = "0.4"
 clap = { version = "4.5", features = ["derive"] }
