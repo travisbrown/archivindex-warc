@@ -12,6 +12,12 @@ publish = false
 [lints]
 workspace = true
 
+[[bin]]
+name = "archivindex-warc"
+path = "src/main.rs"
+# Avoid a rustdoc output-filename collision with the `archivindex-warc` library crate.
+doc = false
+
 [features]
 # Passed through to the revisit index, which passes it through to rusqlite.
 bundled = ["archivindex-warc-revisit-index/bundled"]
