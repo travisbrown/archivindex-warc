@@ -19,7 +19,7 @@ use archivindex_warc_revisit_index::Index;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(version, about)]
+#[command(name = "archivindex-warc", version, about)]
 struct Cli {
     #[command(flatten)]
     verbosity: Verbosity,
@@ -34,7 +34,7 @@ enum Command {
     Canonicalize {
         /// The WARC file to canonicalize, or - for standard input; a .gz extension, or the gzip
         /// magic number on standard input, selects gzip decompression.
-        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
         /// The file to write; a .gz extension selects record-at-a-time gzip compression.
@@ -46,12 +46,11 @@ enum Command {
     Compress {
         /// The WARC file to compress, or - for standard input; a .gz extension, or the gzip magic
         /// number on standard input, selects gzip decompression.
-        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
         /// The gzip compression level, from 0 (none) through 9 (best).
         #[arg(
-            short,
             long,
             value_name = "LEVEL",
             default_value_t = DEFAULT_GZIP_COMPRESSION_LEVEL,
@@ -68,7 +67,7 @@ enum Command {
     Export {
         /// The WARC file to export, or - for standard input; a .gz extension, or the gzip magic
         /// number on standard input, selects gzip decompression.
-        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
         #[command(subcommand)]
@@ -79,7 +78,7 @@ enum Command {
     Graph {
         /// The WARC file to graph, or - for standard input; a .gz extension, or the gzip magic
         /// number on standard input, selects gzip decompression.
-        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
         /// The SVG file to write; without this option, open the graph in a window.
@@ -94,7 +93,7 @@ enum Command {
         /// The WARC file to lint, or - for standard input; a .gz extension, or the gzip magic
         /// number on standard input, selects gzip decompression, whose member framing is checked
         /// as well.
-        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
         /// How to write the findings.
@@ -108,25 +107,25 @@ enum Command {
     /// it was before that file. A record whose HTTP head or WARC payload is malformed is skipped
     /// with a warning.
     LoadRevisitIndex {
-        /// The SQLite revisit index to load into, created when it does not exist.
-        #[arg(value_name = "DATABASE", value_hint = clap::ValueHint::FilePath)]
-        database: PathBuf,
-
         /// The WARC file to index, or - for standard input, or a directory whose .warc and
         /// .warc.gz files are indexed in file-name order.
-        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::AnyPath)]
+        #[arg(short, long, value_name = "PATH", value_hint = clap::ValueHint::AnyPath)]
         input: PathBuf,
+
+        /// The SQLite revisit index to load into, created when it does not exist.
+        #[arg(long = "db", value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+        database: PathBuf,
     },
 
     /// Merge the records of two WARC files, dropping duplicate warcinfo records.
     Merge {
         /// The WARC file whose records come first; merge reads its inputs twice, so neither can be
         /// standard input.
-        #[arg(value_name = "FIRST", value_hint = clap::ValueHint::FilePath)]
+        #[arg(long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         first: PathBuf,
 
         /// The WARC file whose records follow.
-        #[arg(value_name = "SECOND", value_hint = clap::ValueHint::FilePath)]
+        #[arg(long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         second: PathBuf,
 
         /// The file to write; a .gz extension selects record-at-a-time gzip compression.
@@ -142,7 +141,7 @@ enum Command {
     PropagateIdentifiedPayloadType {
         /// The WARC file to read, which is read twice, so it cannot be standard input. A .gz
         /// extension selects gzip decompression.
-        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
         /// The file to write; a .gz extension selects record-at-a-time gzip compression.
@@ -159,7 +158,7 @@ enum Command {
     RemoveSameTargetRevisits {
         /// The WARC file to read, which is read twice, so it cannot be standard input. A .gz
         /// extension selects gzip decompression.
-        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
         /// The file to write; a .gz extension selects record-at-a-time gzip compression.
@@ -171,7 +170,7 @@ enum Command {
     Rewrite {
         /// The WARC file to rewrite, or - for standard input; a .gz extension, or the gzip magic
         /// number on standard input, selects gzip decompression.
-        #[arg(value_name = "INPUT", value_hint = clap::ValueHint::FilePath)]
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         input: PathBuf,
 
         /// The file to write; a .gz extension selects record-at-a-time gzip compression.
@@ -310,7 +309,7 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
             }
         }
         Command::Lint { input, format } => return lint(&input, format, quiet),
-        Command::LoadRevisitIndex { database, input } => {
+        Command::LoadRevisitIndex { input, database } => {
             load_revisit_index(&database, &input, quiet)?;
         }
         Command::Merge {
@@ -552,15 +551,16 @@ mod tests {
     #[test]
     fn graph_accepts_an_optional_output() {
         let with_output = Cli::try_parse_from([
-            "archivindex-warc-cli",
+            "archivindex-warc",
             "graph",
+            "-i",
             "a.warc.gz",
             "--output",
             "a.svg",
         ])
         .unwrap();
         let without_output =
-            Cli::try_parse_from(["archivindex-warc-cli", "graph", "a.warc"]).unwrap();
+            Cli::try_parse_from(["archivindex-warc", "graph", "--input", "a.warc"]).unwrap();
 
         assert!(matches!(
             with_output.command,
@@ -579,8 +579,9 @@ mod tests {
     #[test]
     fn canonicalize_accepts_an_input_and_output() {
         let cli = Cli::try_parse_from([
-            "archivindex-warc-cli",
+            "archivindex-warc",
             "canonicalize",
+            "--input",
             "input.warc.gz",
             "--output",
             "output.warc",
@@ -598,16 +599,18 @@ mod tests {
     #[test]
     fn compress_defaults_its_level_and_bounds_it() {
         let default = Cli::try_parse_from([
-            "archivindex-warc-cli",
+            "archivindex-warc",
             "compress",
+            "-i",
             "input.warc",
             "-o",
             "output.warc.gz",
         ])
         .unwrap();
         let chosen = Cli::try_parse_from([
-            "archivindex-warc-cli",
+            "archivindex-warc",
             "compress",
+            "-i",
             "input.warc",
             "--level",
             "0",
@@ -623,11 +626,25 @@ mod tests {
         assert!(matches!(chosen.command, Command::Compress { level: 0, .. }));
         assert!(
             Cli::try_parse_from([
-                "archivindex-warc-cli",
+                "archivindex-warc",
                 "compress",
+                "-i",
+                "input.warc",
+                "--level",
+                "10",
+                "-o",
+                "output.warc.gz",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "archivindex-warc",
+                "compress",
+                "-i",
                 "input.warc",
                 "-l",
-                "10",
+                "0",
                 "-o",
                 "output.warc.gz",
             ])
@@ -637,10 +654,10 @@ mod tests {
 
     #[test]
     fn export_takes_an_input_and_a_format() {
-        let csv = Cli::try_parse_from(["archivindex-warc-cli", "export", "input.warc.gz", "csv"])
+        let csv = Cli::try_parse_from(["archivindex-warc", "export", "-i", "input.warc.gz", "csv"])
             .unwrap();
-        let json =
-            Cli::try_parse_from(["archivindex-warc-cli", "export", "input.warc", "json"]).unwrap();
+        let json = Cli::try_parse_from(["archivindex-warc", "export", "-i", "input.warc", "json"])
+            .unwrap();
 
         assert!(matches!(
             csv.command,
@@ -654,15 +671,16 @@ mod tests {
                 ..
             }
         ));
-        assert!(Cli::try_parse_from(["archivindex-warc-cli", "export", "input.warc"]).is_err());
+        assert!(Cli::try_parse_from(["archivindex-warc", "export", "-i", "input.warc"]).is_err());
     }
 
     #[test]
     fn lint_accepts_an_input_and_defaults_to_text() {
-        let cli = Cli::try_parse_from(["archivindex-warc-cli", "lint", "input.warc.gz"]).unwrap();
+        let cli = Cli::try_parse_from(["archivindex-warc", "lint", "-i", "input.warc.gz"]).unwrap();
         let json = Cli::try_parse_from([
-            "archivindex-warc-cli",
+            "archivindex-warc",
             "lint",
+            "-i",
             "input.warc",
             "--format",
             "json",
@@ -686,10 +704,45 @@ mod tests {
     }
 
     #[test]
+    fn merge_takes_two_inputs_and_an_output() {
+        let cli = Cli::try_parse_from([
+            "archivindex-warc",
+            "merge",
+            "--first",
+            "a.warc.gz",
+            "--second",
+            "b.warc.gz",
+            "-o",
+            "merged.warc.gz",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Merge { first, second, output }
+                if first.as_path() == Path::new("a.warc.gz")
+                    && second.as_path() == Path::new("b.warc.gz")
+                    && output.as_path() == Path::new("merged.warc.gz")
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "archivindex-warc",
+                "merge",
+                "a.warc",
+                "b.warc",
+                "-o",
+                "c.warc"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
     fn propagate_identified_payload_type_takes_an_input_and_output() {
         let cli = Cli::try_parse_from([
-            "archivindex-warc-cli",
+            "archivindex-warc",
             "propagate-identified-payload-type",
+            "-i",
             "input.warc.gz",
             "-o",
             "output.warc",
@@ -705,28 +758,35 @@ mod tests {
     }
 
     #[test]
-    fn load_revisit_index_takes_a_database_and_input() {
+    fn load_revisit_index_takes_an_input_and_a_database() {
         let cli = Cli::try_parse_from([
-            "archivindex-warc-cli",
+            "archivindex-warc",
             "load-revisit-index",
-            "revisits.db",
+            "-i",
             "captures",
+            "--db",
+            "revisits.db",
         ])
         .unwrap();
 
         assert!(matches!(
             cli.command,
-            Command::LoadRevisitIndex { database, input }
-                if database.as_path() == Path::new("revisits.db")
-                    && input.as_path() == Path::new("captures")
+            Command::LoadRevisitIndex { input, database }
+                if input.as_path() == Path::new("captures")
+                    && database.as_path() == Path::new("revisits.db")
         ));
+        assert!(
+            Cli::try_parse_from(["archivindex-warc", "load-revisit-index", "-i", "captures"])
+                .is_err()
+        );
     }
 
     #[test]
     fn remove_same_target_revisits_takes_an_input_and_output() {
         let cli = Cli::try_parse_from([
-            "archivindex-warc-cli",
+            "archivindex-warc",
             "remove-same-target-revisits",
+            "-i",
             "input.warc.gz",
             "-o",
             "output.warc",
@@ -745,8 +805,9 @@ mod tests {
     fn rewrite_warcinfo_needs_at_least_one_value() {
         let parse = |values: &[&str]| {
             let mut args = vec![
-                "archivindex-warc-cli",
+                "archivindex-warc",
                 "rewrite",
+                "-i",
                 "input.warc",
                 "-o",
                 "output.warc.gz",
@@ -803,7 +864,7 @@ mod tests {
         )
         .unwrap();
         let lint = |path: &Path| {
-            let arguments = ["archivindex-warc-cli", "lint", path.to_str().unwrap()];
+            let arguments = ["archivindex-warc", "lint", "-i", path.to_str().unwrap()];
 
             run(Cli::try_parse_from(arguments).unwrap())
         };

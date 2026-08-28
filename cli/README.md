@@ -15,7 +15,7 @@ and `-vvv` raise the diagnostic level to informational, debug, and trace.
 ## canonicalize
 
 ```console
-cargo run --manifest-path cli/Cargo.toml -- canonicalize input.warc.gz -o output.warc.gz
+cargo run --manifest-path cli/Cargo.toml -- canonicalize -i input.warc.gz -o output.warc.gz
 ```
 
 Respells standard header fields as the WARC standard prints them and puts them in conventional
@@ -26,7 +26,7 @@ preserved.
 ## compress
 
 ```console
-cargo run --manifest-path cli/Cargo.toml -- compress input.warc -o output.warc.gz
+cargo run --manifest-path cli/Cargo.toml -- compress -i input.warc -o output.warc.gz
 ```
 
 Compresses each record as a separate gzip member. The output name must end in `.gz`; use
@@ -35,8 +35,8 @@ Compresses each record as a separate gzip member. The output name must end in `.
 ## export
 
 ```console
-cargo run --manifest-path cli/Cargo.toml -- export archive.warc.gz csv
-cargo run --manifest-path cli/Cargo.toml -- export archive.warc.gz json
+cargo run --manifest-path cli/Cargo.toml -- export -i archive.warc.gz csv
+cargo run --manifest-path cli/Cargo.toml -- export -i archive.warc.gz json
 ```
 
 `csv` writes the type, date, record identifier, and target URI of each record. `json` writes each
@@ -45,7 +45,7 @@ payload identified as JSON, one value per line.
 ## graph
 
 ```console
-cargo run --manifest-path cli/Cargo.toml -- graph archive.warc.gz --output archive.svg
+cargo run --manifest-path cli/Cargo.toml -- graph -i archive.warc.gz -o archive.svg
 ```
 
 Draws every record as a color-coded node and record-ID relationships as directed arrows. The graph
@@ -62,7 +62,7 @@ platform's default SVG viewer.
 ## lint
 
 ```console
-cargo run --manifest-path cli/Cargo.toml -- lint archive.warc.gz
+cargo run --manifest-path cli/Cargo.toml -- lint -i archive.warc.gz
 ```
 
 Checks conventions stricter than the WARC standard, including header order, capture-record
@@ -72,11 +72,11 @@ output. The command exits with status 1 when it finds problems.
 ## load-revisit-index
 
 ```console
-cargo run --manifest-path cli/Cargo.toml -- load-revisit-index revisits.db archive.warc.gz
-cargo run --manifest-path cli/Cargo.toml -- load-revisit-index revisits.db captures/
+cargo run --manifest-path cli/Cargo.toml -- load-revisit-index -i archive.warc.gz --db revisits.db
+cargo run --manifest-path cli/Cargo.toml -- load-revisit-index -i captures/ --db revisits.db
 ```
 
-Indexes every record of a WARC file into the SQLite revisit index at the given path, creating the
+Indexes every record of a WARC file into the SQLite revisit index named by `--db`, creating the
 index when it does not exist. A directory stands for the `.warc` and `.warc.gz` files directly in
 it, taken in file-name order. Each file is indexed in one transaction, so a file that cannot be
 read leaves the index as it was before that file. A record whose HTTP head or WARC payload is
@@ -85,7 +85,8 @@ malformed is skipped with a warning.
 ## merge
 
 ```console
-cargo run --manifest-path cli/Cargo.toml -- merge first.warc.gz second.warc.gz -o merged.warc.gz
+cargo run --manifest-path cli/Cargo.toml -- \
+  merge --first first.warc.gz --second second.warc.gz -o merged.warc.gz
 ```
 
 Writes every record of the first file followed by every record of the second, dropping duplicate
@@ -100,7 +101,7 @@ redirected to it. All other records are written byte for byte as they were read.
 
 ```console
 cargo run --manifest-path cli/Cargo.toml -- \
-  propagate-identified-payload-type input.warc.gz -o output.warc.gz
+  propagate-identified-payload-type -i input.warc.gz -o output.warc.gz
 ```
 
 Gives each `revisit` record lacking `WARC-Identified-Payload-Type` the value declared by the
@@ -112,7 +113,7 @@ record, and every revisit whose original is not such a response, is copied as re
 
 ```console
 cargo run --manifest-path cli/Cargo.toml -- \
-  remove-same-target-revisits input.warc.gz -o output.warc.gz
+  remove-same-target-revisits -i input.warc.gz -o output.warc.gz
 ```
 
 Removes each `revisit` record whose `WARC-Target-URI` equals that of the `response` record its
@@ -122,7 +123,7 @@ Removes each `revisit` record whose `WARC-Target-URI` equals that of the `respon
 
 ```console
 cargo run --manifest-path cli/Cargo.toml -- \
-  rewrite input.warc.gz -o output.warc.gz warcinfo --filename output.warc.gz
+  rewrite -i input.warc.gz -o output.warc.gz warcinfo --filename output.warc.gz
 ```
 
 Sets selected fields on every `warcinfo` record and copies all other records as read. Run
