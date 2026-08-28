@@ -182,7 +182,6 @@ dependencies = [
  "clap",
  "csv",
  "d2-little",
- "flate2",
  "fluent-uri",
  "log",
  "serde",
@@ -230,7 +229,6 @@ version = "0.1.0"
 dependencies = [
  "archivindex-warc",
  "fluent-uri",
- "http",
  "proptest",
  "rusqlite",
  "sha2",
