@@ -1,22 +1,6 @@
 [workspace]
-members = [
-  ".",
-  "archiver",
-  "archiver-cli",
-  "cli",
-  "digest",
-  "ops",
-  "revisit-index",
-]
-default-members = [
-  ".",
-  "archiver",
-  "archiver-cli",
-  "cli",
-  "digest",
-  "ops",
-  "revisit-index",
-]
+members = [".", "archiver", "archiver-cli", "cli", "digest", "ops", "revisit-index"]
+default-members = [".", "archiver", "archiver-cli", "cli", "digest", "ops", "revisit-index"]
 resolver = "3"
 
 [workspace.package]
@@ -66,10 +50,7 @@ readme = "README.md"
 repository.workspace = true
 documentation = "https://docs.rs/crate/archivindex-warc/"
 license.workspace = true
-authors = [
-  "Reza Akhavan <reza@akhavan.me>",
-  "Travis Brown <travisrobertbrown@gmail.com>",
-]
+authors = ["Reza Akhavan <reza@akhavan.me>", "Travis Brown <travisrobertbrown@gmail.com>"]
 keywords = ["warc", "web", "archive"]
 categories = ["encoding", "parser-implementations"]
 edition.workspace = true
@@ -113,9 +94,7 @@ uuid = { version = "1", features = ["v4"] }
 data-encoding.workspace = true
 proptest.workspace = true
 # The request-reconstruction test compares against bytes sent by a real loopback client.
-reqwest = { version = "0.13", default-features = false, features = [
-  "blocking",
-] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 tempfile.workspace = true
 test-strategy.workspace = true

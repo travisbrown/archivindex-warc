@@ -29,6 +29,21 @@ jobs:
       - name: Check validator formatting
         run: cargo +nightly fmt --manifest-path validator/Cargo.toml --all -- --check
 
+  toml:
+    name: TOML formatting and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Pinned to a minor version because formatting output can change between releases.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: taplo@0.10
+      - name: Check formatting
+        run: taplo fmt --check --diff
+      # Validates the Cargo manifests and other configuration against their published schemas.
+      - name: Lint
+        run: taplo lint
+
   build:
     name: Build, test, lint, and document
     runs-on: ubuntu-latest
