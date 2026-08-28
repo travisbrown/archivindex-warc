@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut count = 0;
     // No extension is in force, so only standard record types and fields are recognized.
-    for record in file.iter_records::<NoExtension>() {
+    for record in file.iter_records::<NoExtension>().records() {
         count += 1;
         match record {
             Err(error) => println!("ERROR: {error}\r\n"),

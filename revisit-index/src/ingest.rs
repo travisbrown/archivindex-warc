@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 
+use archivindex_warc::io::read::{self, Located};
 use archivindex_warc::record::Record;
 use archivindex_warc::record::extension::Extension;
 use archivindex_warc::record::header::{RevisitHeader, RevisitProfile};
@@ -17,10 +18,11 @@ use crate::resource::{ResourceKey, ResourceStateUpdate, Variance, declared_vary}
 use crate::{Index, IndexRecordOutcome, IngestError, LoadError, LoadSummary, Store};
 
 impl Index {
-    /// Index a sequence of semantic WARC records in one transaction.
+    /// Index a sequence of located semantic WARC records, as a reader yields them, in one
+    /// transaction.
     ///
     /// Each record is indexed as by [`Store::index_record`]. A record with a malformed HTTP head
-    /// or WARC payload is counted as skipped and passed to `skipped` with its error rather than
+    /// or WARC payload is counted as skipped and passed to `skipped` with its error, rather than
     /// ending the load. The transaction is committed once the records run out.
     ///
     /// # Errors
@@ -30,25 +32,37 @@ impl Index {
     /// begun or committed. The transaction is rolled back on every error.
     pub fn load_records<E: Extension>(
         &mut self,
-        records: impl IntoIterator<Item = Result<Record<E>, archivindex_warc::io::read::Error>>,
-        mut skipped: impl FnMut(&Record<E>, &IngestError),
+        records: impl IntoIterator<Item = Located<Result<Record<E>, read::Error>>>,
+        mut skipped: impl FnMut(&Located<Record<E>>, &IngestError),
     ) -> Result<LoadSummary, LoadError> {
         let transaction = self.begin()?;
         let mut summary = LoadSummary::default();
 
-        for (position, result) in records.into_iter().enumerate() {
-            let record = result.map_err(|source| LoadError::Read { position, source })?;
+        for Located {
+            location,
+            blank_lines,
+            value,
+        } in records
+        {
+            let located = Located {
+                location,
+                blank_lines,
+                value: value.map_err(|source| LoadError::Read {
+                    location,
+                    source: Box::new(source),
+                })?,
+            };
             summary.records += 1;
-            match transaction.index_record(&record) {
+            match transaction.index_record(&located.value) {
                 Ok(outcome) => {
                     summary.payloads += usize::from(outcome.payload_inserted);
                     summary.resources += usize::from(outcome.resource_updated);
                 }
                 Err(IngestError::Index(source)) => {
-                    return Err(LoadError::Index { position, source });
+                    return Err(LoadError::Index { location, source });
                 }
                 Err(error) => {
-                    skipped(&record, &error);
+                    skipped(&located, &error);
                     summary.skipped += 1;
                 }
             }

@@ -227,6 +227,7 @@ mod tests {
         let records = open(&output)
             .unwrap()
             .iter_raw_records()
+            .records()
             .collect::<std::result::Result<_, _>>()
             .unwrap();
 

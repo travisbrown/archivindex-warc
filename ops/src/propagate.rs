@@ -81,7 +81,7 @@ pub fn identified_payload_type(input: &Path, output: &Path) -> Result<PropagateS
 fn response_payload_types(input: &Path) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
     let mut originals = HashMap::new();
 
-    for result in open(input)?.filter_raw_records(is_response) {
+    for result in open(input)?.filter_raw_records(is_response).records() {
         let record = result.map_err(|source| Error::Read {
             path: input.to_owned(),
             source,
@@ -176,6 +176,7 @@ mod tests {
             open(path)
                 .unwrap()
                 .iter_raw_records()
+                .records()
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .unwrap()
         };

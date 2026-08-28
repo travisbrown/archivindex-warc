@@ -3,79 +3,77 @@
 
 use std::io::BufRead;
 
+use archivindex_warc::io::read::Located;
 use archivindex_warc::record::Record;
 
 use crate::lint::{Linter, Violation};
 
-/// Where a record sat in the gzip members of a file.
+/// Where a record sat in the file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Placement {
+pub struct Framing {
+    /// The number of blank lines standing before the record.
+    padding: usize,
+    /// The gzip members holding the record, for a file the reader places its records in.
+    members: Option<Members>,
+}
+
+/// The gzip members holding a record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Members {
     /// The position of the record held first by the member the record begins in, which is the
     /// record's own position when the record begins that member.
     first: usize,
     /// The number of members the record's octets lie in.
-    members: usize,
+    count: u64,
 }
 
 impl<R: BufRead> Linter<R> {
-    /// Where the record just read sat in the gzip members of the file.
+    /// Where the record just read sat in the file.
     ///
-    /// A record ends where the next begins, so a member ending there opens the member the next
-    /// record begins in. Nothing is reported for a file whose framing is not checked.
-    pub(crate) fn placement(&mut self) -> Option<Placement> {
+    /// The members are reported only for a file the reader places its records in.
+    pub(crate) fn framing<T>(&mut self, located: &Located<T>) -> Framing {
         let index = self.index;
-        let framing = self.framing.as_ref()?;
-        let start = self.read_through;
-        let end = framing.position();
-        self.read_through = end;
-        framing.take_boundaries(&mut self.boundaries);
-
-        let mut begins_member = index == 0;
-        let mut members = 1;
-        while let Some(at) = self.boundaries.front().copied().filter(|at| *at < end) {
-            self.boundaries.pop_front();
-            if at == start {
-                begins_member = true;
+        let members = located.placement().map(|placement| {
+            let first = if placement.begins {
+                index
             } else {
-                members += 1;
+                self.member_first
+            };
+            // A record whose octets are split ends the member the record after it begins in.
+            if placement.begins || placement.members > 1 {
+                self.member_first = index;
             }
-        }
 
-        let first = if begins_member {
-            index
-        } else {
-            self.member_first
-        };
-        // A record whose octets are split ends the member the record after it begins in.
-        if begins_member || members > 1 {
-            self.member_first = index;
-        }
+            Members {
+                first,
+                count: placement.members,
+            }
+        });
 
-        Some(Placement { first, members })
+        Framing {
+            padding: located.blank_lines,
+            members,
+        }
     }
 
     /// Check that the record was alone in its gzip member, and that no blank line stood before it.
-    pub(crate) fn check_framing(
-        &mut self,
-        index: usize,
-        record: &Record,
-        placement: Option<Placement>,
-    ) {
-        if let Some(Placement { first, members }) = placement {
+    pub(crate) fn check_framing(&mut self, index: usize, record: &Record, framing: Framing) {
+        if let Some(Members { first, count }) = framing.members {
             if first != index {
                 self.fault(index, record, Violation::SharedGzipMember { first });
             }
-            if members > 1 {
-                self.fault(index, record, Violation::SplitGzipMember { members });
+            if count > 1 {
+                self.fault(index, record, Violation::SplitGzipMember { members: count });
             }
         }
 
-        let padding = self.records.blank_lines();
-        if padding > 0 {
+        if framing.padding > 0 {
             self.fault(
                 index,
                 record,
-                Violation::BlankLinesBefore { lines: padding },
+                Violation::BlankLinesBefore {
+                    lines: framing.padding,
+                },
             );
         }
     }
@@ -85,7 +83,7 @@ impl<R: BufRead> Linter<R> {
     /// Padding after a record that failed to read is left unreported, as that record is checked
     /// against no rule.
     pub(crate) fn finish_framing(&mut self) {
-        let padding = self.records.blank_lines();
+        let padding = self.records.end().map_or(0, |end| end.blank_lines);
         if let Some((index, record_id)) = self.last_record.take().filter(|_| padding > 0) {
             self.report(
                 index,

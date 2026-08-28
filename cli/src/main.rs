@@ -508,13 +508,7 @@ fn compress(input: &Path, level: u32, output: &Path, quiet: bool) -> Result<()> 
 
 /// Report every finding in `input`, returning the outcome the findings call for.
 fn lint(input: &Path, format: LintFormat, quiet: bool) -> Result<CommandOutcome> {
-    let (reader, framing) = archivindex_warc_ops::file::read_framed(input)?;
-    let mut linter = Linter::new(reader);
-
-    if let Some(framing) = framing {
-        linter = linter.checking_gzip_framing(framing);
-    }
-
+    let mut linter = Linter::new(archivindex_warc_ops::file::open(input)?);
     let mut problems = 0;
 
     while let Some(item) = linter.next() {

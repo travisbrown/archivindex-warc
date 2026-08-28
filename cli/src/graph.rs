@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::parse::raw;
 use archivindex_warc_ops::header::{REFERENCE_FIELDS, normalize_id};
 
@@ -138,11 +137,12 @@ fn render(source: &str) -> Result<Vec<u8>> {
 /// the iteration yields only read errors.
 fn read_records(path: &Path) -> Result<Vec<Record>> {
     let mut records = Vec::new();
-    let refused =
-        WarcReader::new(archivindex_warc_ops::file::read(path)?).filter_raw_records(|header| {
+    let refused = archivindex_warc_ops::file::open(path)?
+        .filter_raw_records(|header| {
             records.push(Record::from_header(header));
             false
-        });
+        })
+        .records();
 
     for result in refused {
         result.with_context(|| format!("cannot read {}", path.display()))?;

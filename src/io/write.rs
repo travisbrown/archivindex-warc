@@ -430,7 +430,10 @@ mod write_tests {
         ";
 
         let mut writer = WarcWriter::new(Vec::new());
-        for record in crate::io::read::WarcReader::new(raw).iter_raw_records() {
+        for record in crate::io::read::WarcReader::new(raw)
+            .iter_raw_records()
+            .records()
+        {
             writer.write(&record.unwrap()).unwrap();
         }
 
@@ -479,6 +482,7 @@ mod write_tests {
 
         let read_back = crate::io::read::WarcReader::new(writer.get_ref().as_slice())
             .iter_raw_records()
+            .records()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(read_back, vec![record]);
@@ -681,6 +685,7 @@ mod from_path_tests {
             assert_eq!(
                 crate::io::read::WarcReader::new(decoded.as_slice())
                     .iter_raw_records()
+                    .records()
                     .map(|record| record.unwrap().body)
                     .collect::<Vec<_>>(),
                 vec![body.clone()]
@@ -704,6 +709,7 @@ mod gzip_tests {
     fn read_records(bytes: &[u8]) -> Vec<raw::Record> {
         crate::io::read::WarcReader::new(bytes)
             .iter_raw_records()
+            .records()
             .collect::<Result<_, _>>()
             .unwrap()
     }
@@ -754,7 +760,11 @@ mod gzip_tests {
         let reader = crate::io::read::WarcReader::new(BufReader::new(
             flate2::bufread::MultiGzDecoder::new(bytes.as_slice()),
         ));
-        let read_back: Vec<_> = reader.iter_raw_records().collect::<Result<_, _>>().unwrap();
+        let read_back: Vec<_> = reader
+            .iter_raw_records()
+            .records()
+            .collect::<Result<_, _>>()
+            .unwrap();
         assert_eq!(read_back, vec![first, second]);
     }
 

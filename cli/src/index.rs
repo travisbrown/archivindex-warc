@@ -73,8 +73,9 @@ pub fn load(index: &mut Index, input: &Path) -> Result<LoadSummary> {
     index
         .load_records(reader.iter_records::<NoExtension>(), |record, error| {
             log::warn!(
-                "skipping record {} of {}: {error}",
-                record.core().record_id,
+                "skipping record {} at {} of {}: {error}",
+                record.value.core().record_id,
+                record.location,
                 input.display()
             );
         })

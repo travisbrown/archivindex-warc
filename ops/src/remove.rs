@@ -86,9 +86,12 @@ fn same_target_captures(input: &Path) -> Result<HashSet<Vec<u8>>> {
     let mut revisits = Vec::new();
     let mut links: HashMap<Vec<u8>, Vec<Vec<u8>>> = HashMap::new();
 
-    for result in open(input)?.filter_raw_records(|header| {
-        is_response(header) || is_revisit(header) || header.get(CONCURRENT_TO).is_some()
-    }) {
+    for result in open(input)?
+        .filter_raw_records(|header| {
+            is_response(header) || is_revisit(header) || header.get(CONCURRENT_TO).is_some()
+        })
+        .records()
+    {
         let record = result.map_err(|source| Error::Read {
             path: input.to_owned(),
             source,
@@ -185,6 +188,7 @@ mod tests {
             open(path)
                 .unwrap()
                 .iter_raw_records()
+                .records()
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .unwrap()
         };

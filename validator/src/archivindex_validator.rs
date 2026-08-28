@@ -76,9 +76,14 @@ fn read(file: &Path, layer: Layer) -> io::Result<Outcome> {
 /// Stream and framing errors stop iteration. Untyped and semantic errors do not.
 fn tally<R: BufRead>(reader: WarcReader<R>, layer: Layer) -> Outcome {
     match layer {
-        Layer::Raw => collect(reader.iter_raw_records()),
-        Layer::Untyped => collect(reader.iter_untyped_records()),
-        Layer::Record => collect(reader.iter_records::<NoExtension>().map(digest_checked)),
+        Layer::Raw => collect(reader.iter_raw_records().records()),
+        Layer::Untyped => collect(reader.iter_untyped_records().records()),
+        Layer::Record => collect(
+            reader
+                .iter_records::<NoExtension>()
+                .records()
+                .map(digest_checked),
+        ),
     }
 }
 

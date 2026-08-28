@@ -5,7 +5,6 @@ pub mod compress;
 pub mod digest;
 mod error;
 pub mod file;
-pub mod gzip;
 pub mod header;
 pub mod lint;
 pub mod merge;
