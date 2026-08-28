@@ -4,12 +4,12 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Cursor, Read};
 use std::path::{Path, PathBuf};
 
+use archivindex_warc::io::gzip::MemberReader;
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::io::write::{Compression, WarcWriter};
 use archivindex_warc::parse::raw;
 use tempfile::TempPath;
 
-use crate::gzip::{Framing, MemberReader};
 use crate::{Error, Result};
 
 /// The path that names standard input.
@@ -23,31 +23,26 @@ const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 /// A path names a gzip file by its extension; standard input is gzip when it begins with the
 /// gzip magic number.
 pub fn read(path: &Path) -> Result<Box<dyn BufRead>> {
-    read_framed(path).map(|(reader, _)| reader)
-}
+    let (source, gzip) = source(path)?;
 
-/// Open a file, or standard input for `-`, for reading, reporting where its gzip members end.
-///
-/// A path names a gzip file by its extension; standard input is gzip when it begins with the
-/// gzip magic number. Input that is not gzip has no members, and yields no framing.
-pub fn read_framed(path: &Path) -> Result<(Box<dyn BufRead>, Option<Framing>)> {
-    let open = |source| Error::Open {
-        path: path.to_owned(),
-        source,
-    };
-
-    if is_stdin(path) {
-        framed_by_magic(io::stdin().lock()).map_err(open)
+    Ok(if gzip {
+        Box::new(MemberReader::new(source))
     } else {
-        let file = File::open(path).map_err(open)?;
-
-        Ok(framed(BufReader::new(file), is_gzip(path)))
-    }
+        source
+    })
 }
 
 /// Open a WARC file, or standard input for `-`, for reading, decompressing gzip as [`read`] does.
+///
+/// The records of gzip input are placed in the members holding them.
 pub fn open(path: &Path) -> Result<WarcReader<Box<dyn BufRead>>> {
-    read(path).map(WarcReader::new)
+    let (source, gzip) = source(path)?;
+
+    Ok(if gzip {
+        WarcReader::from_gzip(source)
+    } else {
+        WarcReader::new(source)
+    })
 }
 
 /// Whether a path names standard input.
@@ -56,12 +51,26 @@ pub fn is_stdin(path: &Path) -> bool {
     path.as_os_str() == STDIN
 }
 
-/// Read `reader` as gzip when it begins with the gzip magic number.
+/// Open a file, or standard input for `-`, as it is stored, and whether it is gzip.
+fn source(path: &Path) -> Result<(Box<dyn BufRead>, bool)> {
+    let open = |source| Error::Open {
+        path: path.to_owned(),
+        source,
+    };
+
+    if is_stdin(path) {
+        by_magic(io::stdin().lock()).map_err(open)
+    } else {
+        let file = File::open(path).map_err(open)?;
+
+        Ok((Box::new(BufReader::new(file)), is_gzip(path)))
+    }
+}
+
+/// Whether `reader` begins with the gzip magic number.
 ///
 /// The bytes read to decide are chained back in front of the rest.
-fn framed_by_magic(
-    mut reader: impl BufRead + 'static,
-) -> io::Result<(Box<dyn BufRead>, Option<Framing>)> {
+fn by_magic(mut reader: impl BufRead + 'static) -> io::Result<(Box<dyn BufRead>, bool)> {
     let mut head = Vec::with_capacity(GZIP_MAGIC.len());
     reader
         .by_ref()
@@ -69,18 +78,7 @@ fn framed_by_magic(
         .read_to_end(&mut head)?;
     let gzip = head == GZIP_MAGIC;
 
-    Ok(framed(Cursor::new(head).chain(reader), gzip))
-}
-
-/// Read `reader` as gzip members when `gzip`, reporting where they end.
-fn framed(reader: impl BufRead + 'static, gzip: bool) -> (Box<dyn BufRead>, Option<Framing>) {
-    if gzip {
-        let reader = MemberReader::new(reader);
-        let framing = reader.framing();
-        (Box::new(reader), Some(framing))
-    } else {
-        (Box::new(reader), None)
-    }
+    Ok((Box::new(Cursor::new(head).chain(reader)), gzip))
 }
 
 /// The compression to write at a path, gzip when the path names a gzip file.
@@ -157,7 +155,7 @@ pub(crate) fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Recor
     for (path, reader) in readers {
         log::info!("copying records from {}", path.display());
 
-        for result in reader.iter_raw_records() {
+        for result in reader.iter_raw_records().records() {
             let record = result.map_err(|source| Error::Read {
                 path: path.to_owned(),
                 source,
@@ -250,8 +248,6 @@ fn is_same_file(input: &Path, output: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
-
     use archivindex_test_support::warc::render;
 
     use super::*;
@@ -261,40 +257,49 @@ mod tests {
         render(&[("WARC-Type", "resource")], body)
     }
 
-    /// A file compressed record by record has a member for each record, which the framing of a
-    /// read over it reports.
+    /// A file compressed record by record has a member for each record, in which a read over it
+    /// places the record.
     #[test]
-    fn reports_the_member_framing_of_a_gzip_input() {
+    fn places_the_records_of_a_gzip_input_in_its_members() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("input.warc.gz");
         let records = [resource("first"), resource("second")];
         let mut compressed = Vec::new();
         crate::compress::compress(&records.concat()[..], 1, &mut compressed).unwrap();
-        std::fs::write(&path, compressed).unwrap();
+        std::fs::write(&path, &compressed).unwrap();
 
-        let (reader, framing) = read_framed(&path).unwrap();
-        let framing = framing.expect("a gzip file reports its framing");
-        assert_eq!(WarcReader::new(reader).iter_raw_records().count(), 2);
-        let mut boundaries = VecDeque::new();
-        framing.take_boundaries(&mut boundaries);
+        let frames = open(&path)
+            .unwrap()
+            .iter_raw_records()
+            .map(|located| {
+                located
+                    .map(Result::unwrap)
+                    .frame()
+                    .expect("each record fills a member")
+            })
+            .collect::<Vec<_>>();
 
-        assert_eq!(
-            Vec::from(boundaries),
-            [
-                records[0].len() as u64,
-                (records[0].len() + records[1].len()) as u64
-            ]
-        );
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].offset, 0);
+        assert_eq!(frames[1].offset, frames[0].length);
+        assert_eq!(frames[0].length + frames[1].length, compressed.len() as u64);
     }
 
-    /// A file that is not gzip has no members, and so no framing to check.
+    /// A file that is not gzip has no members to place records in.
     #[test]
-    fn reports_no_framing_for_an_uncompressed_input() {
+    fn places_no_record_of_an_uncompressed_input() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("input.warc");
         std::fs::write(&path, resource("body")).unwrap();
 
-        assert!(read_framed(&path).unwrap().1.is_none());
+        let located = open(&path)
+            .unwrap()
+            .iter_raw_records()
+            .next()
+            .unwrap()
+            .map(Result::unwrap);
+
+        assert!(located.placement().is_none());
     }
 
     /// Standard input has no extension, so it is gzip when it begins as a gzip member does.
@@ -304,17 +309,12 @@ mod tests {
         let mut compressed = Vec::new();
         crate::compress::compress(&record[..], 1, &mut compressed).unwrap();
 
-        let (reader, framing) = framed_by_magic(Cursor::new(compressed)).unwrap();
-        let framing = framing.expect("gzip standard input reports its framing");
-        let records = WarcReader::new(reader)
-            .iter_raw_records()
-            .map(Result::unwrap)
-            .count();
-        let mut boundaries = VecDeque::new();
-        framing.take_boundaries(&mut boundaries);
+        let (mut reader, gzip) = by_magic(Cursor::new(compressed.clone())).unwrap();
+        let mut read = Vec::new();
+        reader.read_to_end(&mut read).unwrap();
 
-        assert_eq!(records, 1);
-        assert_eq!(Vec::from(boundaries), [record.len() as u64]);
+        assert!(gzip);
+        assert_eq!(read, compressed);
     }
 
     /// The bytes read to look for the magic number are read again as part of the input.
@@ -322,22 +322,22 @@ mod tests {
     fn reads_uncompressed_standard_input_from_its_first_byte() {
         let record = resource("body");
 
-        let (mut reader, framing) = framed_by_magic(Cursor::new(record.clone())).unwrap();
+        let (mut reader, gzip) = by_magic(Cursor::new(record.clone())).unwrap();
         let mut read = Vec::new();
         reader.read_to_end(&mut read).unwrap();
 
-        assert!(framing.is_none());
+        assert!(!gzip);
         assert_eq!(read, record);
     }
 
     /// Input shorter than the magic number is not gzip, and is read whole.
     #[test]
     fn reads_standard_input_shorter_than_the_magic_number() {
-        let (mut reader, framing) = framed_by_magic(Cursor::new(vec![0x1f])).unwrap();
+        let (mut reader, gzip) = by_magic(Cursor::new(vec![0x1f])).unwrap();
         let mut read = Vec::new();
         reader.read_to_end(&mut read).unwrap();
 
-        assert!(framing.is_none());
+        assert!(!gzip);
         assert_eq!(read, [0x1f]);
     }
 
@@ -451,7 +451,10 @@ mod tests {
 
         assert_eq!(summary.records, 1);
         assert_eq!(std::fs::read(&input).unwrap(), contents);
-        assert_eq!(open(&output).unwrap().iter_raw_records().count(), 1);
+        assert_eq!(
+            open(&output).unwrap().iter_raw_records().records().count(),
+            1
+        );
     }
 
     #[cfg(unix)]
@@ -472,6 +475,9 @@ mod tests {
         assert_eq!(summary.records, 1);
         assert_eq!(std::fs::read(&input).unwrap(), contents);
         assert!(std::fs::symlink_metadata(&output).unwrap().is_file());
-        assert_eq!(open(&output).unwrap().iter_raw_records().count(), 1);
+        assert_eq!(
+            open(&output).unwrap().iter_raw_records().records().count(),
+            1
+        );
     }
 }

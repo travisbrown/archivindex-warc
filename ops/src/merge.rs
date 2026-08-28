@@ -89,7 +89,7 @@ impl MergePlan {
     fn build(first: &Path, second: &Path) -> Result<Self> {
         let mut records = Vec::new();
         for path in [first, second] {
-            for result in open(path)?.filter_raw_records(is_warcinfo) {
+            for result in open(path)?.filter_raw_records(is_warcinfo).records() {
                 records.push(result.map_err(|source| Error::Read {
                     path: path.to_owned(),
                     source,
@@ -393,6 +393,7 @@ mod tests {
         open(path)
             .unwrap()
             .iter_raw_records()
+            .records()
             .collect::<Result<_, _>>()
             .unwrap()
     }

@@ -32,22 +32,24 @@ fn main() -> std::io::Result<()> {
     let mut skipped = 0;
     // The closure borrows the counter for as long as the iterator lives, which is the loop, so
     // the count can be read again once the loop has ended.
-    let kept = file.filter_raw_records(|header| {
-        // A raw record keeps the white space a value was written with, so the value is trimmed
-        // before it is read as a URI.
-        let target_uri = header
-            .get("WARC-Target-URI")
-            .map(|value| String::from_utf8_lossy(value).trim().to_owned());
+    let kept = file
+        .filter_raw_records(|header| {
+            // A raw record keeps the white space a value was written with, so the value is trimmed
+            // before it is read as a URI.
+            let target_uri = header
+                .get("WARC-Target-URI")
+                .map(|value| String::from_utf8_lossy(value).trim().to_owned());
 
-        match target_uri {
-            Some(uri) if has_matching_filename(&uri, &filtered_file_names) => {
-                println!("Matches filename, skipping record");
-                skipped += 1;
-                false
+            match target_uri {
+                Some(uri) if has_matching_filename(&uri, &filtered_file_names) => {
+                    println!("Matches filename, skipping record");
+                    skipped += 1;
+                    false
+                }
+                _ => true,
             }
-            _ => true,
-        }
-    });
+        })
+        .records();
 
     for record in kept {
         let record = record.expect("read of record ok");

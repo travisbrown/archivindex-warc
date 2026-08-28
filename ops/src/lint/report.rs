@@ -23,7 +23,7 @@ pub enum Violation {
     #[error("the record is spread over {members} gzip members")]
     SplitGzipMember {
         /// The number of members the record lies in.
-        members: usize,
+        members: u64,
     },
     /// Blank lines stand before a record.
     #[error("the record is preceded by {}", blank_lines(*lines))]

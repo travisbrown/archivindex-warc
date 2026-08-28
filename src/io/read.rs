@@ -4,16 +4,17 @@
 //! are read fully into memory. The three `filter` iterators can inspect a header block and skip its
 //! body without buffering it.
 //!
-//! Some writers emit blank-line padding between records, and concatenation can leave it behind.
-//! Readers skip this padding, and every iterator reports how many blank lines preceded the most
-//! recently returned record.
-//!
-//! Every iterator also reports the [`Frame`] of the record it read last: the offset and length of
-//! the record in the stream, for indexes that reference records by location. A reader made by
-//! [`WarcReader::from_members`] frames records by the members of the container they were read
-//! from, which for a gzip file locates them in the file rather than in what it decompresses to.
+//! Every iterator yields each record [`Located`]: with the [`Location`] of the record in the
+//! input, and the number of blank lines skipped before it. A blank line between records is
+//! padding the standard does not allow for, which some writers emit and concatenating archives
+//! leaves behind; readers skip it. The location is the record's [`Frame`] in a plain stream, and
+//! its [`Placement`] in the members of a gzip file, for a reader made by
+//! [`WarcReader::from_gzip`]. A reader over a stream that seeks reads the one record a frame
+//! locates, for lookups by an index over the file. An iterator's `records` method drops the
+//! locations, for callers that want the records alone.
 
-use std::io::{BufRead, BufReader};
+use std::fmt::{self, Display};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::marker::PhantomData;
 use std::path::Path;
 use std::{fs, io};
@@ -48,6 +49,12 @@ pub enum Error {
     /// was read completely, but is invalid.
     #[error("malformed record terminator")]
     MalformedRecordTerminator,
+    /// The frame read holds no record.
+    #[error("the frame holds no record")]
+    EmptyFrame,
+    /// The frame read holds more than one record.
+    #[error("the frame holds more than one record")]
+    OverfullFrame,
     /// The octets read are not a record.
     ///
     /// This includes a record declaring a version this crate does not read. Its header block is
@@ -62,54 +69,273 @@ pub enum Error {
     Record(#[from] record::Error),
 }
 
-/// The location of a record in the stream it was read from.
+/// The location of a record in the input it was read from.
 ///
-/// Offsets and lengths count the bytes the reader consumed, from the record's version line
-/// through its terminator.
-///
-/// A reader created by [`WarcReader::from_members`], including
-/// [`WarcReader::from_path_gzip`], counts container bytes instead. The frame spans every member
-/// from the one containing the version line through the last member ending before the next
-/// record. It therefore includes any inter-record padding. Its length is zero if any of those
-/// members also contains part of another record, because no container range then represents this
-/// record alone.
+/// In a plain stream, the offset and length count the bytes from the record's version line
+/// through its terminator. In a gzip file, they count the octets of the members holding the
+/// record, which hold nothing else; [`Location::frame`] reports one only then.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Frame {
-    /// The offset of the record's version line, or of the member holding it.
+    /// The offset of the record's version line.
     pub offset: u64,
-    /// The number of bytes from the version line through the record terminator, or of the
-    /// members holding the record.
+    /// The number of bytes from the version line through the record terminator.
     pub length: u64,
 }
 
-/// Where a byte lies in the members of the container a [`Members`] stream reads.
+/// Where a record lies in the members of the gzip stream it was read from.
+///
+/// The members holding a record locate it in the compressed file, as an index over the file
+/// needs, when they hold nothing else; [`Location::frame`] is that location. Blank lines before
+/// or after the record within its members are read past as padding, and count as nothing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Location {
-    /// The offset of the member containing the byte, or the end of the container after EOF.
-    pub member: u64,
-    /// Whether the byte is the first in its member. Also set after EOF.
-    pub boundary: bool,
+pub struct Placement {
+    /// The offset in the file of the member holding the record's first octet.
+    pub offset: u64,
+    /// The number of octets of the file from that member through the last member holding the
+    /// record, or the blank lines after it, when the record ends that member. A record followed
+    /// in its last member by another has no length that locates it.
+    pub length: Option<u64>,
+    /// The number of members holding the record's octets.
+    pub members: u64,
+    /// Whether the record, or the blank lines before it, begins its member.
+    pub begins: bool,
 }
 
-/// A decompressed stream that can report container-member boundaries.
-///
-/// [`WarcReader::from_members`] uses these boundaries to report container-relative frames, as it
-/// does for the gzip members of a `.warc.gz` file.
-pub trait Members: BufRead {
-    /// Where the next byte to be read lies.
+impl Display for Frame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "offset {}, length {}", self.offset, self.length)
+    }
+}
+
+impl Display for Placement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "offset {}", self.offset)?;
+        if let Some(length) = self.length {
+            write!(f, ", length {length}")?;
+        }
+        let plural = if self.members == 1 { "" } else { "s" };
+        write!(f, ", {} member{plural}", self.members)
+    }
+}
+
+impl Placement {
+    /// Where a record lies, given the location of its first octet and of the octet after its
+    /// last.
+    const fn between(start: Position, end: Position) -> Self {
+        let (length, open) = if end.boundary {
+            (Some(end.member - start.member), 0)
+        } else {
+            (None, 1)
+        };
+
+        Self {
+            offset: start.member,
+            length,
+            members: end.held - start.held + open,
+            begins: start.boundary,
+        }
+    }
+}
+
+/// Where a record lies in the input it was read from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Location {
+    /// The frame of a record in a plain stream.
+    Plain(Frame),
+    /// The placement of a record in the members of a gzip stream.
+    Gzip(Placement),
+}
+
+impl Display for Location {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Plain(frame) => frame.fmt(f),
+            Self::Gzip(placement) => placement.fmt(f),
+        }
+    }
+}
+
+impl Location {
+    /// The frame that locates the record on its own, which [`WarcReader::record_at`] reads.
     ///
-    /// Reaching that byte may mean opening the next member. A failure to do so is reported by
-    /// the read that follows, and the location is then the end of what was read.
-    fn location(&mut self) -> Location;
+    /// Every record in a plain stream has one. A record in a gzip stream has one when the
+    /// members holding it hold nothing else, blank lines aside: the frame covers those members,
+    /// and decompressing the octets it covers yields the record alone.
+    #[must_use]
+    pub const fn frame(&self) -> Option<Frame> {
+        match *self {
+            Self::Plain(frame) => Some(frame),
+            Self::Gzip(Placement {
+                offset,
+                length: Some(length),
+                begins: true,
+                ..
+            }) => Some(Frame { offset, length }),
+            Self::Gzip(_) => None,
+        }
+    }
+
+    /// The placement of the record in the members of a gzip stream, when it was read from one.
+    #[must_use]
+    pub const fn placement(&self) -> Option<Placement> {
+        match *self {
+            Self::Plain(_) => None,
+            Self::Gzip(placement) => Some(placement),
+        }
+    }
+}
+
+/// A value read from a record, with where the record lies in the input.
+///
+/// The iterators of this module yield the result of reading each record this way, so an error is
+/// located as a record is: by the octets consumed before the failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Located<T> {
+    /// Where the record lies in the input.
+    pub location: Location,
+    /// The number of blank lines skipped before the record.
+    pub blank_lines: usize,
+    /// The value read.
+    pub value: T,
+}
+
+impl<T> Located<T> {
+    /// The frame that locates the record on its own, as [`Location::frame`] reports it.
+    #[must_use]
+    pub const fn frame(&self) -> Option<Frame> {
+        self.location.frame()
+    }
+
+    /// The placement of the record in the members of a gzip stream, as [`Location::placement`]
+    /// reports it.
+    #[must_use]
+    pub const fn placement(&self) -> Option<Placement> {
+        self.location.placement()
+    }
+
+    /// The same location and padding, holding what `f` makes of the value.
+    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Located<U> {
+        Located {
+            location: self.location,
+            blank_lines: self.blank_lines,
+            value: f(self.value),
+        }
+    }
+}
+
+/// An iterator over the values of located items, with the locations dropped.
+///
+/// The `records` method of every iterator in this module makes one, for callers that want the
+/// records alone: the items are then `Result`s, which collect into one.
+pub struct Records<I> {
+    located: I,
+}
+
+impl<T, I: Iterator<Item = Located<T>>> Iterator for Records<I> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.located.next().map(|located| located.value)
+    }
+}
+
+/// The methods every iterator in this module shares.
+macro_rules! located_iterator {
+    ($iterator:ident<$($param:ident),+>, $($reading:ident).+) => {
+        impl<$($param),+> $iterator<$($param),+> {
+            /// The end of the input, once iteration has reached it.
+            ///
+            /// The location is empty and stands where the input ends; the blank lines are the
+            /// ones the input ends with. This is `None` until the iterator has returned `None`,
+            /// and after an error, since where the reader stopped is then unknown.
+            #[must_use]
+            pub const fn end(&self) -> Option<Located<()>> {
+                self.$($reading).+.end()
+            }
+
+            /// The records alone, with their locations dropped.
+            #[must_use]
+            pub const fn records(self) -> Records<Self> {
+                Records { located: self }
+            }
+        }
+    };
+}
+
+/// Where a byte lies in the members of a gzip stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Position {
+    /// The offset in the file of the member holding the byte, or the end of the file after the
+    /// last member.
+    pub(crate) member: u64,
+    /// Whether the byte is the first in its member. Also set after the last member.
+    pub(crate) boundary: bool,
+    /// The number of members holding octets that ended before the byte.
+    pub(crate) held: u64,
+}
+
+/// The stream a reader reads: bytes as they are, or the members of a gzip stream.
+enum Source<R> {
+    /// The bytes of the stream.
+    Bytes(R),
+    /// The members of a gzip stream, decompressed.
+    #[cfg(feature = "gzip")]
+    Members(MemberReader<R>),
+}
+
+impl<R: BufRead> Source<R> {
+    /// Where the next byte to read lies in the members of a gzip stream.
+    #[cfg_attr(
+        not(feature = "gzip"),
+        allow(
+            clippy::missing_const_for_fn,
+            clippy::needless_pass_by_ref_mut,
+            clippy::unused_self
+        )
+    )]
+    fn position(&mut self) -> Option<Position> {
+        match self {
+            Self::Bytes(_) => None,
+            #[cfg(feature = "gzip")]
+            Self::Members(members) => Some(members.position()),
+        }
+    }
+}
+
+impl<R: BufRead> Read for Source<R> {
+    fn read(&mut self, into: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Bytes(bytes) => bytes.read(into),
+            #[cfg(feature = "gzip")]
+            Self::Members(members) => members.read(into),
+        }
+    }
+}
+
+impl<R: BufRead> BufRead for Source<R> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        match self {
+            Self::Bytes(bytes) => bytes.fill_buf(),
+            #[cfg(feature = "gzip")]
+            Self::Members(members) => members.fill_buf(),
+        }
+    }
+
+    fn consume(&mut self, amount: usize) {
+        match self {
+            Self::Bytes(bytes) => bytes.consume(amount),
+            #[cfg(feature = "gzip")]
+            Self::Members(members) => members.consume(amount),
+        }
+    }
 }
 
 /// A reader which iteratively parses WARC records from a stream.
 pub struct WarcReader<R> {
     reader: R,
-    /// Where the next byte to read lies in the members of the stream, when frames count the
-    /// bytes of the container. A function pointer rather than a bound on `R`, so that the
-    /// reader is one type over any stream.
-    locate: Option<fn(&mut R) -> Location>,
+    /// Whether the stream is gzip, read member by member.
+    #[cfg(feature = "gzip")]
+    gzip: bool,
 }
 
 impl<R: BufRead> WarcReader<R> {
@@ -117,8 +343,61 @@ impl<R: BufRead> WarcReader<R> {
     pub const fn new(r: R) -> Self {
         Self {
             reader: r,
-            locate: None,
+            #[cfg(feature = "gzip")]
+            gzip: false,
         }
+    }
+
+    /// Create a reader for a gzip stream, whose records are placed in the members holding them.
+    ///
+    /// The stream ends with its last member; trailing data that is not another member is an
+    /// error. Each record's [`Placement`] locates it in the compressed stream:
+    ///
+    /// ```
+    /// use std::io::{Cursor, Write};
+    ///
+    /// use archivindex_warc::io::read::WarcReader;
+    /// use flate2::Compression;
+    /// use flate2::write::GzEncoder;
+    ///
+    /// let mut file = Vec::new();
+    /// for body in ["first", "second"] {
+    ///     let record = format!(
+    ///         "WARC/1.1\r\nWARC-Type: resource\r\nContent-Length: {}\r\n\r\n{body}\r\n\r\n",
+    ///         body.len()
+    ///     );
+    ///     let mut member = GzEncoder::new(&mut file, Compression::fast());
+    ///     member.write_all(record.as_bytes())?;
+    ///     member.finish()?;
+    /// }
+    ///
+    /// let mut records = WarcReader::from_gzip(&file[..]).iter_raw_records();
+    /// records.next().expect("the first record").value?;
+    /// let second = records.next().expect("the second record");
+    /// let frame = second.frame().expect("the record lies in a member of its own");
+    ///
+    /// let read = WarcReader::from_gzip(Cursor::new(&file)).raw_record_at(frame)?;
+    /// assert_eq!(read, second.value?);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[cfg(feature = "gzip")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "gzip")))]
+    pub const fn from_gzip(r: R) -> Self {
+        Self {
+            reader: r,
+            gzip: true,
+        }
+    }
+
+    /// The stream the reader reads, with its members decompressed when it is gzip.
+    #[cfg_attr(not(feature = "gzip"), allow(clippy::missing_const_for_fn))]
+    fn stream(self) -> Counted<Source<R>> {
+        #[cfg(feature = "gzip")]
+        if self.gzip {
+            return Counted::new(Source::Members(MemberReader::new(self.reader)));
+        }
+
+        Counted::new(Source::Bytes(self.reader))
     }
 
     /// Iterate over records at the raw level.
@@ -127,7 +406,7 @@ impl<R: BufRead> WarcReader<R> {
     /// the wire, checked only for the grammar of a header block and for the `Content-Length`
     /// that frames the body.
     pub fn iter_raw_records(self) -> RawIter<R> {
-        RawIter::new(self.reader, self.locate)
+        RawIter::new(self.stream())
     }
 
     /// Iterate over records at the untyped level.
@@ -135,9 +414,8 @@ impl<R: BufRead> WarcReader<R> {
     /// Field values are parsed against their grammars, but semantic rules for the declared version
     /// and record type are not checked.
     pub fn iter_untyped_records(self) -> UntypedIter<R> {
-        UntypedIter::new(self.reader, self.locate)
+        UntypedIter::new(self.stream())
     }
-
     /// Iterate over records at the semantic level.
     ///
     /// Each record is a [`record::Record<E>`](record::Record), with its fields checked against the
@@ -163,13 +441,14 @@ impl<R: BufRead> WarcReader<R> {
     /// let reader = WarcReader::new(&archive[..]);
     /// let records = reader
     ///     .iter_records::<NoExtension>()
+    ///     .records()
     ///     .collect::<Result<Vec<_>, _>>()?;
     ///
     /// assert_eq!(records[0].type_name(), "resource");
     /// # Ok::<(), archivindex_warc::io::read::Error>(())
     /// ```
     pub fn iter_records<E: Extension>(self) -> RecordIter<R, E> {
-        RecordIter::new(self.reader, self.locate)
+        RecordIter::new(self.stream())
     }
 
     /// Iterate over records accepted by a predicate at the raw level.
@@ -182,7 +461,7 @@ impl<R: BufRead> WarcReader<R> {
         filter: F,
     ) -> FilterRawIter<R, F> {
         FilterRawIter {
-            reading: Reading::new(self.reader, self.locate),
+            reading: Reading::new(self.stream()),
             filter,
         }
     }
@@ -197,7 +476,7 @@ impl<R: BufRead> WarcReader<R> {
         filter: F,
     ) -> FilterUntypedIter<R, F> {
         FilterUntypedIter {
-            reading: Reading::new(self.reader, self.locate),
+            reading: Reading::new(self.stream()),
             filter,
         }
     }
@@ -216,46 +495,116 @@ impl<R: BufRead> WarcReader<R> {
         filter: F,
     ) -> FilterRecordIter<R, F, E> {
         FilterRecordIter {
-            reading: Reading::new(self.reader, self.locate),
+            reading: Reading::new(self.stream()),
             filter,
             extension: PhantomData,
         }
     }
 }
 
-impl<R: Members> WarcReader<R> {
-    /// Create a reader that frames records by the members of `reader`'s container.
-    pub const fn from_members(reader: R) -> Self {
-        Self {
-            reader,
-            locate: Some(R::location),
+impl<R: BufRead + Seek> WarcReader<R> {
+    /// Read the record a frame locates, at the raw level.
+    ///
+    /// The frame is one an index holds for the record: the one an iterator yielded the record
+    /// with, as [`Location::frame`] reports it, or the one the writer returned. Only the octets
+    /// the frame covers are read, so the reader can read any number of records in any order:
+    ///
+    /// ```
+    /// use std::io::Cursor;
+    ///
+    /// use archivindex_warc::io::read::WarcReader;
+    ///
+    /// let archive = b"\
+    ///     WARC/1.1\r\n\
+    ///     WARC-Type: resource\r\n\
+    ///     Content-Length: 5\r\n\
+    ///     \r\n\
+    ///     hello\r\n\
+    ///     \r\n";
+    ///
+    /// let mut records = WarcReader::new(&archive[..]).iter_raw_records();
+    /// let located = records.next().expect("a record");
+    /// let frame = located.frame().expect("a plain stream frames every record");
+    /// let record = located.value?;
+    ///
+    /// let mut reader = WarcReader::new(Cursor::new(archive));
+    /// assert_eq!(reader.raw_record_at(frame)?, record);
+    /// assert_eq!(reader.raw_record_at(frame)?, record);
+    /// # Ok::<(), archivindex_warc::io::read::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// A frame holding no record is [`Error::EmptyFrame`], and one holding a further record
+    /// after the first and the blank lines after it is [`Error::OverfullFrame`]. A frame that
+    /// ends within its record fails as a stream that ends there does.
+    pub fn raw_record_at(&mut self, frame: Frame) -> Result<raw::Record, Error> {
+        self.reader.seek(SeekFrom::Start(frame.offset))?;
+        let mut reading = Reading::new(self.window(frame));
+
+        let (header, expected_body_len) = reading.next_header().ok_or(Error::EmptyFrame)??;
+        let body = reading.read_body(expected_body_len)?;
+
+        match reading.next_header() {
+            None => Ok(header.with_body(body)),
+            Some(Ok(_)) => Err(Error::OverfullFrame),
+            Some(Err(error)) => Err(error),
         }
+    }
+
+    /// Read the record a frame locates, at the untyped level.
+    ///
+    /// # Errors
+    ///
+    /// As for [`raw_record_at`](Self::raw_record_at), and [`Error::Untyped`] when a field's value
+    /// does not match its grammar.
+    pub fn untyped_record_at(&mut self, frame: Frame) -> Result<untyped::Record, Error> {
+        Ok(untyped::Record::try_from(self.raw_record_at(frame)?)?)
+    }
+
+    /// Read the record a frame locates, at the semantic level, under the extension `E`.
+    ///
+    /// # Errors
+    ///
+    /// As for [`untyped_record_at`](Self::untyped_record_at), and [`Error::Record`] when the
+    /// record breaks a rule of its type or its declared version.
+    pub fn record_at<E: Extension>(&mut self, frame: Frame) -> Result<record::Record<E>, Error> {
+        Ok(record::Record::try_from(self.untyped_record_at(frame)?)?)
+    }
+
+    /// The octets of the stream within `frame`, which the reader is positioned at the start of,
+    /// with their members decompressed when the stream is gzip.
+    #[cfg_attr(not(feature = "gzip"), allow(clippy::missing_const_for_fn))]
+    fn window(&mut self, frame: Frame) -> Counted<Source<&mut R>> {
+        #[cfg(feature = "gzip")]
+        if self.gzip {
+            let members = MemberReader::window(&mut self.reader, frame);
+
+            return Counted::new(Source::Members(members));
+        }
+
+        Counted::window(Source::Bytes(&mut self.reader), frame)
     }
 }
 
 impl WarcReader<BufReader<fs::File>> {
     /// Create a reader for a file.
     pub fn from_path<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = fs::File::open(&path)?;
+        Ok(Self::new(buffered(path)?))
+    }
 
-        let reader = BufReader::with_capacity(MB, file);
-
-        Ok(Self::new(reader))
+    /// Create a reader for a gzip-compressed file, whose records are placed in the gzip members
+    /// holding them.
+    #[cfg(feature = "gzip")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "gzip")))]
+    pub fn from_path_gzip<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        Ok(Self::from_gzip(buffered(path)?))
     }
 }
 
-#[cfg(feature = "gzip")]
-#[cfg_attr(docsrs, doc(cfg(feature = "gzip")))]
-impl WarcReader<MemberReader<BufReader<fs::File>>> {
-    /// Create a reader for a gzip-compressed file, whose frames are the gzip members holding
-    /// each record.
-    pub fn from_path_gzip<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = fs::File::open(&path)?;
-
-        Ok(Self::from_members(MemberReader::new(
-            BufReader::with_capacity(MB, file),
-        )))
-    }
+/// Open the file at `path` behind a buffer sized for reading records.
+fn buffered<P: AsRef<Path>>(path: P) -> io::Result<BufReader<fs::File>> {
+    Ok(BufReader::with_capacity(MB, fs::File::open(path)?))
 }
 
 /// The limit for a buffered header block.
@@ -390,43 +739,23 @@ fn skip_body<R: BufRead>(reader: &mut R, expected_body_len: u64) -> Result<(), E
     }
 }
 
-/// How the records of a stream are framed.
-enum Framing<R> {
-    /// By the bytes of the stream.
-    Bytes,
-    /// By the members of the container the stream reads.
-    Members {
-        /// Where the next byte to read lies.
-        locate: fn(&mut R) -> Location,
-        /// The frame of the record read last.
-        frame: Frame,
-        /// The offset of the member holding the next byte to read.
-        next: u64,
-        /// Whether the record read last begins its member, blank lines before it aside, so that
-        /// the members it ends in frame it.
-        begins: bool,
-    },
-}
-
 /// Where reading past the blank lines before a record stopped.
 struct Padding {
     /// The number of blank lines read.
     blank_lines: usize,
     /// How the read of the line after them ended.
     read: LineRead,
-    /// The offset of the last member one of the lines began, or the end of the container when
-    /// reading reached it, for a [`Members`] stream.
-    began: Option<u64>,
 }
 
 /// The stream, reusable header buffer, and error state shared by all iterators in this module.
 struct Reading<R> {
-    reader: Counted<R>,
-    framing: Framing<R>,
+    reader: Counted<Source<R>>,
     /// Set once the input has ended or an error has been yielded. Every error here is
     /// stream-level: it leaves the reader at an unspecified position, so iteration fuses rather
     /// than yielding garbage records from the middle of a partly consumed one.
     finished: bool,
+    /// Set once the input has ended cleanly, at a record boundary.
+    ended: bool,
     /// An error met reading ahead of the record returned last, to yield next.
     pending: Option<Error>,
     /// The blank lines read ahead of the record returned last, once the first line of the header
@@ -437,57 +766,68 @@ struct Reading<R> {
     blank_lines: usize,
     /// The offset of the header block read last.
     offset: u64,
+    /// The number of bytes consumed from that header block through the end of the record, or
+    /// through the error that ended it.
+    length: u64,
+    /// Where the record being read began, in the members of a gzip stream.
+    start: Position,
+    /// Where the record read last lies in the members of a gzip stream.
+    placement: Option<Placement>,
+}
+
+impl<R> Reading<R> {
+    /// The frame of the header block read last and everything consumed after it, through the
+    /// end of the record or of the read that failed.
+    const fn frame(&self) -> Frame {
+        Frame {
+            offset: self.offset,
+            length: self.length,
+        }
+    }
+
+    /// The value, located where the record read last lies, with the blank lines before it.
+    const fn located<T>(&self, value: T) -> Located<T> {
+        let location = match self.placement {
+            Some(placement) => Location::Gzip(placement),
+            None => Location::Plain(self.frame()),
+        };
+
+        Located {
+            location,
+            blank_lines: self.blank_lines,
+            value,
+        }
+    }
+
+    /// The end of the input, once it has been reached cleanly.
+    const fn end(&self) -> Option<Located<()>> {
+        if self.ended {
+            Some(self.located(()))
+        } else {
+            None
+        }
+    }
 }
 
 impl<R: BufRead> Reading<R> {
-    const fn new(reader: R, locate: Option<fn(&mut R) -> Location>) -> Self {
-        let framing = match locate {
-            Some(locate) => Framing::Members {
-                locate,
-                frame: Frame {
-                    offset: 0,
-                    length: 0,
-                },
-                next: 0,
-                begins: false,
-            },
-            None => Framing::Bytes,
-        };
-
+    const fn new(reader: Counted<Source<R>>) -> Self {
         Self {
-            reader: Counted::new(reader),
-            framing,
+            reader,
             finished: false,
+            ended: false,
             pending: None,
             ahead: None,
             header_buffer: Vec::new(),
             blank_lines: 0,
             offset: 0,
+            length: 0,
+            start: Position {
+                member: 0,
+                boundary: false,
+                held: 0,
+            },
+            placement: None,
         }
-    }
-
-    /// Locate the next byte to read in the members of the stream, extending the frame of the
-    /// record read last through any member that has ended.
-    ///
-    /// Returns the offset of the member the byte begins, if it begins one.
-    fn locate(&mut self) -> Option<u64> {
-        let Framing::Members {
-            locate,
-            frame,
-            next,
-            begins,
-        } = &mut self.framing
-        else {
-            return None;
-        };
-
-        let location = locate(self.reader.get_mut());
-        *next = location.member;
-        if location.boundary && *begins {
-            frame.length = location.member - frame.offset;
-        }
-
-        location.boundary.then_some(location.member)
     }
 
     /// Read past the blank lines standing before a record, leaving its first line in the header
@@ -496,22 +836,32 @@ impl<R: BufRead> Reading<R> {
     /// Writers pad the space between records with blank lines, and concatenating archives
     /// leaves them behind. A blank line where a version line belongs is that padding, so it is
     /// counted and dropped rather than read as the start of a header block.
+    ///
+    /// In a gzip stream, the placement of the record read last is extended through every member
+    /// ended before the padding, or by it, since those hold nothing after the record but blank
+    /// lines. The record after the padding begins its member when it, or the padding within its
+    /// member, does.
     fn read_past_padding(&mut self) -> Result<Padding, Error> {
         let mut blank_lines = 0;
         let mut began = None;
         loop {
-            began = self.locate().or(began);
+            if let Some(location) = self.reader.get_mut().position() {
+                if location.boundary {
+                    began = Some(location.member);
+                    if let Some(placement) = &mut self.placement {
+                        placement.length = Some(location.member - placement.offset);
+                    }
+                }
+                self.start = location;
+            }
             match read_line_bounded(&mut self.reader, &mut self.header_buffer, MAX_HEADER_BLOCK)? {
                 LineRead::Line(_) if is_blank_line(&self.header_buffer) => {
                     self.header_buffer.clear();
                     blank_lines += 1;
                 }
                 read => {
-                    return Ok(Padding {
-                        blank_lines,
-                        read,
-                        began,
-                    });
+                    self.start.boundary = began == Some(self.start.member);
+                    return Ok(Padding { blank_lines, read });
                 }
             }
         }
@@ -556,26 +906,6 @@ impl<R: BufRead> Reading<R> {
         }
     }
 
-    /// Begin the frame of the record about to be read at the member holding it, for a
-    /// [`Members`] stream.
-    ///
-    /// `began` is the member the record, or the blank lines before it, began, if any.
-    const fn begin_frame(&mut self, began: Option<u64>) {
-        if let Framing::Members {
-            frame,
-            next,
-            begins,
-            ..
-        } = &mut self.framing
-        {
-            *frame = Frame {
-                offset: *next,
-                length: 0,
-            };
-            *begins = matches!(began, Some(member) if member == *next);
-        }
-    }
-
     /// The next record's header block, and the body length its `Content-Length` declares.
     ///
     /// Returns `None` at a clean end of stream, and thereafter. The body must be read or
@@ -593,30 +923,22 @@ impl<R: BufRead> Reading<R> {
                 self.read_past_padding()
             }
         };
+        // Whatever the header buffer holds was consumed after the padding before it, and begins
+        // the record. At the end of the input it holds nothing.
+        self.offset = self.reader.position - self.header_buffer.len() as u64;
         let padding = match padding {
             Ok(padding) => padding,
-            Err(error) => {
-                self.begin_frame(None);
-                return Some(self.fuse_on_error(Err(error)));
-            }
+            Err(error) => return Some(self.fuse_on_error(Err(error))),
         };
         self.blank_lines = padding.blank_lines;
-        self.begin_frame(padding.began);
 
-        let read = self.read_header_block(padding.read);
-        // Whatever the header block read holds was consumed after the padding before it, and
-        // begins the record. At the end of the input it holds nothing.
-        self.offset = self.reader.position - self.header_buffer.len() as u64;
-
-        match read {
+        match self.read_header_block(padding.read) {
             None => {
-                self.finished = true;
+                self.finish();
+                self.ended = true;
                 None
             }
-            Some(Err(error)) => {
-                self.finished = true;
-                Some(Err(error))
-            }
+            Some(Err(error)) => Some(self.fuse_on_error(Err(error))),
             Some(Ok(())) => {
                 let parsed = raw::RecordHeader::parse(&self.header_buffer).map_err(Error::Raw);
 
@@ -625,12 +947,19 @@ impl<R: BufRead> Reading<R> {
         }
     }
 
-    /// Read past the blank lines after a record, for a [`Members`] stream, so that its frame
-    /// reaches the end of the last member holding nothing after it but those lines.
+    /// End the record read last where reading stopped, placing it in the members of a gzip
+    /// stream.
     ///
-    /// The frame of a record counted in bytes ends at its terminator, so nothing is read ahead.
-    fn finish_record(&mut self) {
-        if matches!(self.framing, Framing::Bytes) {
+    /// The members holding a record end only once the next byte is reached, so a gzip stream is
+    /// read past the blank lines after the record, up to the first line of the next. Nothing is
+    /// read ahead once the stream has ended or failed.
+    fn end_record(&mut self) {
+        self.length = self.reader.position - self.offset;
+        let Some(end) = self.reader.get_mut().position() else {
+            return;
+        };
+        self.placement = Some(Placement::between(self.start, end));
+        if self.finished {
             return;
         }
 
@@ -641,12 +970,18 @@ impl<R: BufRead> Reading<R> {
         }
     }
 
+    /// Stop iteration at a clean end of stream.
+    fn finish(&mut self) {
+        self.finished = true;
+        self.end_record();
+    }
+
     /// Read the body a header declared, buffering it.
     fn read_body(&mut self, expected_body_len: u64) -> Result<Vec<u8>, Error> {
         let body = read_body(&mut self.reader, expected_body_len);
 
         let body = self.fuse_on_error(body)?;
-        self.finish_record();
+        self.end_record();
 
         Ok(body)
     }
@@ -656,7 +991,7 @@ impl<R: BufRead> Reading<R> {
         let skipped = skip_body(&mut self.reader, expected_body_len);
 
         self.fuse_on_error(skipped)?;
-        self.finish_record();
+        self.end_record();
 
         Ok(())
     }
@@ -674,27 +1009,10 @@ impl<R: BufRead> Reading<R> {
         )
     }
 
-    /// The number of blank lines skipped before the header block read last.
-    const fn blank_lines(&self) -> usize {
-        self.blank_lines
-    }
-
-    /// The frame of the header block read last and everything consumed after it, or of the
-    /// members holding the record read last.
-    const fn frame(&self) -> Frame {
-        match &self.framing {
-            Framing::Bytes => Frame {
-                offset: self.offset,
-                length: self.reader.position - self.offset,
-            },
-            Framing::Members { frame, .. } => *frame,
-        }
-    }
-
     /// Stop iteration if a read failed, since where the reader is left is not known.
-    const fn fuse_on_error<T>(&mut self, result: Result<T, Error>) -> Result<T, Error> {
+    fn fuse_on_error<T>(&mut self, result: Result<T, Error>) -> Result<T, Error> {
         if result.is_err() {
-            self.finished = true;
+            self.finish();
         }
 
         result
@@ -713,67 +1031,20 @@ pub struct RawIter<R> {
 }
 
 impl<R: BufRead> RawIter<R> {
-    const fn new(reader: R, locate: Option<fn(&mut R) -> Location>) -> Self {
+    const fn new(stream: Counted<Source<R>>) -> Self {
         Self {
-            reading: Reading::new(reader, locate),
+            reading: Reading::new(stream),
         }
-    }
-
-    /// The number of blank lines skipped before the record returned last.
-    ///
-    /// A blank line between records is padding the standard does not allow for, which some
-    /// writers emit and concatenating archives leaves behind. Once iteration has ended, this is
-    /// the number of blank lines the input ends with.
-    #[must_use]
-    pub const fn blank_lines(&self) -> usize {
-        self.reading.blank_lines()
-    }
-
-    /// The frame of the record read last, returned or not.
-    ///
-    /// The frame begins at the record's version line and runs through its terminator, so it
-    /// locates the record for a later read on its own:
-    ///
-    /// ```
-    /// use archivindex_warc::io::read::WarcReader;
-    ///
-    /// let archive = b"\
-    ///     WARC/1.1\r\n\
-    ///     WARC-Type: resource\r\n\
-    ///     Content-Length: 5\r\n\
-    ///     \r\n\
-    ///     hello\r\n\
-    ///     \r\n";
-    ///
-    /// let mut records = WarcReader::new(&archive[..]).iter_raw_records();
-    /// let record = records.next().expect("a record")?;
-    /// let frame = records.frame();
-    ///
-    /// assert_eq!((frame.offset, frame.length), (0, archive.len() as u64));
-    /// let start = usize::try_from(frame.offset)?;
-    /// let end = start + usize::try_from(frame.length)?;
-    /// let located = WarcReader::new(&archive[start..end])
-    ///     .iter_raw_records()
-    ///     .next()
-    ///     .expect("the record it frames")?;
-    /// assert_eq!(located, record);
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
-    ///
-    /// After a read error, the length is the number of bytes consumed before the error, or the
-    /// members ended before it. Once iteration has ended, the frame is empty and stands where
-    /// the input ends.
-    #[must_use]
-    pub const fn frame(&self) -> Frame {
-        self.reading.frame()
     }
 }
 
 impl<R: BufRead> Iterator for RawIter<R> {
-    type Item = Result<raw::Record, Error>;
+    type Item = Located<Result<raw::Record, Error>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.reading.next_record()
+        let result = self.reading.next_record()?;
+
+        Some(self.reading.located(result))
     }
 }
 
@@ -788,41 +1059,21 @@ pub struct UntypedIter<R> {
 }
 
 impl<R: BufRead> UntypedIter<R> {
-    const fn new(reader: R, locate: Option<fn(&mut R) -> Location>) -> Self {
+    const fn new(stream: Counted<Source<R>>) -> Self {
         Self {
-            raw: RawIter::new(reader, locate),
+            raw: RawIter::new(stream),
         }
-    }
-
-    /// The number of blank lines skipped before the record returned last.
-    ///
-    /// A blank line between records is padding the standard does not allow for, which some
-    /// writers emit and concatenating archives leaves behind. Once iteration has ended, this is
-    /// the number of blank lines the input ends with.
-    #[must_use]
-    pub const fn blank_lines(&self) -> usize {
-        self.raw.blank_lines()
-    }
-
-    /// The frame of the record read last, returned or not.
-    ///
-    /// After a read error, the length is the number of bytes consumed before the error, or the
-    /// members ended before it. Once iteration has ended, the frame is empty and stands where
-    /// the input ends. See [`RawIter::frame`] for an example.
-    #[must_use]
-    pub const fn frame(&self) -> Frame {
-        self.raw.frame()
     }
 }
 
 impl<R: BufRead> Iterator for UntypedIter<R> {
-    type Item = Result<untyped::Record, Error>;
+    type Item = Located<Result<untyped::Record, Error>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         Some(
             self.raw
                 .next()?
-                .and_then(|record| Ok(untyped::Record::try_from(record)?)),
+                .map(|result| result.and_then(|record| Ok(untyped::Record::try_from(record)?))),
         )
     }
 }
@@ -839,42 +1090,22 @@ pub struct RecordIter<R, E = NoExtension> {
 }
 
 impl<R: BufRead, E: Extension> RecordIter<R, E> {
-    const fn new(reader: R, locate: Option<fn(&mut R) -> Location>) -> Self {
+    const fn new(stream: Counted<Source<R>>) -> Self {
         Self {
-            untyped: UntypedIter::new(reader, locate),
+            untyped: UntypedIter::new(stream),
             extension: PhantomData,
         }
-    }
-
-    /// The number of blank lines skipped before the record returned last.
-    ///
-    /// A blank line between records is padding the standard does not allow for, which some
-    /// writers emit and concatenating archives leaves behind. Once iteration has ended, this is
-    /// the number of blank lines the input ends with.
-    #[must_use]
-    pub const fn blank_lines(&self) -> usize {
-        self.untyped.blank_lines()
-    }
-
-    /// The frame of the record read last, returned or not.
-    ///
-    /// After a read error, the length is the number of bytes consumed before the error, or the
-    /// members ended before it. Once iteration has ended, the frame is empty and stands where
-    /// the input ends. See [`RawIter::frame`] for an example.
-    #[must_use]
-    pub const fn frame(&self) -> Frame {
-        self.untyped.frame()
     }
 }
 
 impl<R: BufRead, E: Extension> Iterator for RecordIter<R, E> {
-    type Item = Result<record::Record<E>, Error>;
+    type Item = Located<Result<record::Record<E>, Error>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         Some(
             self.untyped
                 .next()?
-                .and_then(|record| Ok(record::Record::try_from(record)?)),
+                .map(|result| result.and_then(|record| Ok(record::Record::try_from(record)?))),
         )
     }
 }
@@ -887,32 +1118,9 @@ pub struct FilterRawIter<R, F> {
     filter: F,
 }
 
-impl<R: BufRead, F> FilterRawIter<R, F> {
-    /// The number of blank lines skipped before the record returned last.
-    ///
-    /// A blank line between records is padding the standard does not allow for, which some
-    /// writers emit and concatenating archives leaves behind. Once iteration has ended, this is
-    /// the number of blank lines the input ends with.
-    #[must_use]
-    pub const fn blank_lines(&self) -> usize {
-        self.reading.blank_lines()
-    }
-
-    /// The frame of the record read last, returned or not.
-    ///
-    /// After a read error, the length is the number of bytes consumed before the error, or the
-    /// members ended before it. Once iteration has ended, the frame is empty and stands where
-    /// the input ends. See [`RawIter::frame`] for an example.
-    #[must_use]
-    pub const fn frame(&self) -> Frame {
-        self.reading.frame()
-    }
-}
-
-impl<R: BufRead, F: FnMut(&raw::RecordHeader) -> bool> Iterator for FilterRawIter<R, F> {
-    type Item = Result<raw::Record, Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl<R: BufRead, F: FnMut(&raw::RecordHeader) -> bool> FilterRawIter<R, F> {
+    /// The next record the predicate keeps, or the next error.
+    fn next_result(&mut self) -> Option<Result<raw::Record, Error>> {
         loop {
             let (header, expected_body_len) = match self.reading.next_header()? {
                 Ok(header) => header,
@@ -934,6 +1142,16 @@ impl<R: BufRead, F: FnMut(&raw::RecordHeader) -> bool> Iterator for FilterRawIte
     }
 }
 
+impl<R: BufRead, F: FnMut(&raw::RecordHeader) -> bool> Iterator for FilterRawIter<R, F> {
+    type Item = Located<Result<raw::Record, Error>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let result = self.next_result()?;
+
+        Some(self.reading.located(result))
+    }
+}
+
 /// An iterator over the records a predicate keeps, at the untyped level.
 ///
 /// The predicate decides on a header block that has already been parsed against the grammar, so a
@@ -944,32 +1162,9 @@ pub struct FilterUntypedIter<R, F> {
     filter: F,
 }
 
-impl<R: BufRead, F> FilterUntypedIter<R, F> {
-    /// The number of blank lines skipped before the record returned last.
-    ///
-    /// A blank line between records is padding the standard does not allow for, which some
-    /// writers emit and concatenating archives leaves behind. Once iteration has ended, this is
-    /// the number of blank lines the input ends with.
-    #[must_use]
-    pub const fn blank_lines(&self) -> usize {
-        self.reading.blank_lines()
-    }
-
-    /// The frame of the record read last, returned or not.
-    ///
-    /// After a read error, the length is the number of bytes consumed before the error, or the
-    /// members ended before it. Once iteration has ended, the frame is empty and stands where
-    /// the input ends. See [`RawIter::frame`] for an example.
-    #[must_use]
-    pub const fn frame(&self) -> Frame {
-        self.reading.frame()
-    }
-}
-
-impl<R: BufRead, F: FnMut(&untyped::RecordHeader) -> bool> Iterator for FilterUntypedIter<R, F> {
-    type Item = Result<untyped::Record, Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl<R: BufRead, F: FnMut(&untyped::RecordHeader) -> bool> FilterUntypedIter<R, F> {
+    /// The next record the predicate keeps, or the next error.
+    fn next_result(&mut self) -> Option<Result<untyped::Record, Error>> {
         loop {
             let (header, expected_body_len) = match self.reading.next_header()? {
                 Ok(header) => header,
@@ -1003,6 +1198,16 @@ impl<R: BufRead, F: FnMut(&untyped::RecordHeader) -> bool> Iterator for FilterUn
     }
 }
 
+impl<R: BufRead, F: FnMut(&untyped::RecordHeader) -> bool> Iterator for FilterUntypedIter<R, F> {
+    type Item = Located<Result<untyped::Record, Error>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let result = self.next_result()?;
+
+        Some(self.reading.located(result))
+    }
+}
+
 /// An iterator over the records a predicate keeps, at the semantic level.
 ///
 /// `E` is the extension in force. The predicate decides on a header block that has already been
@@ -1017,34 +1222,11 @@ pub struct FilterRecordIter<R, F, E = NoExtension> {
     extension: PhantomData<fn() -> E>,
 }
 
-impl<R: BufRead, F, E> FilterRecordIter<R, F, E> {
-    /// The number of blank lines skipped before the record returned last.
-    ///
-    /// A blank line between records is padding the standard does not allow for, which some
-    /// writers emit and concatenating archives leaves behind. Once iteration has ended, this is
-    /// the number of blank lines the input ends with.
-    #[must_use]
-    pub const fn blank_lines(&self) -> usize {
-        self.reading.blank_lines()
-    }
-
-    /// The frame of the record read last, returned or not.
-    ///
-    /// After a read error, the length is the number of bytes consumed before the error, or the
-    /// members ended before it. Once iteration has ended, the frame is empty and stands where
-    /// the input ends. See [`RawIter::frame`] for an example.
-    #[must_use]
-    pub const fn frame(&self) -> Frame {
-        self.reading.frame()
-    }
-}
-
-impl<R: BufRead, E: Extension, F: FnMut(&record::RecordHeader<E>) -> bool> Iterator
-    for FilterRecordIter<R, F, E>
+impl<R: BufRead, E: Extension, F: FnMut(&record::RecordHeader<E>) -> bool>
+    FilterRecordIter<R, F, E>
 {
-    type Item = Result<record::Record<E>, Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// The next record the predicate keeps, or the next error.
+    fn next_result(&mut self) -> Option<Result<record::Record<E>, Error>> {
         loop {
             let (header, expected_body_len) = match self.reading.next_header()? {
                 Ok(header) => header,
@@ -1082,6 +1264,25 @@ impl<R: BufRead, E: Extension, F: FnMut(&record::RecordHeader<E>) -> bool> Itera
     }
 }
 
+impl<R: BufRead, E: Extension, F: FnMut(&record::RecordHeader<E>) -> bool> Iterator
+    for FilterRecordIter<R, F, E>
+{
+    type Item = Located<Result<record::Record<E>, Error>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let result = self.next_result()?;
+
+        Some(self.reading.located(result))
+    }
+}
+
+located_iterator!(RawIter<R>, reading);
+located_iterator!(UntypedIter<R>, raw.reading);
+located_iterator!(RecordIter<R, E>, untyped.raw.reading);
+located_iterator!(FilterRawIter<R, F>, reading);
+located_iterator!(FilterUntypedIter<R, F>, reading);
+located_iterator!(FilterRecordIter<R, F, E>, reading);
+
 #[cfg(test)]
 mod error_tests {
     use super::Error;
@@ -1110,6 +1311,12 @@ mod error_tests {
             (
                 Error::MalformedRecordTerminator,
                 "malformed record terminator",
+                false,
+            ),
+            (Error::EmptyFrame, "the frame holds no record", false),
+            (
+                Error::OverfullFrame,
+                "the frame holds more than one record",
                 false,
             ),
             (
@@ -1160,7 +1367,12 @@ mod from_path_tests {
         std::fs::write(&path, raw).unwrap();
 
         let reader = WarcReader::from_path(&path).unwrap();
-        let record = reader.iter_untyped_records().next().unwrap().unwrap();
+        let record = reader
+            .iter_untyped_records()
+            .records()
+            .next()
+            .unwrap()
+            .unwrap();
 
         assert_eq!(
             record
@@ -1204,6 +1416,7 @@ mod iter_raw_tests {
         ($raw:expr) => {{
             WarcReader::new(create_reader!($raw))
                 .iter_raw_records()
+                .records()
                 .next()
                 .unwrap()
         }};
@@ -1246,7 +1459,9 @@ mod iter_raw_tests {
             \r\n\
         ";
 
-        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        let mut reader = WarcReader::new(create_reader!(raw))
+            .iter_raw_records()
+            .records();
         assert!(matches!(
             reader.next(),
             Some(Err(Error::MalformedRecordTerminator))
@@ -1276,7 +1491,9 @@ mod iter_raw_tests {
             \r\n\
         ";
 
-        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        let mut reader = WarcReader::new(create_reader!(raw))
+            .iter_raw_records()
+            .records();
         assert!(matches!(
             reader.next(),
             Some(Err(Error::Raw(raw::Error::MalformedVersion(crate::version::Error(version)))))
@@ -1300,13 +1517,17 @@ mod iter_raw_tests {
             \r\n\
         ";
 
-        let mut raw_iter = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        let mut raw_iter = WarcReader::new(create_reader!(raw))
+            .iter_raw_records()
+            .records();
         assert!(raw_iter.next().unwrap().is_ok());
         for _ in 0..3 {
             assert!(raw_iter.next().is_none());
         }
 
-        let mut untyped_iter = WarcReader::new(create_reader!(raw)).iter_untyped_records();
+        let mut untyped_iter = WarcReader::new(create_reader!(raw))
+            .iter_untyped_records()
+            .records();
         assert!(untyped_iter.next().unwrap().is_ok());
         for _ in 0..3 {
             assert!(untyped_iter.next().is_none());
@@ -1453,6 +1674,7 @@ mod iter_raw_tests {
         // well formed, whatever the record's declared version allows.
         let record = WarcReader::new(create_reader!(raw))
             .iter_untyped_records()
+            .records()
             .next()
             .unwrap()
             .unwrap();
@@ -1521,7 +1743,9 @@ mod iter_raw_tests {
             \r\n\
         ";
 
-        let mut reader = WarcReader::new(create_reader!(raw)).iter_untyped_records();
+        let mut reader = WarcReader::new(create_reader!(raw))
+            .iter_untyped_records()
+            .records();
 
         match reader.next().unwrap() {
             Err(Error::Untyped(untyped::Error { name, .. })) => assert_eq!(name, "WARC-Date"),
@@ -1654,6 +1878,7 @@ mod iter_raw_tests {
 
         let records = WarcReader::new(create_reader!(raw))
             .iter_raw_records()
+            .records()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
 
@@ -1695,6 +1920,7 @@ mod iter_raw_tests {
 
         let records = WarcReader::new(create_reader!(raw))
             .iter_raw_records()
+            .records()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
 
@@ -1763,6 +1989,7 @@ mod filter_tests {
                     .get("WARC-Target-URI")
                     .is_some_and(|uri| !uri.ends_with(b"first"))
             })
+            .records()
             .map(|record| record.unwrap().body)
             .collect::<Vec<_>>();
 
@@ -1783,7 +2010,9 @@ mod filter_tests {
             \r\n\
         ";
 
-        let mut records = WarcReader::new(&raw[..]).filter_raw_records(|_| false);
+        let mut records = WarcReader::new(&raw[..])
+            .filter_raw_records(|_| false)
+            .records();
 
         assert!(matches!(
             records.next(),
@@ -1802,6 +2031,7 @@ mod filter_tests {
                     .and_then(HeaderValue::form)
                     .is_some_and(|uri| uri.to_string().ends_with("third"))
             })
+            .records()
             .map(|record| {
                 record
                     .unwrap()
@@ -1838,7 +2068,9 @@ mod filter_tests {
             \r\n\
         ";
 
-        let mut records = WarcReader::new(&raw[..]).filter_untyped_records(|_| true);
+        let mut records = WarcReader::new(&raw[..])
+            .filter_untyped_records(|_| true)
+            .records();
 
         match records.next().unwrap() {
             Err(Error::Untyped(untyped::Error { name, .. })) => assert_eq!(name, "WARC-Date"),
@@ -1858,6 +2090,7 @@ mod filter_tests {
                     .target_uri()
                     .is_some_and(|uri| uri.as_str().ends_with("second"))
             })
+            .records()
             .map(|record| record.unwrap().core().record_id.as_str().to_owned())
             .collect::<Vec<_>>();
 
@@ -1891,10 +2124,12 @@ mod filter_tests {
         ";
 
         let mut offered = 0;
-        let mut records = WarcReader::new(&raw[..]).filter_records::<NoExtension, _>(|_| {
-            offered += 1;
-            true
-        });
+        let mut records = WarcReader::new(&raw[..])
+            .filter_records::<NoExtension, _>(|_| {
+                offered += 1;
+                true
+            })
+            .records();
 
         assert!(matches!(records.next(), Some(Err(Error::Record(_)))));
         assert_eq!(
@@ -1972,6 +2207,7 @@ mod iter_records_tests {
 
         let record = WarcReader::new(&raw[..])
             .iter_records::<NoExtension>()
+            .records()
             .next()
             .unwrap()
             .unwrap();
@@ -2009,7 +2245,9 @@ mod iter_records_tests {
             \r\n\
         ";
 
-        let mut records = WarcReader::new(&raw[..]).iter_records::<NoExtension>();
+        let mut records = WarcReader::new(&raw[..])
+            .iter_records::<NoExtension>()
+            .records();
 
         assert!(matches!(records.next(), Some(Err(Error::Record(_)))));
         assert_eq!(records.next().unwrap().unwrap().type_name(), "resource");
@@ -2036,6 +2274,7 @@ mod iter_records_tests {
         assert!(
             WarcReader::new(&raw[..])
                 .iter_untyped_records()
+                .records()
                 .next()
                 .unwrap()
                 .is_ok()
@@ -2044,9 +2283,11 @@ mod iter_records_tests {
         for read in [
             WarcReader::new(&raw[..])
                 .iter_records::<NoExtension>()
+                .records()
                 .next(),
             WarcReader::new(&raw[..])
                 .filter_records::<NoExtension, _>(|_| true)
+                .records()
                 .next(),
         ] {
             let record = read.expect("a record").expect("a readable record");
@@ -2065,11 +2306,14 @@ mod iter_records_tests {
     /// it.
     #[test]
     fn an_extension_decides_what_lifts() {
-        let mut without = WarcReader::new(SITEMAP_RECORD).iter_records::<NoExtension>();
+        let mut without = WarcReader::new(SITEMAP_RECORD)
+            .iter_records::<NoExtension>()
+            .records();
         assert!(matches!(without.next(), Some(Err(Error::Record(_)))));
 
         let record = WarcReader::new(SITEMAP_RECORD)
             .iter_records::<Sitemaps>()
+            .records()
             .next()
             .unwrap()
             .unwrap();
@@ -2081,12 +2325,11 @@ mod iter_records_tests {
 
 #[cfg(all(test, feature = "gzip"))]
 mod gzip_tests {
-    use std::io::Write;
+    use std::io::{Cursor, Write};
 
     use flate2::write::GzEncoder;
 
-    use super::{Error, Frame, WarcReader};
-    use crate::io::gzip::MemberReader;
+    use super::{Error, Frame, Placement, WarcReader};
     use crate::io::test_record;
     use crate::io::write::{Compression, WarcWriter};
     use crate::parse::raw;
@@ -2119,6 +2362,7 @@ mod gzip_tests {
         let records = WarcReader::from_path_gzip(&path)
             .unwrap()
             .iter_raw_records()
+            .records()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
 
@@ -2152,6 +2396,7 @@ mod gzip_tests {
         let bodies = WarcReader::from_path_gzip(&path)
             .unwrap()
             .iter_raw_records()
+            .records()
             .map(|record| record.unwrap().body)
             .collect::<Vec<_>>();
 
@@ -2180,20 +2425,25 @@ mod gzip_tests {
         stored
     }
 
-    /// The frames of the records in a gzip stream, followed by the frame at its end.
-    fn frames(stream: &[u8]) -> Vec<Frame> {
-        let mut records = WarcReader::from_members(MemberReader::new(stream)).iter_raw_records();
-        let mut frames = Vec::new();
-        while records.next().is_some() {
-            frames.push(records.frame());
-        }
-        frames.push(records.frame());
+    /// The placements of the records in a gzip stream, followed by the placement at its end.
+    fn placements(stream: &[u8]) -> Vec<Placement> {
+        let mut records = WarcReader::from_gzip(stream).iter_raw_records();
+        let mut placements = records
+            .by_ref()
+            .map(|located| located.placement().unwrap())
+            .collect::<Vec<_>>();
+        placements.push(records.end().unwrap().placement().unwrap());
 
-        frames
+        placements
     }
 
-    const fn frame(offset: u64, length: u64) -> Frame {
-        Frame { offset, length }
+    const fn placed(offset: u64, length: Option<u64>, members: u64, begins: bool) -> Placement {
+        Placement {
+            offset,
+            length,
+            members,
+            begins,
+        }
     }
 
     /// The frames of a gzip file's records are the members the writer stored them in, and stand
@@ -2218,22 +2468,21 @@ mod gzip_tests {
         let mut records = WarcReader::from_path_gzip(&path)
             .unwrap()
             .iter_raw_records();
-        records.next().unwrap().unwrap();
-        let first_frame = records.frame();
-        records.next().unwrap().unwrap();
-        let second_frame = records.frame();
+        let first_frame = records.next().unwrap().map(Result::unwrap).frame();
+        let second_frame = records.next().unwrap().map(Result::unwrap).frame();
         assert!(records.next().is_none());
-        let end_frame = records.frame();
+        let end_frame = records.end().unwrap().frame();
 
+        let frame = |offset, length| Some(Frame { offset, length });
         assert_eq!(first_frame, frame(first.offset, first.length));
         assert_eq!(second_frame, frame(second.offset, second.length));
         assert_eq!(end_frame, frame(size, 0));
     }
 
-    /// A record split over members is framed by all of them, and the frame of one sharing a
-    /// member with another record is empty.
+    /// A record split over members is placed in all of them, and a record sharing a member with
+    /// another has no length of its own unless it begins the member.
     #[test]
-    fn frames_a_record_by_every_member_it_alone_fills() {
+    fn places_a_record_in_every_member_holding_it() {
         let first = stored(&record("http://example.com/first", b"first"));
         let second = stored(&record("http://example.com/second", b"second"));
         let third = stored(&record("http://example.com/third", b"third"));
@@ -2244,23 +2493,24 @@ mod gzip_tests {
             &[&second[..], &third[..]].concat(),
         ]);
         shared.extend_from_slice(&members(&[&third]).0);
+        let total = shared.len() as u64;
 
         assert_eq!(
-            frames(&shared),
+            placements(&shared),
             [
-                frame(0, ends[1]),
-                frame(ends[1], 0),
-                frame(ends[1], 0),
-                frame(ends[2], shared.len() as u64 - ends[2]),
-                frame(shared.len() as u64, 0),
+                placed(0, Some(ends[1]), 2, true),
+                placed(ends[1], None, 1, true),
+                placed(ends[1], Some(ends[2] - ends[1]), 1, false),
+                placed(ends[2], Some(total - ends[2]), 1, true),
+                placed(total, Some(0), 0, true),
             ]
         );
     }
 
-    /// Blank lines inside a member belong to the frame of the record before them, and are
+    /// Blank lines inside a member belong to the placement of the record before them, and are
     /// reported before the record after them.
     #[test]
-    fn frames_through_the_blank_lines_after_a_record() {
+    fn places_through_the_blank_lines_after_a_record() {
         let first = stored(&record("http://example.com/first", b"first"));
         let second = stored(&record("http://example.com/second", b"second"));
         let (stream, ends) = members(&[
@@ -2269,142 +2519,94 @@ mod gzip_tests {
             &[b"\r\n", &second[..], b"\r\n"].concat(),
         ]);
 
-        let mut records =
-            WarcReader::from_members(MemberReader::new(&stream[..])).iter_raw_records();
-        records.next().unwrap().unwrap();
-        let first_frame = records.frame();
-        records.next().unwrap().unwrap();
-        let padding = records.blank_lines();
-        let second_frame = records.frame();
+        let mut records = WarcReader::from_gzip(&stream[..]).iter_raw_records();
+        let first = records.next().unwrap().map(Result::unwrap);
+        let second = records.next().unwrap().map(Result::unwrap);
         assert!(records.next().is_none());
-        let trailing = records.blank_lines();
+        let end = records.end().unwrap();
 
-        assert_eq!(first_frame, frame(0, ends[1]));
-        assert_eq!(padding, 4);
-        assert_eq!(second_frame, frame(ends[1], ends[2] - ends[1]));
-        assert_eq!(trailing, 1);
+        assert_eq!(first.placement(), Some(placed(0, Some(ends[1]), 1, true)));
+        assert_eq!(second.blank_lines, 4);
+        assert_eq!(
+            second.placement(),
+            Some(placed(ends[1], Some(ends[2] - ends[1]), 1, true))
+        );
+        assert_eq!(end.blank_lines, 1);
     }
 
-    /// The `filter` iterators skip bodies without reading them, and frame records the same.
+    /// The `filter` iterators skip bodies without reading them, and place records the same.
     #[test]
-    fn frames_skipped_records_by_their_members() {
+    fn places_skipped_records_in_their_members() {
         let (stream, ends) = members(&[
             &stored(&record("http://example.com/first", b"first")),
             &stored(&record("http://example.com/second", b"second")),
         ]);
 
-        let mut records = WarcReader::from_members(MemberReader::new(&stream[..]))
+        let placements = WarcReader::from_gzip(&stream[..])
             .filter_raw_records(|header| {
                 header.get("WARC-Target-URI") == Some(b" http://example.com/second")
-            });
-        let mut frames = Vec::new();
-        while let Some(record) = records.next() {
-            record.unwrap();
-            frames.push(records.frame());
-        }
+            })
+            .map(|located| located.map(Result::unwrap).placement().unwrap())
+            .collect::<Vec<_>>();
 
-        assert_eq!(frames, [frame(ends[0], ends[1] - ends[0])]);
+        assert_eq!(
+            placements,
+            [placed(ends[0], Some(ends[1] - ends[0]), 1, true)]
+        );
     }
 
-    /// Octets after the last member fail the read after the record before them, whose frame is
-    /// whole. The failure leaves the frame empty at the end of the last member.
+    /// A frame a placement reports reads back as its record, whichever members hold it, and a
+    /// frame cut within a member is an error.
+    #[test]
+    fn reads_the_record_a_placement_frames() {
+        let first = stored(&record("http://example.com/first", b"first"));
+        let second = stored(&record("http://example.com/second", b"second"));
+        let (split_first, split_second) = first.split_at(first.len() / 2);
+        let (stream, ends) = members(&[
+            split_first,
+            split_second,
+            b"\r\n",
+            &[&second[..], b"\r\n"].concat(),
+        ]);
+
+        let framed = WarcReader::from_gzip(&stream[..])
+            .iter_raw_records()
+            .map(|located| (located.frame().unwrap(), located.value.unwrap()))
+            .collect::<Vec<_>>();
+        let mut reader = WarcReader::from_gzip(Cursor::new(&stream));
+        let read = framed
+            .iter()
+            .map(|(frame, _)| reader.raw_record_at(*frame).unwrap())
+            .collect::<Vec<_>>();
+        let cut = reader
+            .raw_record_at(Frame {
+                offset: ends[2],
+                length: ends[3] - ends[2] - 1,
+            })
+            .unwrap_err();
+
+        assert_eq!(framed[0].0.length, ends[2]);
+        assert_eq!(framed.len(), 2);
+        assert_eq!(read, [framed[0].1.clone(), framed[1].1.clone()]);
+        assert!(matches!(cut, Error::Source(_)));
+    }
+
+    /// Octets after the last member fail the read after the record before them, which is placed
+    /// whole. The failure leaves an empty placement at the end of the last member, and no end.
     #[test]
     fn reports_what_follows_the_last_member_after_the_record_before_it() {
         let (mut stream, ends) = members(&[&stored(&record("http://example.com/first", b"first"))]);
         stream.extend_from_slice(b"not a member");
 
-        let mut records =
-            WarcReader::from_members(MemberReader::new(&stream[..])).iter_raw_records();
-        records.next().unwrap().unwrap();
-        let first_frame = records.frame();
-        let error = records.next().unwrap().unwrap_err();
-        let error_frame = records.frame();
+        let mut records = WarcReader::from_gzip(&stream[..]).iter_raw_records();
+        let first = records.next().unwrap().map(Result::unwrap);
+        let failed = records.next().unwrap();
 
-        assert_eq!(first_frame, frame(0, ends[0]));
-        assert!(matches!(error, Error::Source(_)));
-        assert_eq!(error_frame, frame(ends[0], 0));
+        assert_eq!(first.placement(), Some(placed(0, Some(ends[0]), 1, true)));
+        assert!(matches!(failed.value, Err(Error::Source(_))));
+        assert_eq!(failed.placement(), Some(placed(ends[0], Some(0), 0, true)));
         assert!(records.next().is_none());
-    }
-}
-
-#[cfg(test)]
-mod blank_line_tests {
-    use super::WarcReader;
-
-    /// A WARC 1.1 resource record framed by the length of its body.
-    fn record(body: &str) -> String {
-        format!(
-            "WARC/1.1\r\nWARC-Type: resource\r\nContent-Length: {}\r\n\r\n{body}\r\n\r\n",
-            body.len()
-        )
-    }
-
-    /// The body of each record of `archive` with the blank lines read before it, and the number
-    /// of blank lines the archive ends with.
-    fn read(archive: &str) -> (Vec<(String, usize)>, usize) {
-        let mut records = WarcReader::new(archive.as_bytes()).iter_raw_records();
-        let mut read = Vec::new();
-        while let Some(record) = records.next() {
-            let record = record.expect("every record reads");
-            read.push((
-                String::from_utf8(record.body).expect("a body of text"),
-                records.blank_lines(),
-            ));
-        }
-
-        (read, records.blank_lines())
-    }
-
-    /// A blank line between records is padding, which reading skips rather than reading it as the
-    /// start of a record.
-    #[test]
-    fn skips_the_blank_lines_between_records() {
-        let archive = format!("{}\r\n{}", record("first"), record("second"));
-
-        assert_eq!(
-            read(&archive),
-            (vec![("first".to_owned(), 0), ("second".to_owned(), 1)], 0)
-        );
-    }
-
-    /// Padding before the first record and after the last is skipped as well.
-    #[test]
-    fn skips_the_blank_lines_an_archive_opens_and_ends_with() {
-        let archive = format!("\r\n\r\n{}\r\n", record("only"));
-
-        assert_eq!(read(&archive), (vec![("only".to_owned(), 2)], 1));
-    }
-
-    /// A blank line written with a bare line feed is padding too, as bare line feeds are read
-    /// elsewhere in this crate.
-    #[test]
-    fn skips_a_blank_line_written_with_a_bare_line_feed() {
-        let archive = format!("{}\n{}", record("first"), record("second"));
-
-        assert_eq!(
-            read(&archive),
-            (vec![("first".to_owned(), 0), ("second".to_owned(), 1)], 0)
-        );
-    }
-
-    /// An archive of blank lines alone holds no records, and ends cleanly.
-    #[test]
-    fn reads_an_archive_of_blank_lines_as_no_records() {
-        assert_eq!(read("\r\n\r\n"), (vec![], 2));
-    }
-
-    /// Every iterator counts the padding, whatever level it reads records at.
-    #[test]
-    fn counts_the_padding_at_every_level() {
-        let archive = format!("\r\n{}", record("only"));
-
-        let mut filtered = WarcReader::new(archive.as_bytes()).filter_raw_records(|_| true);
-        assert!(filtered.next().is_some());
-        assert_eq!(filtered.blank_lines(), 1);
-
-        let mut untyped = WarcReader::new(archive.as_bytes()).iter_untyped_records();
-        assert!(untyped.next().is_some());
-        assert_eq!(untyped.blank_lines(), 1);
+        assert!(records.end().is_none());
     }
 }
 
@@ -2426,12 +2628,17 @@ mod frame_tests {
     /// ended.
     fn read(archive: &[u8]) -> (Vec<(raw::Record, Frame)>, Frame) {
         let mut records = WarcReader::new(archive).iter_raw_records();
-        let mut read = Vec::new();
-        while let Some(record) = records.next() {
-            read.push((record.expect("every record reads"), records.frame()));
-        }
+        let read = records
+            .by_ref()
+            .map(|located| {
+                assert!(located.placement().is_none());
+                let frame = located.frame().expect("a plain stream frames every record");
+                (located.value.expect("every record reads"), frame)
+            })
+            .collect();
+        let end = records.end().expect("the input ends cleanly");
 
-        (read, records.frame())
+        (read, end.frame().expect("a plain stream frames its end"))
     }
 
     /// Records are framed by where they lie in the input, and the input ends after the last.
@@ -2502,59 +2709,209 @@ mod frame_tests {
         }
     }
 
-    /// A record that cannot be read is framed by the bytes consumed before the failure.
+    /// A record that cannot be read is framed by the bytes consumed before the failure, and the
+    /// input then has no end.
     #[test]
     fn frames_a_record_that_fails_by_what_was_consumed() {
         let first = record("first");
         let archive = format!("{first}WARC/1.1\r\nContent-Length: 5\r\n\r\nhel");
 
         let mut records = WarcReader::new(archive.as_bytes()).iter_raw_records();
-        records.next().unwrap().unwrap();
-        let error = records.next().unwrap().unwrap_err();
+        records.next().unwrap().value.unwrap();
+        let failed = records.next().unwrap();
 
-        assert!(matches!(error, Error::UnexpectedEndOfBody));
+        assert!(matches!(failed.value, Err(Error::UnexpectedEndOfBody)));
         assert_eq!(
-            records.frame(),
-            Frame {
+            failed.frame(),
+            Some(Frame {
                 offset: first.len() as u64,
                 length: (archive.len() - first.len()) as u64
-            }
+            })
         );
+        assert!(records.end().is_none());
     }
 
-    /// A record the filter refuses is framed too, as is a record that fails to lift.
+    /// A record is framed at every level, whether it reads, fails to lift, or is kept by a
+    /// filter, and a filter that refuses every record still reaches the end.
     #[test]
     fn frames_at_every_level() {
         let first = record("first");
         let archive = format!("{first}{}", record("second"));
-        let second = Frame {
+        let second = Some(Frame {
             offset: first.len() as u64,
             length: archive.len() as u64 - first.len() as u64,
-        };
+        });
 
         let mut untyped = WarcReader::new(archive.as_bytes()).iter_untyped_records();
-        untyped.next().unwrap().unwrap();
-        untyped.next().unwrap().unwrap();
-        assert_eq!(untyped.frame(), second);
+        untyped.next().unwrap().value.unwrap();
+        assert_eq!(untyped.next().unwrap().map(Result::unwrap).frame(), second);
 
         let mut lifted = WarcReader::new(archive.as_bytes()).iter_records::<NoExtension>();
-        lifted.next().unwrap().unwrap_err();
-        lifted.next().unwrap().unwrap_err();
-        assert_eq!(lifted.frame(), second);
+        lifted.next().unwrap().value.unwrap_err();
+        assert_eq!(
+            lifted.next().unwrap().map(Result::unwrap_err).frame(),
+            second
+        );
 
-        let mut filtered = WarcReader::new(archive.as_bytes())
-            .filter_raw_records(|header| header.get("Content-Length") == Some(b" 6"));
-        assert_eq!(filtered.next().unwrap().unwrap().body, b"second");
-        assert_eq!(filtered.frame(), second);
+        let kept = WarcReader::new(archive.as_bytes())
+            .filter_raw_records(|header| header.get("Content-Length") == Some(b" 6"))
+            .next()
+            .unwrap();
+        assert_eq!(kept.frame(), second);
+        assert_eq!(kept.value.unwrap().body, b"second");
 
-        let mut filtered = WarcReader::new(archive.as_bytes()).filter_untyped_records(|_| false);
-        assert!(filtered.next().is_none());
-        assert_eq!(filtered.frame().length, 0);
+        let mut refused = WarcReader::new(archive.as_bytes()).filter_untyped_records(|_| false);
+        assert!(refused.next().is_none());
+        assert_eq!(refused.end().unwrap().frame().unwrap().length, 0);
 
         let mut filtered =
             WarcReader::new(archive.as_bytes()).filter_records::<NoExtension, _>(|_| true);
-        assert!(filtered.next().unwrap().is_err());
-        assert!(filtered.next().unwrap().is_err());
-        assert_eq!(filtered.frame(), second);
+        filtered.next().unwrap().value.unwrap_err();
+        assert_eq!(
+            filtered.next().unwrap().map(Result::unwrap_err).frame(),
+            second
+        );
+    }
+}
+
+#[cfg(test)]
+mod access_tests {
+    use std::io::Cursor;
+
+    use super::{Error, Frame, WarcReader};
+    use crate::record::extension::NoExtension;
+
+    /// A WARC 1.1 resource record framed by the length of its body, with the fields the
+    /// semantic level requires.
+    fn record(body: &str) -> String {
+        format!(
+            "WARC/1.1\r\n\
+             WARC-Type: resource\r\n\
+             WARC-Record-ID: <urn:uuid:d0e6a1a0-0000-4000-8000-00000000000{}>\r\n\
+             WARC-Date: 2024-04-01T12:00:00Z\r\n\
+             WARC-Target-URI: https://example.com/\r\n\
+             Content-Length: {}\r\n\r\n{body}\r\n\r\n",
+            body.len() % 10,
+            body.len()
+        )
+    }
+
+    /// Frames reported reading `archive` through read back as their records, in any order.
+    #[test]
+    fn reads_the_record_a_frame_locates() {
+        let archive = format!("{}\r\n{}", record("first"), record("second"));
+        let framed = WarcReader::new(archive.as_bytes())
+            .iter_raw_records()
+            .map(|located| (located.frame().unwrap(), located.value.unwrap()))
+            .collect::<Vec<_>>();
+
+        let mut reader = WarcReader::new(Cursor::new(&archive));
+        let read = framed
+            .iter()
+            .rev()
+            .map(|(frame, _)| reader.raw_record_at(*frame).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(framed.len(), 2);
+        assert_eq!(read, [framed[1].1.clone(), framed[0].1.clone()]);
+    }
+
+    /// Blank lines within a frame around its record are padding.
+    #[test]
+    fn reads_through_the_padding_within_a_frame() {
+        let only = record("only");
+        let archive = format!("\r\n{only}\r\n\r\n");
+        let frame = Frame {
+            offset: 0,
+            length: archive.len() as u64,
+        };
+
+        let read = WarcReader::new(Cursor::new(&archive))
+            .raw_record_at(frame)
+            .unwrap();
+
+        assert_eq!(read.body, b"only");
+    }
+
+    /// A frame is refused when it holds no record, a further record, or part of its record.
+    #[test]
+    fn refuses_a_frame_that_is_not_one_record() {
+        let first = record("first");
+        let archive = format!("{first}{}", record("second"));
+        let mut reader = WarcReader::new(Cursor::new(&archive));
+        let frame = |offset: usize, length: usize| Frame {
+            offset: offset as u64,
+            length: length as u64,
+        };
+
+        let empty = reader.raw_record_at(frame(0, 0)).unwrap_err();
+        let overfull = reader.raw_record_at(frame(0, archive.len())).unwrap_err();
+        let cut = reader.raw_record_at(frame(0, first.len() - 6)).unwrap_err();
+        let beyond = reader.raw_record_at(frame(archive.len(), 1)).unwrap_err();
+
+        assert!(matches!(empty, Error::EmptyFrame));
+        assert!(matches!(overfull, Error::OverfullFrame));
+        assert!(matches!(cut, Error::UnexpectedEndOfBody));
+        assert!(matches!(beyond, Error::EmptyFrame));
+    }
+
+    /// The untyped and semantic levels lift the record the frame locates, and report what
+    /// lifting refuses.
+    #[test]
+    fn reads_at_every_level() {
+        let only = record("only");
+        let bare = "WARC/1.1\r\nWARC-Type: resource\r\nContent-Length: 0\r\n\r\n\r\n\r\n";
+        let archive = format!("{only}{bare}");
+        let mut reader = WarcReader::new(Cursor::new(&archive));
+        let full = Frame {
+            offset: 0,
+            length: only.len() as u64,
+        };
+        let stripped = Frame {
+            offset: only.len() as u64,
+            length: bare.len() as u64,
+        };
+
+        let untyped = reader.untyped_record_at(full).unwrap();
+        let lifted = reader.record_at::<NoExtension>(full).unwrap();
+        let refused = reader.record_at::<NoExtension>(stripped).unwrap_err();
+
+        assert_eq!(untyped.body, b"only");
+        assert_eq!(lifted.type_name(), "resource");
+        assert!(matches!(refused, Error::Record(_)));
+    }
+}
+
+#[cfg(test)]
+mod location_tests {
+    use super::{Frame, Location, Placement};
+
+    #[test]
+    fn displays_a_frame_by_offset_and_length() {
+        let location = Location::Plain(Frame {
+            offset: 12,
+            length: 345,
+        });
+
+        assert_eq!(location.to_string(), "offset 12, length 345");
+    }
+
+    #[test]
+    fn displays_a_placement_with_its_members_and_any_length() {
+        let closed = Location::Gzip(Placement {
+            offset: 12,
+            length: Some(345),
+            members: 1,
+            begins: true,
+        });
+        let open = Location::Gzip(Placement {
+            offset: 12,
+            length: None,
+            members: 2,
+            begins: false,
+        });
+
+        assert_eq!(closed.to_string(), "offset 12, length 345, 1 member");
+        assert_eq!(open.to_string(), "offset 12, 2 members");
     }
 }

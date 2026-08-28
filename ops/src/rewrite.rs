@@ -285,6 +285,7 @@ mod tests {
         let record = open(&output)
             .unwrap()
             .iter_records::<NoExtension>()
+            .records()
             .next()
             .unwrap()
             .unwrap();
@@ -373,6 +374,7 @@ mod tests {
         let records: Vec<_> = open(&output)
             .unwrap()
             .iter_records::<NoExtension>()
+            .records()
             .collect::<std::result::Result<_, _>>()
             .unwrap();
         assert_eq!(
@@ -414,6 +416,7 @@ mod tests {
             open(path)
                 .unwrap()
                 .iter_raw_records()
+                .records()
                 .nth(1)
                 .unwrap()
                 .unwrap()

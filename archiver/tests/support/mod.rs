@@ -13,7 +13,7 @@ pub fn records(bytes: &[u8]) -> Result<Vec<Record>, archivindex_warc::io::read::
         WarcReader::new(bytes)
     };
 
-    reader.iter_records::<NoExtension>().collect()
+    reader.iter_records::<NoExtension>().records().collect()
 }
 
 /// The labelled SHA-256 digest of a payload, as the archiver records it.

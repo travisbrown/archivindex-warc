@@ -64,6 +64,7 @@ fn roundtrip_upstream(source: &[u8]) -> Result<Vec<u8>, String> {
 fn normalize(output: &[u8]) -> Result<Vec<NormalizedRecord>, String> {
     archivindex_warc::io::read::WarcReader::new(output)
         .iter_raw_records()
+        .records()
         .map(|record| {
             let record = record.map_err(|error| error.to_string())?;
             let mut headers = record

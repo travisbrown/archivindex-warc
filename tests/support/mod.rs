@@ -61,7 +61,7 @@ pub fn fixture_bytes(set: &str, name: &str) -> Result<Vec<u8>, String> {
 /// handed it.
 pub fn roundtrip(source: &[u8]) -> Result<Vec<u8>, String> {
     let mut writer = WarcWriter::new(Vec::new());
-    for record in WarcReader::new(source).iter_raw_records() {
+    for record in WarcReader::new(source).iter_raw_records().records() {
         let record = record.map_err(|error| error.to_string())?;
         writer.write(&record).map_err(|error| error.to_string())?;
     }
@@ -78,7 +78,7 @@ pub fn roundtrip(source: &[u8]) -> Result<Vec<u8>, String> {
 /// what it parsed to.
 pub fn roundtrip_records(source: &[u8]) -> Result<Vec<u8>, String> {
     let mut writer = WarcWriter::new(Vec::new());
-    for record in WarcReader::new(source).iter_untyped_records() {
+    for record in WarcReader::new(source).iter_untyped_records().records() {
         let record = record.map_err(|error| error.to_string())?;
         writer
             .write(&record.into_raw())
@@ -101,7 +101,11 @@ pub fn roundtrip_records(source: &[u8]) -> Result<Vec<u8>, String> {
 /// This can only be asked of an archive every record of which lifts, so the caller checks it only
 /// where the lift is expected to succeed.
 pub fn roundtrip_semantic_meaning(source: &[u8]) -> Result<(), String> {
-    for (index, record) in WarcReader::new(source).iter_untyped_records().enumerate() {
+    for (index, record) in WarcReader::new(source)
+        .iter_untyped_records()
+        .records()
+        .enumerate()
+    {
         let grammar = record.map_err(|error| error.to_string())?;
         let lifted = Record::<NoExtension>::try_from(grammar).map_err(|error| error.to_string())?;
         let rendered = lifted
@@ -202,6 +206,7 @@ impl FixtureSet {
 fn collect_records<R: BufRead>(reader: WarcReader<R>) -> Result<Vec<RawRecord>, String> {
     reader
         .iter_raw_records()
+        .records()
         .collect::<Result<_, _>>()
         .map_err(|error| error.to_string())
 }

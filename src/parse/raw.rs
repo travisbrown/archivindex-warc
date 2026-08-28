@@ -769,6 +769,7 @@ mod tests {
 
         let read = WarcReader::new(written.as_slice())
             .iter_raw_records()
+            .records()
             .collect::<Result<Vec<_>, _>>()
             .expect("well-formed records");
 

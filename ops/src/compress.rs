@@ -1,6 +1,6 @@
 //! Compress a WARC file record by record.
 //!
-//! Each record becomes its own gzip member, as the WARC standard requires of compressed files,
+//! Each record becomes its own gzip member, as the WARC standard recommends for compressed files,
 //! so the output can be indexed and any record decompressed without reading the ones before it.
 
 use std::io::{BufRead, Write};
@@ -53,7 +53,7 @@ pub fn compress<R: BufRead, W: Write>(
     let mut writer = WarcWriter::new(output).with_compression(compression);
     let mut records = 0;
 
-    for result in WarcReader::new(input).iter_raw_records() {
+    for result in WarcReader::new(input).iter_raw_records().records() {
         writer.write(&result?)?;
         records += 1;
     }
@@ -121,6 +121,7 @@ mod tests {
     fn records(bytes: &[u8]) -> Vec<raw::Record> {
         WarcReader::new(bytes)
             .iter_raw_records()
+            .records()
             .collect::<Result<_, _>>()
             .expect("every record reads")
     }
@@ -236,6 +237,7 @@ mod tests {
         let read = crate::file::open(&output)
             .unwrap()
             .iter_raw_records()
+            .records()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(read, records(&archive()));

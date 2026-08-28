@@ -16,6 +16,7 @@ use archivindex_warc::record::Record;
 fn records<R: BufRead>(reader: R) -> impl Iterator<Item = Result<(usize, Record)>> {
     WarcReader::new(reader)
         .iter_records()
+        .records()
         .enumerate()
         .map(|(index, result)| {
             result

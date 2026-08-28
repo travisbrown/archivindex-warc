@@ -80,10 +80,8 @@ use archivindex_warc::value::WarcDate;
 use fluent_uri::Uri;
 pub use report::{Checked, Finding, Violation};
 use rules::capture::Pending;
-use rules::framing::Placement;
+use rules::framing::Framing;
 use rules::header::canonical_order_violation;
-
-use crate::gzip::Framing;
 
 /// An iterator over the findings of a lint pass.
 ///
@@ -95,12 +93,6 @@ pub struct Linter<R> {
     records: UntypedIter<R>,
     /// The position of the next record read.
     index: usize,
-    /// Where the gzip members of the file end, when its framing is checked.
-    framing: Option<Framing>,
-    /// Where the record read last ended in the decompressed stream.
-    read_through: u64,
-    /// The ends of members reached but not yet attributed to a record.
-    boundaries: VecDeque<u64>,
     /// The position of the record the gzip member being read holds first.
     member_first: usize,
     /// The position and identifier of the record read last, if it read.
@@ -125,14 +117,14 @@ pub struct Linter<R> {
 }
 
 impl<R: BufRead> Linter<R> {
-    /// Lint the WARC records read from `reader`, which must already be decompressed.
-    pub fn new(reader: R) -> Self {
+    /// Lint the WARC records `reader` reads.
+    ///
+    /// The gzip framing of the file is checked when the reader places its records, as one made
+    /// by [`WarcReader::from_gzip`] does.
+    pub fn new(reader: WarcReader<R>) -> Self {
         Self {
-            records: WarcReader::new(reader).iter_untyped_records(),
+            records: reader.iter_untyped_records(),
             index: 0,
-            framing: None,
-            read_through: 0,
-            boundaries: VecDeque::new(),
             member_first: 0,
             last_record: None,
             record_ids: HashMap::new(),
@@ -146,17 +138,6 @@ impl<R: BufRead> Linter<R> {
         }
     }
 
-    /// Check the gzip framing of the file, which `framing` reports as the reader reads.
-    ///
-    /// `framing` must be the handle of the [`MemberReader`](crate::gzip::MemberReader) given to
-    /// [`new`](Self::new), from which nothing has been read yet.
-    #[must_use]
-    pub fn checking_gzip_framing(mut self, framing: Framing) -> Self {
-        self.framing = Some(framing);
-
-        self
-    }
-
     /// The number of records consumed so far, counting unreadable ones.
     ///
     /// After a read error is yielded, the unreadable record's index is one less than this.
@@ -167,12 +148,7 @@ impl<R: BufRead> Linter<R> {
 
     /// Check one record against every rule, in the order the rules are listed, and queue what it
     /// yields.
-    fn check(
-        &mut self,
-        record: &Record,
-        order_violation: Option<Violation>,
-        placement: Option<Placement>,
-    ) {
+    fn check(&mut self, record: &Record, order_violation: Option<Violation>, framing: Framing) {
         let index = self.index;
         self.index += 1;
 
@@ -182,7 +158,7 @@ impl<R: BufRead> Linter<R> {
         self.settle_clean(mark);
 
         let mark = self.queue.len();
-        self.check_framing(index, record, placement);
+        self.check_framing(index, record, framing);
         self.check_header(index, record, order_violation);
         self.check_block(index, record);
         self.check_digests(index, record);
@@ -258,25 +234,23 @@ impl<R: BufRead> Iterator for Linter<R> {
                 return Some(Err(error));
             }
 
-            match self.records.next() {
-                Some(Ok(untyped)) => {
-                    let placement = self.placement();
+            let Some(located) = self.records.next() else {
+                self.finish();
+                if self.queue.is_empty() {
+                    return None;
+                }
+                continue;
+            };
+            let framing = self.framing(&located);
+            match located.value {
+                Ok(untyped) => {
                     let order_violation = canonical_order_violation(&untyped.header);
                     match Record::<NoExtension>::try_from(untyped) {
-                        Ok(record) => self.check(&record, order_violation, placement),
+                        Ok(record) => self.check(&record, order_violation, framing),
                         Err(error) => self.skip(error.into()),
                     }
                 }
-                Some(Err(error)) => {
-                    self.placement();
-                    self.skip(error);
-                }
-                None => {
-                    self.finish();
-                    if self.queue.is_empty() {
-                        return None;
-                    }
-                }
+                Err(error) => self.skip(error),
             }
         }
     }
@@ -341,7 +315,7 @@ mod tests {
         let mut records = capture();
         records[2] = records[2].clone().set("WARC-Date", "yesterday");
 
-        let items: Vec<_> = Linter::new(&render(&records)[..]).collect();
+        let items: Vec<_> = Linter::new(WarcReader::new(&render(&records)[..])).collect();
 
         assert_eq!(items.len(), 4);
         assert!(matches!(&items[0], Ok(Ok(id)) if id == &uri(WARCINFO_ID)));
@@ -361,7 +335,7 @@ mod tests {
         let mut bytes = render(&capture());
         bytes.truncate(bytes.len() - 10);
 
-        let items: Vec<_> = Linter::new(&bytes[..]).collect();
+        let items: Vec<_> = Linter::new(WarcReader::new(&bytes[..])).collect();
 
         assert_eq!(items.len(), 4);
         assert!(matches!(items[3], Err(read::Error::UnexpectedEndOfBody)));
@@ -375,7 +349,7 @@ mod tests {
         ))
         .expect("the fixture is present");
 
-        let checked: Vec<Checked> = Linter::new(&bytes[..])
+        let checked: Vec<Checked> = Linter::new(WarcReader::new(&bytes[..]))
             .collect::<Result<_, _>>()
             .expect("every record reads");
 

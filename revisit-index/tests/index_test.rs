@@ -2,6 +2,7 @@
 
 use std::error::Error as StdError;
 
+use archivindex_warc::io::read::{self, Frame, Located, Location};
 use archivindex_warc::record::Record;
 use archivindex_warc::record::extension::NoExtension;
 use archivindex_warc::record::header::RevisitProfile;
@@ -22,6 +23,15 @@ const RECORD_B: &str = "urn:uuid:00000000-0000-4000-8000-00000000000b";
 
 fn uri(value: &str) -> Uri<String> {
     Uri::parse(value).expect("test URI").to_owned()
+}
+
+/// A value located as a record of a plain stream at `offset`.
+const fn located<T>(offset: u64, value: T) -> Located<T> {
+    Located {
+        location: Location::Plain(Frame { offset, length: 10 }),
+        blank_lines: 0,
+        value,
+    }
 }
 
 fn date(value: &str) -> WarcDate {
@@ -948,16 +958,25 @@ fn load_records_indexes_each_record_and_skips_malformed_ones() -> Result<(), Box
 
     let summary = index.load_records(
         [
-            Ok(response(
-                URI_A,
-                RECORD_A,
-                "2025-01-01T00:00:00Z",
-                "",
-                b"hello",
-            )?),
-            Ok(malformed),
+            located(
+                0,
+                Ok(response(
+                    URI_A,
+                    RECORD_A,
+                    "2025-01-01T00:00:00Z",
+                    "",
+                    b"hello",
+                )?),
+            ),
+            located(10, Ok(malformed)),
         ],
-        |record, error| skipped.push((record.core().record_id.clone(), error.to_string())),
+        |record, error| {
+            skipped.push((
+                record.value.core().record_id.clone(),
+                record.location,
+                error.to_string(),
+            ));
+        },
     )?;
 
     assert_eq!(
@@ -971,7 +990,8 @@ fn load_records_indexes_each_record_and_skips_malformed_ones() -> Result<(), Box
     );
     assert_eq!(skipped.len(), 1);
     assert_eq!(skipped[0].0, uri(RECORD_B));
-    assert!(skipped[0].1.starts_with("malformed archived HTTP response"));
+    assert_eq!(skipped[0].1, located(10, ()).location);
+    assert!(skipped[0].2.starts_with("malformed archived HTTP response"));
     assert!(index.lookup_payload(&sha256(b"hello"))?.is_some());
     Ok(())
 }
@@ -983,20 +1003,34 @@ fn load_records_rolls_back_on_a_read_error() -> Result<(), Box<dyn StdError>> {
     let error = index
         .load_records(
             [
-                Ok(response(
-                    URI_A,
-                    RECORD_A,
-                    "2025-01-01T00:00:00Z",
-                    "",
-                    b"hello",
-                )?),
-                Err(archivindex_warc::io::read::Error::EmptyFrame),
+                located(
+                    0,
+                    Ok(response(
+                        URI_A,
+                        RECORD_A,
+                        "2025-01-01T00:00:00Z",
+                        "",
+                        b"hello",
+                    )?),
+                ),
+                located(10, Err(read::Error::EmptyFrame)),
             ],
             |_, _| {},
         )
         .unwrap_err();
 
-    assert!(matches!(error, LoadError::Read { position: 1, .. }));
+    assert!(matches!(
+        error,
+        LoadError::Read {
+            location: Location::Plain(Frame { offset: 10, .. }),
+            ..
+        }
+    ));
+    assert!(
+        error
+            .to_string()
+            .starts_with("cannot read record at offset 10, length 10: ")
+    );
     assert!(index.lookup_payload(&sha256(b"hello"))?.is_none());
     Ok(())
 }

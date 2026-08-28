@@ -10,7 +10,7 @@ fn main() -> Result<(), std::io::Error> {
     let file = WarcReader::from_path(common::tmp_path("warc_example.warc")?)?;
 
     let mut count = 0;
-    for record in file.iter_raw_records() {
+    for record in file.iter_raw_records().records() {
         count += 1;
         match record {
             Err(error) => println!("ERROR: {error}\r\n"),

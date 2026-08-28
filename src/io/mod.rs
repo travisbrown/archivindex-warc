@@ -2,9 +2,11 @@
 //!
 //! [`read::WarcReader`] reads a byte stream at any record representation level.
 //! [`write::WarcWriter`] writes records back to a byte stream. [`gzip::MemberReader`] reads a
-//! gzip file member by member, so that records are framed by member.
+//! gzip file member by member, and [`read::WarcReader::from_gzip`] places records by member.
 
 use std::io::{self, BufRead, Read};
+
+use crate::io::read::Frame;
 
 #[cfg(feature = "gzip")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gzip")))]
@@ -15,11 +17,13 @@ pub mod write;
 /// One binary megabyte, used for reader and writer buffers.
 const MB: usize = 1_048_576;
 
-/// A stream that counts the bytes consumed from it.
+/// A stream that counts the bytes consumed from it, and ends at a limit.
 pub(crate) struct Counted<R> {
     reader: R,
-    /// The number of bytes consumed.
+    /// The offset of the next byte to read.
     pub(crate) position: u64,
+    /// The offset at which the stream ends.
+    limit: u64,
 }
 
 impl<R> Counted<R> {
@@ -27,6 +31,16 @@ impl<R> Counted<R> {
         Self {
             reader,
             position: 0,
+            limit: u64::MAX,
+        }
+    }
+
+    /// The bytes of `reader` within `frame`, which `reader` is positioned at the start of.
+    pub(crate) const fn window(reader: R, frame: Frame) -> Self {
+        Self {
+            reader,
+            position: frame.offset,
+            limit: frame.offset.saturating_add(frame.length),
         }
     }
 
@@ -35,17 +49,23 @@ impl<R> Counted<R> {
     }
 }
 
-impl<R: Read> Read for Counted<R> {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let read = self.reader.read(buffer)?;
-        self.position += read as u64;
-        Ok(read)
+impl<R: BufRead> Read for Counted<R> {
+    fn read(&mut self, into: &mut [u8]) -> io::Result<usize> {
+        let available = self.fill_buf()?;
+        let taken = available.len().min(into.len());
+        into[..taken].copy_from_slice(&available[..taken]);
+        self.consume(taken);
+
+        Ok(taken)
     }
 }
 
 impl<R: BufRead> BufRead for Counted<R> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
-        self.reader.fill_buf()
+        let remaining = usize::try_from(self.limit - self.position).unwrap_or(usize::MAX);
+        let available = self.reader.fill_buf()?;
+
+        Ok(&available[..available.len().min(remaining)])
     }
 
     fn consume(&mut self, amount: usize) {

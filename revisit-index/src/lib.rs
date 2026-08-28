@@ -53,6 +53,7 @@ pub mod resource;
 #[cfg(test)]
 mod strategies;
 
+use archivindex_warc::io::read::Location;
 use rusqlite::Connection;
 
 /// A database handle used by both [`Index`] and [`Transaction`].
@@ -238,19 +239,19 @@ pub enum IngestError {
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
     /// A record could not be read.
-    #[error("cannot read record {position}: {source}")]
+    #[error("cannot read record at {location}: {source}")]
     Read {
-        /// The position of the record among those read, counting from zero.
-        position: usize,
+        /// Where the record lies in the input, through the octets read before the failure.
+        location: Location,
         /// The read error.
         #[source]
-        source: archivindex_warc::io::read::Error,
+        source: Box<archivindex_warc::io::read::Error>,
     },
     /// Reading or updating the index failed for a record.
-    #[error("cannot index record {position}: {source}")]
+    #[error("cannot index record at {location}: {source}")]
     Index {
-        /// The position of the record among those read, counting from zero.
-        position: usize,
+        /// Where the record lies in the input.
+        location: Location,
         /// The index error.
         #[source]
         source: Error,

@@ -340,6 +340,7 @@ fn archive_and_read_back() -> Result<(), Box<dyn std::error::Error>> {
     // and leaves target URIs bare.
     let raw_records = WarcReader::from_gzip(bytes.as_slice())
         .iter_raw_records()
+        .records()
         .collect::<Result<Vec<_>, _>>()?;
 
     assert_eq!(raw_records.len(), 13);

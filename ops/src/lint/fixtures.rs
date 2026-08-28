@@ -2,6 +2,7 @@
 
 use std::io::Write;
 
+use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::parse::untyped::name::Field;
 use archivindex_warc::value::{Algorithm, LabelledDigest, WarcDate};
 use archivindex_warc::version::WarcVersion;
@@ -10,7 +11,6 @@ use flate2::write::GzEncoder;
 use fluent_uri::Uri;
 
 use super::{Checked, Finding, Linter, Violation};
-use crate::gzip::MemberReader;
 
 pub(super) const WARCINFO_ID: &str = "urn:uuid:aaaaaaaa-0000-4000-8000-000000000000";
 pub(super) const REQUEST_ID: &str = "urn:uuid:bbbbbbbb-0000-4000-8000-000000000000";
@@ -259,7 +259,7 @@ pub(super) fn lint(records: &[TestRecord]) -> Vec<Checked> {
 
 /// Every item of a lint pass over a file written byte for byte, which must hold no read errors.
 pub(super) fn lint_file(file: &[u8]) -> Vec<Checked> {
-    Linter::new(file)
+    Linter::new(WarcReader::new(file))
         .collect::<Result<_, _>>()
         .expect("every record reads")
 }
@@ -300,12 +300,9 @@ pub(super) fn gzip(members: &[&[u8]]) -> Vec<u8> {
 /// The findings of a lint pass over a gzip file whose framing is checked, by position.
 pub(super) fn gzip_findings(members: &[&[u8]]) -> Vec<(usize, Violation)> {
     let stream = gzip(members);
-    let reader = MemberReader::new(&stream[..]);
-    let framing = reader.framing();
 
     faults(
-        Linter::new(reader)
-            .checking_gzip_framing(framing)
+        Linter::new(WarcReader::from_gzip(&stream[..]))
             .collect::<Result<_, _>>()
             .expect("every record reads"),
     )

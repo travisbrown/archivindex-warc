@@ -3560,6 +3560,7 @@ mod tests {
     fn lift_bytes(bytes: &[u8]) -> Record {
         let raw = crate::io::read::WarcReader::new(bytes)
             .iter_raw_records()
+            .records()
             .next()
             .expect("a record")
             .expect("a well-formed record");

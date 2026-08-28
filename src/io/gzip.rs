@@ -3,14 +3,14 @@
 //! Compressed WARC files conventionally store each record in its own gzip member, allowing records
 //! to be located and decompressed independently. [`MemberReader`] exposes the members as one
 //! stream while retaining their file offsets, so a
-//! [`WarcReader`](crate::io::read::WarcReader) can frame records by member.
+//! [`WarcReader`](crate::io::read::WarcReader) can place records in the members holding them.
 
 use std::io::{self, BufRead, Read};
 
 use flate2::bufread::GzDecoder;
 
 use crate::io::Counted;
-use crate::io::read::{Location, Members};
+use crate::io::read::{Frame, Position};
 
 /// The number of bytes a [`MemberReader`] decompresses at a time.
 const BUFFER: usize = 64 * 1024;
@@ -20,45 +20,10 @@ const BUFFER: usize = 64 * 1024;
 /// Members are exposed in order as one decompressed stream. The stream ends with the last member;
 /// trailing data that is not another member is an error.
 ///
-/// A [`WarcReader`](crate::io::read::WarcReader) made from it frames each record by the members
-/// holding it, so the frame locates the record in the compressed file:
-///
-/// ```
-/// use std::io::{BufReader, Write};
-///
-/// use archivindex_warc::io::gzip::MemberReader;
-/// use archivindex_warc::io::read::WarcReader;
-/// use flate2::Compression;
-/// use flate2::bufread::GzDecoder;
-/// use flate2::write::GzEncoder;
-///
-/// let mut file = Vec::new();
-/// for body in ["first", "second"] {
-///     let record = format!(
-///         "WARC/1.1\r\nWARC-Type: resource\r\nContent-Length: {}\r\n\r\n{body}\r\n\r\n",
-///         body.len()
-///     );
-///     let mut member = GzEncoder::new(&mut file, Compression::fast());
-///     member.write_all(record.as_bytes())?;
-///     member.finish()?;
-/// }
-///
-/// let mut records = WarcReader::from_members(MemberReader::new(&file[..])).iter_raw_records();
-/// records.next().expect("the first record")?;
-/// let second = records.next().expect("the second record")?;
-/// let frame = records.frame();
-///
-/// let start = usize::try_from(frame.offset)?;
-/// let end = start + usize::try_from(frame.length)?;
-/// let located = WarcReader::new(BufReader::new(GzDecoder::new(&file[start..end])))
-///     .iter_raw_records()
-///     .next()
-///     .expect("the record it frames")?;
-/// assert_eq!(located, second);
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
+/// [`WarcReader::from_gzip`](crate::io::read::WarcReader::from_gzip) reads through one, placing
+/// each record in the members holding it.
 pub struct MemberReader<R> {
-    source: Source<Counted<R>>,
+    state: State<Counted<R>>,
     buffer: Box<[u8]>,
     /// Where the bytes of `buffer` that have not been consumed begin.
     start: usize,
@@ -70,12 +35,12 @@ pub struct MemberReader<R> {
     chunk: u64,
     /// The offset in the file at which the member read to its end most recently ended.
     ended_at: u64,
-    /// The number of members read to their end.
-    ended: u64,
+    /// The number of members read to their end that held octets.
+    held: u64,
 }
 
 /// Where the next decompressed byte comes from.
-enum Source<R> {
+enum State<R> {
     /// A member is being read.
     Member(Box<GzDecoder<R>>),
     /// The stream is positioned at the start of a member.
@@ -90,22 +55,55 @@ impl<R: BufRead> MemberReader<R> {
     /// Read the gzip members of `source`.
     #[must_use]
     pub fn new(source: R) -> Self {
+        Self::over(Counted::new(source), 0)
+    }
+
+    /// Read the gzip members of `source` within `frame`, which `source` is positioned at the
+    /// start of.
+    pub(crate) fn window(source: R, frame: Frame) -> Self {
+        Self::over(Counted::window(source, frame), frame.offset)
+    }
+
+    /// Read the gzip members of `source`, whose next byte lies at `offset` in the file.
+    fn over(source: Counted<R>, offset: u64) -> Self {
         Self {
-            source: Source::Between(Counted::new(source)),
+            state: State::Between(source),
             buffer: vec![0; BUFFER].into_boxed_slice(),
             start: 0,
             end: 0,
-            member: 0,
+            member: offset,
             chunk: 0,
-            ended_at: 0,
-            ended: 0,
+            ended_at: offset,
+            held: 0,
         }
     }
 
-    /// The number of members read to their end.
-    #[must_use]
-    pub const fn ended(&self) -> u64 {
-        self.ended
+    /// Where the next byte to read lies.
+    ///
+    /// Reaching that byte may mean opening the next member. A failure to do so is reported by
+    /// the read that follows, and the location is then the end of what was read.
+    pub(crate) fn position(&mut self) -> Position {
+        let filled = match self.fill_buf() {
+            Ok(bytes) => !bytes.is_empty(),
+            Err(error) => {
+                self.state = State::Failed(error);
+                false
+            }
+        };
+
+        if filled {
+            Position {
+                member: self.member,
+                boundary: self.chunk == 0 && self.start == 0,
+                held: self.held,
+            }
+        } else {
+            Position {
+                member: self.ended_at,
+                boundary: true,
+                held: self.held,
+            }
+        }
     }
 
     /// Refill the buffer from the member being read, opening the next one where it ends.
@@ -113,8 +111,8 @@ impl<R: BufRead> MemberReader<R> {
     /// The buffer is left empty once the stream has ended. A failed read ends the stream.
     fn refill(&mut self) -> io::Result<()> {
         loop {
-            match std::mem::replace(&mut self.source, Source::Done) {
-                Source::Between(mut source) => {
+            match std::mem::replace(&mut self.state, State::Done) {
+                State::Between(mut source) => {
                     // The end of the stream is told from a member before a decoder is opened on
                     // it, since the decoder would report an incomplete header instead.
                     if source.fill_buf()?.is_empty() {
@@ -124,24 +122,24 @@ impl<R: BufRead> MemberReader<R> {
                     self.chunk = 0;
                     self.start = 0;
                     self.end = 0;
-                    self.source = Source::Member(Box::new(GzDecoder::new(source)));
+                    self.state = State::Member(Box::new(GzDecoder::new(source)));
                 }
-                Source::Member(mut decoder) => {
+                State::Member(mut decoder) => {
                     let read = decoder.read(&mut self.buffer)?;
                     if read > 0 {
                         self.chunk += self.end as u64;
                         self.start = 0;
                         self.end = read;
-                        self.source = Source::Member(decoder);
+                        self.state = State::Member(decoder);
                         return Ok(());
                     }
                     let source = decoder.into_inner();
                     self.ended_at = source.position;
-                    self.ended += 1;
-                    self.source = Source::Between(source);
+                    self.held += u64::from(self.chunk + self.end as u64 > 0);
+                    self.state = State::Between(source);
                 }
-                Source::Failed(error) => return Err(error),
-                Source::Done => return Ok(()),
+                State::Failed(error) => return Err(error),
+                State::Done => return Ok(()),
             }
         }
     }
@@ -172,30 +170,6 @@ impl<R: BufRead> Read for MemberReader<R> {
     }
 }
 
-impl<R: BufRead> Members for MemberReader<R> {
-    fn location(&mut self) -> Location {
-        let filled = match self.fill_buf() {
-            Ok(bytes) => !bytes.is_empty(),
-            Err(error) => {
-                self.source = Source::Failed(error);
-                false
-            }
-        };
-
-        if filled {
-            Location {
-                member: self.member,
-                boundary: self.chunk == 0 && self.start == 0,
-            }
-        } else {
-            Location {
-                member: self.ended_at,
-                boundary: true,
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -221,7 +195,7 @@ mod tests {
         (out, ends)
     }
 
-    /// Everything a reader reads, with the number of members it read.
+    /// Everything a reader reads, with the number of members holding octets it read.
     fn read(stream: &[u8]) -> (String, u64) {
         let mut reader = MemberReader::new(stream);
         let mut contents = String::new();
@@ -229,50 +203,52 @@ mod tests {
             .read_to_string(&mut contents)
             .expect("the stream reads");
 
-        (contents, reader.ended())
+        (contents, reader.held)
     }
 
-    /// The location of a byte that begins the member at `member`.
-    const fn boundary(member: u64) -> Location {
-        Location {
+    /// The location of a byte that begins the member at `member`, after `held` members holding
+    /// octets.
+    const fn boundary(member: u64, held: u64) -> Position {
+        Position {
             member,
             boundary: true,
+            held,
         }
     }
 
     /// The members of a stream read as one, as they do through any gzip reader.
     #[test]
     fn reads_the_members_as_one_stream() {
-        let (contents, ended) = read(&stream(&["hello", " ", "world"]).0);
+        let (contents, held) = read(&stream(&["hello", " ", "world"]).0);
 
         assert_eq!(contents, "hello world");
-        assert_eq!(ended, 3);
+        assert_eq!(held, 3);
     }
 
-    /// A member holding nothing is read to its end like any other.
+    /// A member holding nothing is read past, and is not counted among those holding octets.
     #[test]
     fn reads_a_member_holding_nothing() {
-        let (contents, ended) = read(&stream(&["hello", "", "world"]).0);
+        let (contents, held) = read(&stream(&["hello", "", "world"]).0);
 
         assert_eq!(contents, "helloworld");
-        assert_eq!(ended, 3);
+        assert_eq!(held, 2);
     }
 
     /// A member longer than the buffer is read in several parts, and ends once.
     #[test]
     fn reads_a_member_longer_than_the_buffer() {
         let member = "abcdefgh".repeat(BUFFER / 4);
-        let (contents, ended) = read(&stream(&[&member]).0);
+        let (contents, held) = read(&stream(&[&member]).0);
 
         assert_eq!(contents, member);
-        assert_eq!(ended, 1);
+        assert_eq!(held, 1);
     }
 
     #[test]
     fn reads_an_empty_stream_as_nothing() {
         let mut reader = MemberReader::new(&[][..]);
 
-        assert_eq!(reader.location(), boundary(0));
+        assert_eq!(reader.position(), boundary(0, 0));
         assert_eq!(read(&[]), (String::new(), 0));
     }
 
@@ -298,20 +274,21 @@ mod tests {
         let mut reader = MemberReader::new(&stream[..]);
         let mut read = [0; 2];
 
-        assert_eq!(reader.location(), boundary(0));
+        assert_eq!(reader.position(), boundary(0, 0));
         reader.read_exact(&mut read).expect("two bytes read");
         assert_eq!(
-            reader.location(),
-            Location {
+            reader.position(),
+            Position {
                 member: 0,
-                boundary: false
+                boundary: false,
+                held: 0,
             }
         );
         reader.read_exact(&mut [0; 3]).expect("three bytes read");
         // The empty member is read past on the way to the next byte.
-        assert_eq!(reader.location(), boundary(ends[1]));
+        assert_eq!(reader.position(), boundary(ends[1], 1));
         reader.read_exact(&mut [0; 5]).expect("five bytes read");
-        assert_eq!(reader.location(), boundary(ends[2]));
+        assert_eq!(reader.position(), boundary(ends[2], 2));
     }
 
     /// Locating the next byte can fail to open its member, and the read after it reports that.
@@ -322,7 +299,7 @@ mod tests {
         let mut reader = MemberReader::new(&stream[..]);
         reader.read_exact(&mut [0; 5]).expect("five bytes read");
 
-        assert_eq!(reader.location(), boundary(ends[0]));
+        assert_eq!(reader.position(), boundary(ends[0], 1));
         let error = reader
             .fill_buf()
             .expect_err("the trailing octets are not a member");

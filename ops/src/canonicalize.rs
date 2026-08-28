@@ -101,6 +101,7 @@ mod tests {
         let records: Vec<_> = open(&output)
             .unwrap()
             .iter_raw_records()
+            .records()
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(records.len(), 2);
@@ -151,6 +152,7 @@ mod tests {
         let records: Vec<_> = open(&output)
             .unwrap()
             .iter_raw_records()
+            .records()
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(records[0].header.headers[0].0, "WARC-Type");
