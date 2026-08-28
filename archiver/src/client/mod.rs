@@ -6,7 +6,7 @@ use std::path::Path;
 use archivindex_warc_revisit_index::Index as RevisitIndex;
 use http::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
 
-use crate::capture::{ArchiveSummary, CaptureControl, CaptureEvent, CaptureEventSink};
+use crate::capture::{ArchiveSummary, CaptureControl, CaptureEvent, CaptureEventSink, Origin};
 use crate::recorder::Recorder;
 use crate::{Archiver, Config, ConfigError, CookieError, Error, UserAgentError};
 
@@ -186,7 +186,6 @@ impl Archiver {
         id: &str,
         software: &crate::config::Software,
         operator: Option<&crate::config::Operator>,
-        title: Option<&str>,
         output: &Path,
         persistent_index: Option<RevisitIndex>,
     ) -> Result<Collection, Error> {
@@ -203,7 +202,6 @@ impl Archiver {
                     software,
                     operator,
                     session_id: Some(id),
-                    title,
                 },
                 request_headers: self.headers.clone(),
                 persistent_index,
@@ -247,7 +245,7 @@ impl Archiver {
                 }
                 let outcome = self.capture(url, None);
                 cancelled |= notify_outcome(events, url, &outcome);
-                collection.record(url.to_owned(), outcome, None, None)?;
+                collection.record(url.to_owned(), outcome, Origin::Seed, None, None)?;
                 cancelled |= events.event(CaptureEvent::Written { url }) == CaptureControl::Cancel;
                 if cancelled {
                     break;

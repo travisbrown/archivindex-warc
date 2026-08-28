@@ -1,7 +1,7 @@
-//! Queue execution, processor dispatch, and retry policy.
+//! Depth-first traversal, processor dispatch, and retry policy.
 
 use std::borrow::Cow;
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::thread;
 use std::time::Duration;
 
@@ -10,10 +10,17 @@ use archivindex_warc_revisit_index::Index as RevisitIndex;
 
 use super::{Capture, Inspection, Session, SessionSummary};
 use crate::Error;
-use crate::capture::{ArchiveSummary, CaptureControl, CaptureEvent};
+use crate::capture::{ArchiveSummary, CaptureControl, CaptureEvent, Origin};
 use crate::client::collection::Collection;
 use crate::client::notify_outcome;
 use crate::client::outcome::{CaptureOutcome, Exchange};
+
+/// A URL waiting to be requested.
+struct Queued {
+    url: String,
+    origin: Origin,
+    via: Option<String>,
+}
 
 enum AttemptOutcome {
     Finished(CaptureOutcome),
@@ -31,48 +38,42 @@ impl CrawlOutcome {
     fn finish(
         self,
         archive: Result<ArchiveSummary, Error>,
-        seeds: &HashSet<String>,
+        unrequested: Vec<(String, Option<String>)>,
     ) -> Result<SessionSummary, Error> {
         match (self, archive) {
             (Self::Fatal(error), Err(_)) | (_, Err(error)) => Err(error),
-            (outcome, Ok(summary)) => Ok(outcome.into_summary(summary, seeds)),
+            (outcome, Ok(summary)) => Ok(outcome.into_summary(summary, unrequested)),
         }
     }
 
-    fn into_summary(self, summary: ArchiveSummary, seeds: &HashSet<String>) -> SessionSummary {
+    fn into_summary(
+        self,
+        summary: ArchiveSummary,
+        unrequested: Vec<(String, Option<String>)>,
+    ) -> SessionSummary {
         let (seed_captures, extra_captures) = summary
             .captures
             .into_iter()
-            .partition(|capture| seeds.contains(&capture.url));
+            .partition(|capture| capture.origin == Origin::Seed);
+        let (fatal_error, cancelled) = match self {
+            Self::Complete => (None, false),
+            Self::Cancelled => (None, true),
+            Self::Fatal(error) => (Some(error), false),
+        };
 
-        match self {
-            Self::Complete => SessionSummary {
-                seed_captures,
-                extra_captures,
-                failures: summary.failures,
-                fatal_error: None,
-                cancelled: false,
-            },
-            Self::Cancelled => SessionSummary {
-                seed_captures,
-                extra_captures,
-                failures: summary.failures,
-                fatal_error: None,
-                cancelled: true,
-            },
-            Self::Fatal(error) => SessionSummary {
-                seed_captures,
-                extra_captures,
-                failures: summary.failures,
-                fatal_error: Some(error),
-                cancelled: false,
-            },
+        SessionSummary {
+            seed_captures,
+            extra_captures,
+            failures: summary.failures,
+            fatal_error,
+            cancelled,
+            unrequested,
         }
     }
 }
 
 impl Session<'_> {
-    /// Run the crawl to the end of its queue and atomically publish its WARC file.
+    /// Run the crawl until nothing is left to request and atomically publish its WARC file.
     pub fn run(mut self) -> Result<SessionSummary, Error> {
         let persistent_index = self
             .revisit_index
@@ -83,20 +84,16 @@ impl Session<'_> {
             &self.id,
             &self.software,
             self.operator.as_ref(),
-            self.titles.then_some(self.id.as_str()),
             &self.output,
             persistent_index,
         )?;
-        let mut seen = HashSet::new();
-        let mut queue = VecDeque::new();
-
-        for seed in std::mem::take(&mut self.seeds) {
-            if seen.insert(seed.clone()) {
-                queue.push_back((seed, None));
-            }
-        }
-
-        let seeds = seen.clone();
+        let mut stack = self.given();
+        let mut seen = self.dedupe_discoveries.then(|| {
+            stack
+                .iter()
+                .map(|queued| queued.url.clone())
+                .collect::<HashSet<_>>()
+        });
         let mut capture_count = 0;
         let mut requested = false;
 
@@ -104,7 +101,7 @@ impl Session<'_> {
             if self.limit.is_some_and(|limit| capture_count >= limit) {
                 break CrawlOutcome::Complete;
             }
-            let Some((url, via)) = queue.pop_front() else {
+            let Some(queued) = stack.pop() else {
                 break CrawlOutcome::Complete;
             };
             if requested {
@@ -114,14 +111,17 @@ impl Session<'_> {
             if self
                 .events
                 .as_mut()
-                .is_some_and(|events| events.started(&url, 1))
+                .is_some_and(|events| events.started(&queued.url, 1))
             {
+                stack.push(queued);
                 break CrawlOutcome::Cancelled;
             }
-            let mut outcome = match self.capture_with_retry(&url, &collection) {
+            let mut outcome = match self.capture_with_retry(&queued.url, &collection) {
                 AttemptOutcome::Finished(outcome) => outcome,
                 AttemptOutcome::Cancelled(exchanges) => {
-                    break match collection.record_abandoned(exchanges, via.as_deref()) {
+                    let recorded = collection.record_abandoned(exchanges, queued.via.as_deref());
+                    stack.push(queued);
+                    break match recorded {
                         Ok(()) => CrawlOutcome::Cancelled,
                         Err(error) => CrawlOutcome::Fatal(error),
                     };
@@ -130,10 +130,11 @@ impl Session<'_> {
             let cancel_after_write = self
                 .events
                 .as_mut()
-                .is_some_and(|events| notify_outcome(events.as_mut(), &url, &outcome));
+                .is_some_and(|events| notify_outcome(events.as_mut(), &queued.url, &outcome));
             let (title, processor_error) = match &outcome {
                 CaptureOutcome::Captured { exchanges, .. } => {
-                    let inspection = self.process_capture(&url, exchanges, &mut seen, &mut queue);
+                    let inspection =
+                        self.process_capture(&queued, exchanges, seen.as_mut(), &mut stack);
                     if inspection.1.is_none() {
                         capture_count += 1;
                     }
@@ -141,18 +142,22 @@ impl Session<'_> {
                 }
                 CaptureOutcome::Failed { .. } => (None, None),
             };
-            let title = title.filter(|_| self.titles);
             let stop_after_write = processor_error.is_some();
             if let Some(error) = processor_error {
                 outcome = outcome.fail(error);
             }
-            if let Err(error) =
-                collection.record(url.clone(), outcome, title.as_deref(), via.as_deref())
-            {
+            if let Err(error) = collection.record(
+                queued.url.clone(),
+                outcome,
+                queued.origin,
+                title.as_deref(),
+                queued.via.as_deref(),
+            ) {
+                stack.push(queued);
                 break CrawlOutcome::Fatal(error);
             }
             if cancel_after_write
-                || self.event(CaptureEvent::Written { url: &url }) == CaptureControl::Cancel
+                || self.event(CaptureEvent::Written { url: &queued.url }) == CaptureControl::Cancel
             {
                 break CrawlOutcome::Cancelled;
             }
@@ -161,16 +166,51 @@ impl Session<'_> {
             }
         };
 
-        crawl_outcome.finish(collection.finish_to_path(&self.output), &seeds)
+        let unrequested = stack
+            .into_iter()
+            .rev()
+            .map(|queued| (queued.url, queued.via))
+            .collect();
+
+        crawl_outcome.finish(collection.finish_to_path(&self.output), unrequested)
     }
 
-    /// Show a successful capture to the processor and enqueue its discoveries and recaptures.
+    /// The extras and seeds as a stack, filled in reverse so that the first extra is requested
+    /// first.
+    fn given(&mut self) -> Vec<Queued> {
+        let mut stack = Vec::with_capacity(self.seeds.len() + self.extras.len());
+        stack.extend(
+            std::mem::take(&mut self.seeds)
+                .into_iter()
+                .rev()
+                .map(|url| Queued {
+                    url,
+                    origin: Origin::Seed,
+                    via: None,
+                }),
+        );
+        stack.extend(
+            std::mem::take(&mut self.extras)
+                .into_iter()
+                .rev()
+                .map(|(url, via)| Queued {
+                    url,
+                    origin: Origin::Extra,
+                    via: Some(via),
+                }),
+        );
+
+        stack
+    }
+
+    /// Show a successful capture to the processor and push its discoveries, so that they are
+    /// requested next.
     fn process_capture(
         &mut self,
-        url: &str,
+        queued: &Queued,
         exchanges: &[Exchange],
-        seen: &mut HashSet<String>,
-        queue: &mut VecDeque<(String, Option<String>)>,
+        mut seen: Option<&mut HashSet<String>>,
+        stack: &mut Vec<Queued>,
     ) -> (Option<String>, Option<Error>) {
         let Some(processor) = self.processor.as_mut() else {
             return (None, None);
@@ -179,16 +219,16 @@ impl Session<'_> {
             .last()
             .expect("a capture without an error has at least one exchange");
         let capture = Capture {
-            url,
+            url: &queued.url,
             final_url: last.captured.target_uri.as_str(),
+            origin: queued.origin,
             status: last.status,
             payload: last.payload(),
             response: &last.captured.response,
             response_metadata: Cow::Borrowed(&last.captured.response_metadata),
         };
         let Inspection {
-            links,
-            recaptures,
+            mut links,
             title,
             error,
         } = processor.inspect(&capture);
@@ -197,20 +237,22 @@ impl Session<'_> {
             return (
                 title,
                 Some(Error::Processor {
-                    url: url.to_owned(),
+                    url: queued.url.clone(),
                     message,
                 }),
             );
         }
 
-        for discovered in links {
-            if seen.insert(discovered.clone()) {
-                queue.push_back((discovered, Some(capture.final_url.to_owned())));
-            }
-        }
-        for recapture in recaptures {
-            queue.push_back((recapture, Some(capture.final_url.to_owned())));
-        }
+        links.retain(|link| {
+            seen.as_deref_mut()
+                .is_none_or(|seen| seen.insert(link.clone()))
+        });
+        // The stack is filled in reverse so that the first link is requested first.
+        stack.extend(links.into_iter().rev().map(|url| Queued {
+            url,
+            origin: Origin::Discovered,
+            via: Some(capture.final_url.to_owned()),
+        }));
 
         (title, None)
     }

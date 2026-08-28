@@ -7,7 +7,7 @@ use std::thread;
 use super::collection::Collection;
 use super::notify_outcome;
 use super::outcome::CaptureOutcome;
-use crate::capture::{CaptureControl, CaptureEvent, CaptureEventSink};
+use crate::capture::{CaptureControl, CaptureEvent, CaptureEventSink, Origin};
 use crate::{Archiver, Error};
 
 type IndexedOutcome = (usize, String, CaptureOutcome);
@@ -110,7 +110,9 @@ impl Archiver {
                     dispatcher.cancelled |= notify_outcome(events, &url, &outcome);
                     pending.insert(index, (url, outcome));
                     while let Some((url, outcome)) = pending.remove(&next_to_record) {
-                        if let Err(error) = collection.record(url.clone(), outcome, None, None) {
+                        if let Err(error) =
+                            collection.record(url.clone(), outcome, Origin::Seed, None, None)
+                        {
                             result = Err(error);
                             break;
                         }

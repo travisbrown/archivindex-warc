@@ -175,19 +175,19 @@ pub struct SessionConfig {
     pub request_delay: Duration,
     /// The persistent revisit and resource-state database consulted by sessions, when set.
     pub revisit_index: Option<PathBuf>,
-    /// Whether the session identifier is recorded as the `warcinfo` title and processor titles
-    /// in metadata.
-    pub titles: bool,
+    /// Whether a discovered URL that repeats one already given or discovered is skipped.
+    pub dedupe_discoveries: bool,
 }
 
 impl Default for SessionConfig {
-    /// The default retry policy, no request delay, no revisit index, and no titles.
+    /// The default retry policy, no request delay, no revisit index, and deduplicated
+    /// discoveries.
     fn default() -> Self {
         Self {
             retry: RetryConfig::default(),
             request_delay: Duration::ZERO,
             revisit_index: None,
-            titles: false,
+            dedupe_discoveries: true,
         }
     }
 }
