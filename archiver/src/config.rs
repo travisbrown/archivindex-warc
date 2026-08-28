@@ -173,7 +173,7 @@ pub struct SessionConfig {
     /// The wait between successive queued capture requests.
     #[serde(with = "humantime_serde")]
     pub request_delay: Duration,
-    /// The persistent revisit and resource-state database used by sessions, when set.
+    /// The persistent revisit and resource-state database consulted by sessions, when set.
     pub revisit_index: Option<PathBuf>,
     /// Whether the session identifier is recorded as the `warcinfo` title and processor titles
     /// in metadata.

@@ -338,9 +338,9 @@ impl<'a> Session<'a> {
     ///
     /// Existing payload entries make matching responses revisits, and existing resource state
     /// supplies conditional request headers. New records enter a private in-memory overlay during
-    /// the crawl, so later captures in the same session can use them without exposing records that
-    /// are not durable yet. After the WARC is atomically published, it is indexed into this
-    /// database in one transaction. Without this option, the in-memory index lasts for the run.
+    /// the crawl, so later captures in the same session can use them. New captures are not added to
+    /// the persistent index; the `load-revisit-index` command of `archivindex-warc` adds a
+    /// published WARC to it. Without this option, the in-memory index lasts for the run.
     #[must_use]
     pub fn revisit_index(mut self, path: impl Into<PathBuf>) -> Self {
         self.revisit_index = Some(path.into());

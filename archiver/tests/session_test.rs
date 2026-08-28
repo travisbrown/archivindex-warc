@@ -23,6 +23,7 @@ use archivindex_warc::version::WarcVersion;
 use archivindex_warc_revisit_index::Index;
 use archivindex_warc_revisit_index::payload::RevisitTarget;
 use archivindex_warc_revisit_index::resource::{ResourceKey, ResourceStateUpdate, Variance};
+use data_encoding::BASE64;
 use fluent_uri::Uri;
 
 mod support;
@@ -257,7 +258,7 @@ impl CaptureProcessor for RecaptureProcessor<'_> {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn persistent_index_supplies_historical_and_same_session_revisit_targets()
+fn persistent_index_is_read_only_and_supplies_historical_and_same_session_revisit_targets()
 -> Result<(), Box<dyn std::error::Error>> {
     const HISTORICAL: &str = "historical payload";
     const NEW: &str = "new shared payload";
@@ -367,14 +368,11 @@ fn persistent_index_supplies_historical_and_same_session_revisit_targets()
         new_original.payload.identified_payload_type
     );
 
-    let persisted = Index::open(&database)?
-        .lookup_payload(&sha256(NEW.as_bytes()))?
-        .expect("new payload should be persisted");
-    assert_eq!(persisted.record_id, new_original.core.record_id);
-    assert_eq!(persisted.target_uri.as_str(), first_new_url);
-    assert_eq!(
-        persisted.identified_payload_type,
-        Some(MediaType::TEXT_PLAIN)
+    assert!(
+        Index::open(&database)?
+            .lookup_payload(&sha256(NEW.as_bytes()))?
+            .is_none(),
+        "the finished WARC must be loaded explicitly"
     );
 
     Ok(())
@@ -530,106 +528,62 @@ fn resource_state_for_another_variant_does_not_drive_revalidation()
         Some(&sha256(MOBILE.as_bytes()))
     );
 
-    // The stored state now describes the representation this crawl selected.
+    // Capturing another variant does not replace durable state automatically.
     let state = Index::open(&database)?
         .lookup_resource(&ResourceKey::new(uri(&url)))?
         .expect("resource state should remain indexed");
-    assert_eq!(state.etag.as_deref(), Some("\"mobile\""));
+    assert_eq!(state.etag.as_deref(), Some("\"desktop\""));
     assert!(
         state
             .variance
-            .matches(|name| (name == "user-agent").then_some(MOBILE_AGENT))
+            .matches(|name| (name == "user-agent").then_some(DESKTOP_AGENT))
     );
     assert!(
         !state
             .variance
-            .matches(|name| (name == "user-agent").then_some(DESKTOP_AGENT))
+            .matches(|name| (name == "user-agent").then_some(MOBILE_AGENT))
     );
 
     Ok(())
 }
 
-/// A server may send `Vary` as several field lines. Every field it names selects the stored
-/// representation, so a later crawl differing in any of them must not reuse its validators.
-#[test]
-fn vary_sent_as_several_lines_selects_on_every_field_it_names()
--> Result<(), Box<dyn std::error::Error>> {
-    const AGENT: &str = "DesktopBot/1.0";
-    const BODY: &str = "<html>page</html>";
-
-    let (port, server) = serve_with(1, |head| {
-        let response = plain(
-            "200 OK",
-            &format!(
-                "content-type: text/html\r\netag: \"v1\"\r\n\
-                 last-modified: {LAST_MODIFIED}\r\nvary: User-Agent\r\nvary: Accept-Language"
-            ),
-            BODY,
-        );
-        (response, head.to_owned())
-    })?;
-    let url = format!("http://127.0.0.1:{port}/page");
-    let directory = tempfile::tempdir()?;
-    let database = directory.path().join("resource-state.sqlite3");
-    let output = directory.path().join("multiline-vary.warc.gz");
-
-    let config = Config {
-        user_agent: AGENT.to_owned(),
-        ..gzip_config()
-    };
-    let summary = Session::new(archiver(config), "vary", [&url], &output)?
-        .revisit_index(&database)
-        .run()?;
-
-    let requests = server.join().expect("server thread");
-    assert_eq!(summary.seed_captures[0].status, 200);
-    // The crawl sent no `Accept-Language`, so the stored state selects on its absence.
-    assert_eq!(request_header(&requests[0], "accept-language"), None);
-
-    let state = Index::open(&database)?
-        .lookup_resource(&ResourceKey::new(uri(&url)))?
-        .expect("a 200 response should index resource state");
-
-    // A request identical to this crawl's still selects the representation it captured.
-    assert!(
-        state
-            .variance
-            .matches(|name| (name == "user-agent").then_some(AGENT))
-    );
-
-    // Reading only the first `vary` line would leave `Accept-Language` unrecorded, and these
-    // validators would then be sent for a request that selects a different representation.
-    assert!(!state.variance.matches(|name| match name {
-        "user-agent" => Some(AGENT),
-        "accept-language" => Some("en"),
-        _ => None,
-    }));
-
-    Ok(())
-}
-
-/// A challenge cookie is injected per request rather than configured, so a response selected by
-/// it is only recorded correctly if the request as sent is what resolves the declared `Vary`.
-#[test]
-fn vary_cookie_records_the_cookie_the_request_carried() -> Result<(), Box<dyn std::error::Error>> {
+/// Crawl a page whose representation is selected by the `Vary` lines given and recapture it. The
+/// recapture repeats the first request, so it must send the validators the crawl recorded, and the
+/// server meets it with a challenge whose cookie the request is then repeated with, so that repeat
+/// selects another representation and must not send them.
+fn assert_validators_follow_the_cookie(
+    vary: &str,
+    output: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     const COOKIE: &str = "session=clearance";
     const BODY: &str = "<html>cleared</html>";
 
-    let (port, server) = serve_with(1, |head| {
-        let response = plain(
-            "200 OK",
-            &format!(
-                "content-type: text/html\r\netag: \"v1\"\r\n\
-                 last-modified: {LAST_MODIFIED}\r\nvary: Cookie"
-            ),
-            BODY,
-        );
+    let script = "v='cookie-value';\
+        document.cookie='sucuri_cloudproxy_uuid_test=' + v + \
+        ';path=/;max-age=86400;SameSite=Lax'; location.reload();";
+    let challenge = format!(
+        "<html><script>var sucuri_cloudproxy_js='',S='{}';</script></html>",
+        BASE64.encode(script.as_bytes())
+    );
+    let headers = format!(
+        "content-type: text/html\r\netag: \"v1\"\r\nlast-modified: {LAST_MODIFIED}\r\n{vary}"
+    );
+    let attempt = AtomicUsize::new(0);
+    let (port, server) = serve_with(3, move |head| {
+        let response = if attempt.fetch_add(1, Ordering::Relaxed) == 1 {
+            plain(
+                "307 Temporary Redirect",
+                "content-type: text/html\r\nx-sucuri-id: 12005",
+                &challenge,
+            )
+        } else {
+            plain("200 OK", &headers, BODY)
+        };
         (response, head.to_owned())
     })?;
     let url = format!("http://127.0.0.1:{port}/page");
     let directory = tempfile::tempdir()?;
-    let database = directory.path().join("resource-state.sqlite3");
-    let output = directory.path().join("cookie-vary.warc.gz");
+    let output = directory.path().join(output);
 
     let summary = Session::new(
         archiver(gzip_config()).cookie_for(&url, COOKIE)?,
@@ -637,37 +591,54 @@ fn vary_cookie_records_the_cookie_the_request_carried() -> Result<(), Box<dyn st
         [&url],
         &output,
     )?
-    .revisit_index(&database)
+    .processor(RecaptureProcessor {
+        remaining: 1,
+        observed: None,
+    })
     .run()?;
 
     let requests = server.join().expect("server thread");
-    assert_eq!(summary.seed_captures[0].status, 200);
+    assert_eq!(summary.seed_captures.len(), 2);
     assert_eq!(
-        request_header(&requests[0], "cookie").as_deref(),
+        request_header(&requests[1], "cookie").as_deref(),
         Some(COOKIE)
     );
-
-    let state = Index::open(&database)?
-        .lookup_resource(&ResourceKey::new(uri(&url)))?
-        .expect("a 200 response should index resource state");
-
-    // A later crawl holding the same cookie may revalidate against this capture.
-    assert!(
-        state
-            .variance
-            .matches(|name| (name == "cookie").then_some(COOKIE))
+    assert_eq!(
+        request_header(&requests[1], "if-none-match").as_deref(),
+        Some("\"v1\"")
     );
-
-    // Resolving `Vary` against the configured fields alone would record the cookie as absent, and
-    // these validators would then be sent for a request that selects a different representation.
-    assert!(!state.variance.matches(|_| None::<&str>));
-    assert!(
-        !state
-            .variance
-            .matches(|name| (name == "cookie").then_some("session=other"))
+    assert_eq!(
+        request_header(&requests[1], "if-modified-since").as_deref(),
+        Some(LAST_MODIFIED.to_ascii_lowercase().as_str())
     );
+    assert_eq!(
+        request_header(&requests[2], "cookie").as_deref(),
+        Some("session=clearance; sucuri_cloudproxy_uuid_test=cookie-value")
+    );
+    assert_eq!(request_header(&requests[2], "if-none-match"), None);
+    assert_eq!(request_header(&requests[2], "if-modified-since"), None);
 
     Ok(())
+}
+
+/// A server may send `Vary` as several field lines. Every field it names selects the stored
+/// representation, so a request differing in any of them must not reuse its validators. Reading
+/// only the first line would leave the cookie unrecorded.
+#[test]
+fn vary_sent_as_several_lines_selects_on_every_field_it_names()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_validators_follow_the_cookie(
+        "vary: User-Agent\r\nvary: Cookie",
+        "multiline-vary.warc.gz",
+    )
+}
+
+/// A challenge cookie is injected per request rather than configured, so a response selected by
+/// it is only recorded correctly if the request as sent is what resolves the declared `Vary`.
+/// Resolving it against the configured fields alone would record the cookie as absent.
+#[test]
+fn vary_cookie_records_the_cookie_the_request_carried() -> Result<(), Box<dyn std::error::Error>> {
+    assert_validators_follow_the_cookie("vary: Cookie", "cookie-vary.warc.gz")
 }
 
 #[test]
@@ -1140,12 +1111,22 @@ fn session_captures_each_url_once() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn session_starts_from_the_configured_settings() -> Result<(), Box<dyn std::error::Error>> {
+    const BODY: &str = "<html>home links: /about /missing</html>";
+
     let (port, server) = serve(1)?;
     let url = format!("http://127.0.0.1:{port}/");
 
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("configured.warc.gz");
     let database = directory.path().join("configured-revisits.sqlite3");
+    Index::open(&database)?.insert_payload(&RevisitTarget {
+        payload_digest: sha256(BODY.as_bytes()),
+        payload_length: Some(BODY.len() as u64),
+        identified_payload_type: None,
+        record_id: uri(EXTERNAL_RECORD_ID),
+        target_uri: uri("https://archive.example/configured"),
+        warc_date: warc_date("2025-01-01T00:00:00Z"),
+    })?;
 
     let config = Config {
         software: Software {
@@ -1153,9 +1134,10 @@ fn session_starts_from_the_configured_settings() -> Result<(), Box<dyn std::erro
             version: "3.1".to_owned(),
         },
         session: SessionConfig {
-            revisit_index: Some(database.clone()),
+            revisit_index: Some(database),
             ..SessionConfig::default()
         },
+        min_revisit_payload_length: 0,
         ..gzip_config()
     };
     let summary = Session::new(archiver(config), "configured", [&url], &path)?.run()?;
@@ -1165,13 +1147,8 @@ fn session_starts_from_the_configured_settings() -> Result<(), Box<dyn std::erro
     assert!(summary.is_complete());
     assert_eq!(summary.seed_captures.len(), 1);
     assert_eq!(summary.extra_captures.len(), 0);
-    assert!(
-        Index::open(&database)?
-            .lookup_payload(&sha256(b"<html>home links: /about /missing</html>"))?
-            .is_some()
-    );
 
-    // The configured software and operator are recorded without any builder override.
+    // The configured software, operator, and revisit index are used without builder overrides.
     let records = records(&std::fs::read(&path)?)?;
     let Record::Warcinfo {
         body: FieldsBlock::Fields(fields),
@@ -1186,6 +1163,10 @@ fn session_starts_from_the_configured_settings() -> Result<(), Box<dyn std::erro
         fields.operator(),
         Some("Test Operator <operator@example.com>")
     );
+    let Record::Revisit { header, .. } = &records[2] else {
+        panic!("the configured index's payload should produce a revisit");
+    };
+    assert_eq!(header.refers_to.as_ref(), Some(&uri(EXTERNAL_RECORD_ID)));
 
     Ok(())
 }

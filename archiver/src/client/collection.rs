@@ -32,7 +32,7 @@ pub struct Collection {
     summary: ArchiveSummary,
     /// Payload and conditional-request state created by this collection.
     session_index: Index,
-    /// Earlier durable crawl state, published to only after the WARC is durable.
+    /// Earlier durable crawl state, used only for lookups.
     persistent_index: Option<Index>,
     /// The header fields every request carries, which decide which stored state applies to them.
     request_headers: HeaderMap,
@@ -53,7 +53,7 @@ pub struct CollectionOptions<'a> {
     /// A response declaring `Vary` is stored with this request's values for the fields it names,
     /// so that a later run configured differently does not revalidate against another variant.
     pub request_headers: HeaderMap,
-    /// Earlier durable crawl state, published to only after the WARC is durable.
+    /// Earlier durable crawl state, used only for lookups.
     pub persistent_index: Option<Index>,
     /// The formats of the digests added to every record.
     pub digests: DigestFormats,
@@ -385,19 +385,15 @@ impl Collection {
         Ok(summary)
     }
 
-    /// Atomically publish the completed WARC at `path`, then update durable revisit state.
-    ///
-    /// The WARC and its directory entry are synced before the index is updated, so the index
-    /// never refers to a file a crash can lose. A failure updating the index leaves the WARC
-    /// published, and indexing it again repairs the index.
+    /// Atomically publish the completed WARC at `path`.
     pub fn finish_to_path(self, path: &Path) -> Result<ArchiveSummary, Error> {
         let Self {
             warc,
             spool_path,
             warcinfo_id: _,
             summary,
-            mut persistent_index,
-            session_index,
+            persistent_index: _,
+            session_index: _,
             request_headers: _,
             min_revisit_payload_length: _,
         } = self;
@@ -423,13 +419,6 @@ impl Collection {
                 .map_err(|error| error.error)?;
         }
         sync_directory(parent)?;
-
-        // The session index already contains the state derived from the completed WARC.
-        if let Some(index) = &mut persistent_index {
-            let transaction = index.begin()?;
-            transaction.merge_from(&session_index)?;
-            transaction.commit()?;
-        }
         Ok(summary)
     }
 }
