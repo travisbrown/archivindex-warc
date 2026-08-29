@@ -5,10 +5,11 @@
 //! matching record with the earliest `WARC-Date` is written where the first of them stood, the
 //! rest are dropped, and every reference to a dropped record is redirected to the kept one.
 //!
-//! Two warcinfo records match when they declare the same WARC version, carry the same body other
-//! than `isPartOf` fields, and carry the same header fields other than `WARC-Record-ID`,
+//! Two warcinfo records match when they declare the same WARC version, carry the same body after
+//! ignored fields are removed, and carry the same header fields other than `WARC-Record-ID`,
 //! `WARC-Date`, `WARC-Filename`, `WARC-Block-Digest`, `WARC-Payload-Digest`, and `Content-Length`.
-//! Header field order, field name case, and white space around values do not affect matching.
+//! `isPartOf` is always ignored; callers may ignore additional warcinfo body fields. Header field
+//! order, field name case, and white space around values do not affect matching.
 //!
 //! A warcinfo record that declares a `WARC-Filename` has it rewritten to the name of the output,
 //! which is the file it is then in.
@@ -17,8 +18,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use archivindex_warc::parse::raw;
-use archivindex_warc::record::fields::dcmi::DcmiTerm;
-use archivindex_warc::record::fields::warcinfo::{WarcinfoBody, WarcinfoField};
+use archivindex_warc::record::fields::warcinfo::WarcinfoBody;
 use archivindex_warc::value::{Text, WarcDate};
 use archivindex_warc::version::WarcVersion;
 
@@ -45,6 +45,21 @@ pub struct MergeSummary {
     pub records: usize,
     /// The number of duplicate warcinfo records dropped.
     pub merged: usize,
+    /// The number of distinct warcinfo records written.
+    pub distinct_warcinfo: usize,
+    /// Why the distinct warcinfo records could not all be merged.
+    pub warcinfo_differences: Vec<WarcinfoDifference>,
+}
+
+/// A part of otherwise mergeable warcinfo records that differs.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum WarcinfoDifference {
+    /// The records declare different WARC versions.
+    Version,
+    /// Header fields other than the incidental fields differ.
+    HeaderFields,
+    /// The bodies differ after ignored fields are removed.
+    Body,
 }
 
 /// Merge the records of two WARC files into `output`.
@@ -62,10 +77,27 @@ pub struct MergeSummary {
 /// written, a duplicate's references must be redirected but the surviving warcinfo record has no
 /// `WARC-Record-ID`, or the output cannot be moved into place.
 pub fn merge(first: &Path, second: &Path, output: &Path) -> Result<MergeSummary> {
+    merge_ignoring_warcinfo_fields(first, second, output, &[] as &[&str])
+}
+
+/// Merge two WARC files, allowing the named warcinfo body fields to vary.
+///
+/// Field names are matched case-insensitively. `isPartOf` is always allowed to vary, whether or
+/// not it appears in `ignored_fields`.
+///
+/// # Errors
+///
+/// Returns the errors described by [`merge`].
+pub fn merge_ignoring_warcinfo_fields<S: AsRef<str>>(
+    first: &Path,
+    second: &Path,
+    output: &Path,
+    ignored_fields: &[S],
+) -> Result<MergeSummary> {
     if is_stdin(first) || is_stdin(second) {
         return Err(Error::StandardInputReadTwice);
     }
-    let plan = MergePlan::build(first, second)?;
+    let plan = MergePlan::build(first, second, ignored_fields)?;
 
     plan.write(first, second, output)
 }
@@ -82,11 +114,13 @@ enum WarcinfoAction {
 struct MergePlan {
     actions: Vec<WarcinfoAction>,
     redirects: HashMap<Vec<u8>, Vec<u8>>,
+    distinct_warcinfo: usize,
+    warcinfo_differences: Vec<WarcinfoDifference>,
 }
 
 impl MergePlan {
     /// Read the warcinfo records of both files and decide which survive.
-    fn build(first: &Path, second: &Path) -> Result<Self> {
+    fn build<S: AsRef<str>>(first: &Path, second: &Path, ignored_fields: &[S]) -> Result<Self> {
         let mut records = Vec::new();
         for path in [first, second] {
             for result in open(path)?.filter_raw_records(is_warcinfo).records() {
@@ -99,7 +133,10 @@ impl MergePlan {
 
         let mut groups: HashMap<GroupKey, Vec<usize>> = HashMap::new();
         for (index, record) in records.iter().enumerate() {
-            groups.entry(group_key(record)).or_default().push(index);
+            groups
+                .entry(group_key(record, ignored_fields))
+                .or_default()
+                .push(index);
         }
 
         log::info!(
@@ -107,6 +144,20 @@ impl MergePlan {
             records.len(),
             groups.len()
         );
+
+        let distinct_warcinfo = groups.len();
+        let mut warcinfo_differences = Vec::new();
+        if let Some(first) = groups.keys().next() {
+            if groups.keys().any(|key| key.0 != first.0) {
+                warcinfo_differences.push(WarcinfoDifference::Version);
+            }
+            if groups.keys().any(|key| key.1 != first.1) {
+                warcinfo_differences.push(WarcinfoDifference::HeaderFields);
+            }
+            if groups.keys().any(|key| key.2 != first.2) {
+                warcinfo_differences.push(WarcinfoDifference::Body);
+            }
+        }
 
         let mut actions: Vec<_> = records.iter().map(|_| WarcinfoAction::Skip).collect();
         let mut redirects = HashMap::new();
@@ -149,12 +200,22 @@ impl MergePlan {
             actions[members[0]] = WarcinfoAction::Emit(records[kept].clone());
         }
 
-        Ok(Self { actions, redirects })
+        Ok(Self {
+            actions,
+            redirects,
+            distinct_warcinfo,
+            warcinfo_differences,
+        })
     }
 
     /// Stream both files into the output, applying the plan.
     fn write(self, first: &Path, second: &Path, output: &Path) -> Result<MergeSummary> {
-        let Self { actions, redirects } = self;
+        let Self {
+            actions,
+            redirects,
+            distinct_warcinfo,
+            warcinfo_differences,
+        } = self;
         let mut actions = actions.into_iter();
         let mut merged = 0;
         let filename = output_filename(output);
@@ -189,17 +250,18 @@ impl MergePlan {
         Ok(MergeSummary {
             records: summary.records,
             merged,
+            distinct_warcinfo,
+            warcinfo_differences,
         })
     }
 }
 
 /// A warcinfo record's identity for matching: its version, its fields other than the incidental
-/// ones with names lowercased and values trimmed and sorted, and its body without `isPartOf`
-/// fields.
+/// ones with names lowercased and values trimmed and sorted, and its body without ignored fields.
 type GroupKey = (WarcVersion, Vec<(String, Vec<u8>)>, Vec<u8>);
 
 /// The matching identity of a warcinfo record.
-fn group_key(record: &raw::Record) -> GroupKey {
+fn group_key<S: AsRef<str>>(record: &raw::Record, ignored_fields: &[S]) -> GroupKey {
     let mut headers: Vec<(String, Vec<u8>)> = record
         .header
         .headers
@@ -213,20 +275,21 @@ fn group_key(record: &raw::Record) -> GroupKey {
         .collect();
     headers.sort_unstable();
 
-    (record.header.version, headers, body_key(&record.body))
+    (
+        record.header.version,
+        headers,
+        body_key(&record.body, ignored_fields),
+    )
 }
 
-/// A body with every `isPartOf` field removed, when it is a valid warc-fields block.
+/// A body with `isPartOf` and every caller-ignored field removed, when it is a valid warc-fields
+/// block.
 ///
-/// The bytes of every other field are retained exactly, so making `isPartOf` incidental does not
-/// make differences in spelling, white space, folding, or line endings elsewhere incidental too.
-/// A body that is not warc-fields retains its original identity.
-fn body_key(body: &[u8]) -> Vec<u8> {
-    let Ok(fields) = WarcinfoBody::parse(body) else {
-        return body.to_vec();
-    };
-    let is_part_of = WarcinfoField::Dcmi(DcmiTerm::IsPartOf);
-    if fields.get(&is_part_of).is_none() {
+/// Ignored names match case-insensitively. The bytes of every other field are retained exactly, so
+/// ignoring a field does not make differences in spelling, white space, folding, or line endings
+/// elsewhere incidental too. A body that is not warc-fields retains its original identity.
+fn body_key<S: AsRef<str>>(body: &[u8], ignored_fields: &[S]) -> Vec<u8> {
+    if WarcinfoBody::parse(body).is_err() {
         return body.to_vec();
     }
 
@@ -253,7 +316,11 @@ fn body_key(body: &[u8]) -> Vec<u8> {
             .position(|byte| *byte == b':')
             .expect("invariant violation: parsed warc-fields line has no colon");
         let name = line[..colon].trim_ascii_end();
-        if !name.eq_ignore_ascii_case(b"isPartOf") {
+        let ignored = name.eq_ignore_ascii_case(b"isPartOf")
+            || ignored_fields
+                .iter()
+                .any(|field| name.eq_ignore_ascii_case(field.as_ref().as_bytes()));
+        if !ignored {
             key.extend_from_slice(&body[field_start..cursor]);
         }
     }
@@ -606,6 +673,59 @@ mod tests {
         let mut expected = first_contents;
         expected.extend_from_slice(&second_contents);
         assert_eq!(std::fs::read(&output).unwrap(), expected);
+    }
+
+    #[test]
+    fn ignores_named_warcinfo_fields_case_insensitively() {
+        let directory = tempfile::tempdir().unwrap();
+        let headers = |id, date, digest| {
+            [
+                ("WARC-Type", "warcinfo"),
+                ("WARC-Record-ID", id),
+                ("WARC-Date", date),
+                ("WARC-Block-Digest", digest),
+                ("Content-Type", "application/warc-fields"),
+            ]
+        };
+        let first = write_file(
+            directory.path(),
+            "first.warc",
+            &render(
+                &headers(ID_A, "2024-05-02T00:00:00Z", "sha1:AAAA"),
+                "software: tool/1.0\r\n\
+                 http-header-user-agent: Mozilla/5.0 (Intel Mac\u{a0} OS X)\r\n\
+                 isPartOf: first\r\n",
+            ),
+        );
+        let second = write_file(
+            directory.path(),
+            "second.warc",
+            &render(
+                &headers(ID_B, "2024-05-01T00:00:00Z", "sha1:BBBB"),
+                "software: tool/1.0\r\n\
+                 HTTP-HEADER-USER-AGENT: Mozilla/5.0 (Intel Mac  OS X)\r\n\
+                 isPartOf: second\r\n",
+            ),
+        );
+
+        let distinct_output = directory.path().join("distinct.warc");
+        let distinct = merge(&first, &second, &distinct_output).unwrap();
+        assert_eq!(distinct.merged, 0);
+        assert_eq!(distinct.distinct_warcinfo, 2);
+        assert_eq!(distinct.warcinfo_differences, [WarcinfoDifference::Body]);
+
+        let merged_output = directory.path().join("merged.warc");
+        let merged = merge_ignoring_warcinfo_fields(
+            &first,
+            &second,
+            &merged_output,
+            &["HTTP-header-USER-agent"],
+        )
+        .unwrap();
+        assert_eq!(merged.merged, 1);
+        assert_eq!(merged.distinct_warcinfo, 1);
+        assert!(merged.warcinfo_differences.is_empty());
+        assert_eq!(read_records(&merged_output).len(), 1);
     }
 
     /// Compressed files are read and written by their extension.

@@ -14,6 +14,7 @@ use archivindex_cli_support::{CommandOutcome, Verbosity, exit_code, plural};
 use archivindex_warc::io::write::{DEFAULT_GZIP_COMPRESSION_LEVEL, MAX_GZIP_COMPRESSION_LEVEL};
 use archivindex_warc::value::{Text, TextError};
 use archivindex_warc_ops::lint::{Finding, Linter};
+use archivindex_warc_ops::merge::WarcinfoDifference;
 use archivindex_warc_ops::rewrite::WarcinfoValues;
 use archivindex_warc_revisit_index::{Index, LoadSummary};
 use clap::{Parser, Subcommand};
@@ -150,6 +151,10 @@ enum Command {
         /// The file to write; a .gz extension selects record-at-a-time gzip compression.
         #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         output: PathBuf,
+
+        /// A warcinfo body field allowed to vary; may be repeated and matches case-insensitively.
+        #[arg(long, value_name = "NAME")]
+        ignore_field: Vec<String>,
     },
 
     /// Give each revisit record the identified payload type of the response it refers to.
@@ -328,17 +333,8 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
             first,
             second,
             output,
-        } => {
-            let summary = archivindex_warc_ops::merge::merge(&first, &second, &output)?;
-            if !quiet {
-                println!(
-                    "Wrote {} to {}, merging {}.",
-                    plural(summary.records, "record"),
-                    output.display(),
-                    plural(summary.merged, "duplicate warcinfo record"),
-                );
-            }
-        }
+            ignore_field,
+        } => merge(&first, &second, &output, &ignore_field, quiet)?,
         Command::DigestFramedPayloads { input, output } => {
             digest_framed_payloads(&input, &output, quiet)?;
         }
@@ -382,6 +378,58 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
     }
 
     Ok(CommandOutcome::Success)
+}
+
+/// Merge `first` and `second`, allowing selected warcinfo body fields to vary.
+fn merge(
+    first: &Path,
+    second: &Path,
+    output: &Path,
+    ignored_fields: &[String],
+    quiet: bool,
+) -> Result<()> {
+    let summary = archivindex_warc_ops::merge::merge_ignoring_warcinfo_fields(
+        first,
+        second,
+        output,
+        ignored_fields,
+    )?;
+    if !quiet {
+        println!(
+            "Wrote {} to {}, merging {}.",
+            plural(summary.records, "record"),
+            output.display(),
+            plural(summary.merged, "duplicate warcinfo record"),
+        );
+        if summary.distinct_warcinfo > 1 {
+            println!(
+                "Kept {} separate because {}.",
+                plural(summary.distinct_warcinfo, "warcinfo record"),
+                describe_warcinfo_differences(&summary.warcinfo_differences),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Describe every way the merge's distinct warcinfo records differ.
+fn describe_warcinfo_differences(differences: &[WarcinfoDifference]) -> String {
+    let reasons: Vec<_> = differences
+        .iter()
+        .map(|difference| match difference {
+            WarcinfoDifference::Version => "the WARC versions differ",
+            WarcinfoDifference::HeaderFields => "the non-incidental header fields differ",
+            WarcinfoDifference::Body => "the bodies differ after ignoring allowed fields",
+        })
+        .collect();
+
+    match reasons.as_slice() {
+        [] => "they do not match".to_owned(),
+        [reason] => (*reason).to_owned(),
+        [first, second] => format!("{first} and {second}"),
+        [first, middle @ .., last] => format!("{first}, {}, and {last}", middle.join(", ")),
+    }
 }
 
 /// Canonicalize the record headers of `input`, writing the records to `output`.
@@ -757,15 +805,20 @@ mod tests {
             "b.warc.gz",
             "-o",
             "merged.warc.gz",
+            "--ignore-field",
+            "http-header-user-agent",
+            "--ignore-field",
+            "operator",
         ])
         .unwrap();
 
         assert!(matches!(
             cli.command,
-            Command::Merge { first, second, output }
+            Command::Merge { first, second, output, ignore_field }
                 if first.as_path() == Path::new("a.warc.gz")
                     && second.as_path() == Path::new("b.warc.gz")
                     && output.as_path() == Path::new("merged.warc.gz")
+                    && ignore_field == ["http-header-user-agent", "operator"]
         ));
         assert!(
             Cli::try_parse_from([
@@ -777,6 +830,14 @@ mod tests {
                 "c.warc"
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn describes_why_warcinfo_records_remain_separate() {
+        assert_eq!(
+            describe_warcinfo_differences(&[WarcinfoDifference::Body]),
+            "the bodies differ after ignoring allowed fields"
         );
     }
 
