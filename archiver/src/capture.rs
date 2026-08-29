@@ -41,14 +41,27 @@ pub(crate) fn partial_captures(captures: &[CaptureSummary]) -> usize {
 }
 
 /// Where a requested URL came from.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Origin {
-    /// Given as a seed, or to a one-shot archive run.
+    /// Requested for its own sake: a session driver's seed, or a URL given to a one-shot archive
+    /// run.
     Seed,
-    /// Given as an extra of a session.
-    Extra,
-    /// Discovered by a session's processor.
-    Discovered,
+    /// Requested because of another capture.
+    Extra {
+        /// The URL the request was made via, recorded in the metadata record.
+        via: String,
+    },
+}
+
+impl Origin {
+    /// The URL the request was made via, if any.
+    #[must_use]
+    pub fn via(&self) -> Option<&str> {
+        match self {
+            Self::Seed => None,
+            Self::Extra { via } => Some(via),
+        }
+    }
 }
 
 /// The outcome of capturing one URL.
@@ -58,8 +71,6 @@ pub struct CaptureSummary {
     pub url: String,
     /// Where the URL came from.
     pub origin: Origin,
-    /// The URL the request was made via, recorded in the metadata record.
-    pub via: Option<String>,
     /// When capture of the final response began.
     pub date: DateTime<Utc>,
     /// The final response status.
@@ -95,8 +106,6 @@ pub struct Failure {
     pub url: String,
     /// Where the URL came from.
     pub origin: Origin,
-    /// The URL the request was made via, recorded in the metadata record.
-    pub via: Option<String>,
     /// The capture failure.
     pub error: Error,
 }

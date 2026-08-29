@@ -80,9 +80,6 @@ request-delay = "0s"
 # New captures are not added automatically. Unset by default.
 # revisit-index = "revisits.sqlite3"
 
-# Whether discovered URL are deduplicated against completed captures.
-dedupe-discoveries = true
-
 # The policy for retrying transient failures.
 [session.retry]
 

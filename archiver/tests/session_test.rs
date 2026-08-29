@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 
 use archivindex_archiver::capture::{CaptureControl, CaptureEvent, Origin};
 use archivindex_archiver::config::{Operator, SessionConfig, Software};
-use archivindex_archiver::session::{Capture, CaptureProcessor, Inspection, RetryConfig, Session};
+use archivindex_archiver::session::{
+    self, Capture, CaptureProcessor, Crawl, Discovery, RetryConfig, Session,
+};
 use archivindex_archiver::{Archiver, Config, Error};
 use archivindex_test_support::http::{
     Request, dead_port, response, serve_concurrently_with, serve_with,
@@ -150,7 +152,7 @@ struct SiteProcessor {
 }
 
 impl CaptureProcessor for SiteProcessor {
-    fn inspect(&mut self, capture: &Capture<'_>) -> Inspection {
+    fn inspect(&mut self, capture: &Capture<'_>) -> Discovery {
         let text = std::str::from_utf8(capture.payload).ok();
         let title = text.and_then(|text| {
             text.contains("home")
@@ -158,10 +160,10 @@ impl CaptureProcessor for SiteProcessor {
                 .or_else(|| text.contains("about").then(|| "About".to_owned()))
         });
 
-        Inspection {
+        Discovery {
             links: extract_links(capture.payload, self.port),
             title,
-            ..Inspection::default()
+            ..Discovery::default()
         }
     }
 }
@@ -172,15 +174,15 @@ struct DeduplicationProcessor {
 }
 
 impl CaptureProcessor for DeduplicationProcessor {
-    fn inspect(&mut self, capture: &Capture<'_>) -> Inspection {
-        Inspection {
+    fn inspect(&mut self, capture: &Capture<'_>) -> Discovery {
+        Discovery {
             links: vec![
                 format!("http://127.0.0.1:{}/", self.port),
                 capture.url.to_owned(),
                 format!("http://127.0.0.1:{}/about", self.port),
             ],
             title: None,
-            ..Inspection::default()
+            ..Discovery::default()
         }
     }
 }
@@ -191,7 +193,7 @@ struct ObservingProcessor<'a> {
 }
 
 impl CaptureProcessor for ObservingProcessor<'_> {
-    fn inspect(&mut self, capture: &Capture<'_>) -> Inspection {
+    fn inspect(&mut self, capture: &Capture<'_>) -> Discovery {
         self.observed.push((
             capture.url.to_owned(),
             capture.final_url.to_owned(),
@@ -199,7 +201,7 @@ impl CaptureProcessor for ObservingProcessor<'_> {
             String::from_utf8_lossy(capture.payload).into_owned(),
         ));
 
-        Inspection::default()
+        Discovery::default()
     }
 }
 
@@ -211,20 +213,20 @@ struct FixedLinksProcessor {
 struct FailingProcessor;
 
 impl CaptureProcessor for FailingProcessor {
-    fn inspect(&mut self, _capture: &Capture<'_>) -> Inspection {
-        Inspection {
+    fn inspect(&mut self, _capture: &Capture<'_>) -> Discovery {
+        Discovery {
             error: Some("cannot continue traversal".to_owned()),
-            ..Inspection::default()
+            ..Discovery::default()
         }
     }
 }
 
 impl CaptureProcessor for FixedLinksProcessor {
-    fn inspect(&mut self, _capture: &Capture<'_>) -> Inspection {
-        Inspection {
+    fn inspect(&mut self, _capture: &Capture<'_>) -> Discovery {
+        Discovery {
             links: self.links.clone(),
             title: None,
-            ..Inspection::default()
+            ..Discovery::default()
         }
     }
 }
@@ -237,7 +239,7 @@ struct RepeatingProcessor<'a> {
 }
 
 impl CaptureProcessor for RepeatingProcessor<'_> {
-    fn inspect(&mut self, capture: &Capture<'_>) -> Inspection {
+    fn inspect(&mut self, capture: &Capture<'_>) -> Discovery {
         if let Some(observed) = self.observed.as_deref_mut() {
             observed.push((
                 capture.status,
@@ -251,9 +253,9 @@ impl CaptureProcessor for RepeatingProcessor<'_> {
             vec![capture.url.to_owned()]
         };
 
-        Inspection {
+        Discovery {
             links,
-            ..Inspection::default()
+            ..Discovery::default()
         }
     }
 }
@@ -302,7 +304,7 @@ fn persistent_index_is_read_only_and_supplies_historical_and_same_session_revisi
     let summary = Session::new(
         archiver(revisiting_config()),
         "persistent-revisits",
-        [&historical_url, &first_new_url, &second_new_url],
+        Crawl::seeds([&historical_url, &first_new_url, &second_new_url]),
         &output,
     )?
     .revisit_index(&database)
@@ -418,7 +420,7 @@ fn persistent_resource_state_drives_conditional_requests_and_not_modified_revisi
     let summary = Session::new(
         archiver(gzip_config()),
         "persistent-revalidation",
-        [&url],
+        Crawl::seeds([&url]),
         &output,
     )?
     .revisit_index(&database)
@@ -510,7 +512,7 @@ fn resource_state_for_another_variant_does_not_drive_revalidation()
         user_agent: MOBILE_AGENT.to_owned(),
         ..gzip_config()
     };
-    let summary = Session::new(archiver(config), "variant", [&url], &output)?
+    let summary = Session::new(archiver(config), "variant", Crawl::seeds([&url]), &output)?
         .revisit_index(&database)
         .run()?;
 
@@ -593,14 +595,14 @@ fn assert_validators_follow_the_cookie(
     let summary = Session::new(
         archiver(gzip_config()).cookie_for(&url, COOKIE)?,
         "cookie",
-        [&url],
+        Crawl::seeds([&url])
+            .dedupe_discoveries(false)
+            .processor(RepeatingProcessor {
+                remaining: 1,
+                observed: None,
+            }),
         &output,
     )?
-    .dedupe_discoveries(false)
-    .processor(RepeatingProcessor {
-        remaining: 1,
-        observed: None,
-    })
     .run()?;
 
     let requests = server.join().expect("server thread");
@@ -644,22 +646,28 @@ fn a_repeated_discovery_is_an_identical_payload_revisit() -> Result<(), Box<dyn 
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("repeat.warc.gz");
 
-    let summary = Session::new(archiver(revisiting_config()), "repeat", [&url], &output)?
-        .dedupe_discoveries(false)
-        .processor(RepeatingProcessor {
-            remaining: 1,
-            observed: None,
-        })
-        .run()?;
+    let summary = Session::new(
+        archiver(revisiting_config()),
+        "repeat",
+        Crawl::seeds([&url])
+            .dedupe_discoveries(false)
+            .processor(RepeatingProcessor {
+                remaining: 1,
+                observed: None,
+            }),
+        &output,
+    )?
+    .run()?;
 
     assert_eq!(server.join().expect("server thread"), ["/about", "/about"]);
     assert!(summary.is_complete());
     assert_eq!(summary.seed_captures.len(), 1);
     assert_eq!(summary.seed_captures[0].origin, Origin::Seed);
-    assert_eq!(summary.seed_captures[0].via, None);
     assert_eq!(summary.extra_captures.len(), 1);
-    assert_eq!(summary.extra_captures[0].origin, Origin::Discovered);
-    assert_eq!(summary.extra_captures[0].via.as_deref(), Some(url.as_str()));
+    assert_eq!(
+        summary.extra_captures[0].origin,
+        Origin::Extra { via: url.clone() }
+    );
 
     // The second capture's payload matches the first, so it is stored as a revisit record.
     let records = records(&std::fs::read(&output)?)?;
@@ -726,13 +734,18 @@ fn a_repeat_of_a_validated_response_is_a_server_not_modified_revisit()
     let output = directory.path().join("revalidate.warc.gz");
     let mut observed = Vec::new();
 
-    let summary = Session::new(archiver(gzip_config()), "revalidate", [&url], &output)?
-        .dedupe_discoveries(false)
-        .processor(RepeatingProcessor {
-            remaining: 1,
-            observed: Some(&mut observed),
-        })
-        .run()?;
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "revalidate",
+        Crawl::seeds([&url])
+            .dedupe_discoveries(false)
+            .processor(RepeatingProcessor {
+                remaining: 1,
+                observed: Some(&mut observed),
+            }),
+        &output,
+    )?
+    .run()?;
 
     // The first request is unconditional; the repeat carries the stored response's validators.
     let requests = server.join().expect("server thread");
@@ -820,13 +833,18 @@ fn changed_content_is_repeated_in_full_and_revalidated_by_its_new_validators()
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("changed.warc.gz");
 
-    let summary = Session::new(archiver(gzip_config()), "changed", [&url], &output)?
-        .dedupe_discoveries(false)
-        .processor(RepeatingProcessor {
-            remaining: 2,
-            observed: None,
-        })
-        .run()?;
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "changed",
+        Crawl::seeds([&url])
+            .dedupe_discoveries(false)
+            .processor(RepeatingProcessor {
+                remaining: 2,
+                observed: None,
+            }),
+        &output,
+    )?
+    .run()?;
 
     // Each repeat is conditional on the latest stored version: the first finds the page changed
     // and is answered in full, and the second confirms the new version unchanged.
@@ -897,10 +915,10 @@ fn session_waits_between_queued_requests() -> Result<(), Box<dyn std::error::Err
     let summary = Session::new(
         archiver(gzip_config()),
         "delayed",
-        [
+        Crawl::seeds([
             format!("http://127.0.0.1:{port}/first"),
             format!("http://127.0.0.1:{port}/second"),
-        ],
+        ]),
         output,
     )?
     .request_delay(delay)
@@ -934,11 +952,10 @@ fn session_crawls_discovered_urls_depth_first() -> Result<(), Box<dyn std::error
             ..revisiting_config()
         }),
         "crawl-2026.08",
-        &seeds,
+        Crawl::seeds(&seeds).processor(SiteProcessor { port }),
         &path,
     )?
     .software("session-test-crawler", "9.9")
-    .processor(SiteProcessor { port })
     .run()?;
     let request_paths = server.join().expect("server thread should not panic");
 
@@ -1070,9 +1087,12 @@ fn extras_are_captured_before_the_seeds_with_their_via() -> Result<(), Box<dyn s
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("extras.warc.gz");
 
-    let summary = Session::new(archiver(gzip_config()), "extras", [&home], &output)?
-        .extras([(&about, "https://example.com/links"), (&home, &about)])
-        .run()?;
+    let crawl = Crawl::new([
+        session::Request::extra(&about, "https://example.com/links"),
+        session::Request::extra(&home, &about),
+        session::Request::seed(&home),
+    ]);
+    let summary = Session::new(archiver(gzip_config()), "extras", crawl, &output)?.run()?;
 
     assert_eq!(server.join().expect("server thread"), ["/about", "/", "/"]);
     assert!(summary.is_complete());
@@ -1080,23 +1100,24 @@ fn extras_are_captured_before_the_seeds_with_their_via() -> Result<(), Box<dyn s
         summary
             .seed_captures
             .iter()
-            .map(|capture| (capture.url.as_str(), capture.origin, capture.via.as_deref()))
+            .map(|capture| (capture.url.as_str(), &capture.origin))
             .collect::<Vec<_>>(),
-        [(home.as_str(), Origin::Seed, None)]
+        [(home.as_str(), &Origin::Seed)]
     );
     assert_eq!(
         summary
             .extra_captures
             .iter()
-            .map(|capture| (capture.url.as_str(), capture.origin, capture.via.as_deref()))
+            .map(|capture| (capture.url.as_str(), &capture.origin))
             .collect::<Vec<_>>(),
         [
             (
                 about.as_str(),
-                Origin::Extra,
-                Some("https://example.com/links")
+                &Origin::Extra {
+                    via: "https://example.com/links".to_owned()
+                }
             ),
-            (home.as_str(), Origin::Extra, Some(about.as_str())),
+            (home.as_str(), &Origin::Extra { via: about.clone() }),
         ]
     );
 
@@ -1137,10 +1158,14 @@ fn session_skips_discoveries_that_repeat_a_given_url() -> Result<(), Box<dyn std
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("session.warc.gz");
 
-    let summary = Session::new(archiver(gzip_config()), "dedup", &seeds, &path)?
-        .operator("Solo", None)
-        .processor(DeduplicationProcessor { port })
-        .run()?;
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "dedup",
+        Crawl::seeds(&seeds).processor(DeduplicationProcessor { port }),
+        &path,
+    )?
+    .operator("Solo", None)
+    .run()?;
     let request_paths = server.join().expect("server thread should not panic");
 
     assert_eq!(request_paths, ["/", "/", "/about"]);
@@ -1199,7 +1224,8 @@ fn session_starts_from_the_configured_settings() -> Result<(), Box<dyn std::erro
         min_revisit_payload_length: 0,
         ..gzip_config()
     };
-    let summary = Session::new(archiver(config), "configured", [&url], &path)?.run()?;
+    let summary =
+        Session::new(archiver(config), "configured", Crawl::seeds([&url]), &path)?.run()?;
     let request_paths = server.join().expect("server thread should not panic");
 
     assert_eq!(request_paths, ["/"]);
@@ -1242,7 +1268,7 @@ fn session_without_a_configured_operator_names_none() -> Result<(), Box<dyn std:
         operator: None,
         ..gzip_config()
     };
-    let summary = Session::new(archiver(config), "anonymous", [&url], &path)?
+    let summary = Session::new(archiver(config), "anonymous", Crawl::seeds([&url]), &path)?
         .limit(1)
         .run()?;
     server.join().expect("server thread should not panic");
@@ -1275,8 +1301,8 @@ fn session_limit_stops_with_discoveries_still_queued() -> Result<(), Box<dyn std
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("limited.warc.gz");
 
-    let summary = Session::new(archiver(gzip_config()), "limited", [&url], &path)?
-        .processor(SiteProcessor { port })
+    let mut crawl = Crawl::seeds([&url]).processor(SiteProcessor { port });
+    let summary = Session::new(archiver(gzip_config()), "limited", &mut crawl, &path)?
         .limit(1)
         .run()?;
     let request_paths = server.join().expect("server thread should not panic");
@@ -1289,10 +1315,10 @@ fn session_limit_stops_with_discoveries_still_queued() -> Result<(), Box<dyn std
     // The home page's discoveries are left for a later session, in the order they would have been
     // requested.
     assert_eq!(
-        summary.unrequested,
+        crawl.unrequested().cloned().collect::<Vec<_>>(),
         [
-            (format!("http://127.0.0.1:{port}/about"), Some(url.clone())),
-            (format!("http://127.0.0.1:{port}/missing"), Some(url)),
+            session::Request::extra(format!("http://127.0.0.1:{port}/about"), &url),
+            session::Request::extra(format!("http://127.0.0.1:{port}/missing"), &url),
         ]
     );
     assert_eq!(records(&std::fs::read(&path)?)?.len(), 4);
@@ -1311,7 +1337,7 @@ fn session_rejects_an_unwritable_operator_before_writing() -> Result<(), Box<dyn
     let result = Session::new(
         archiver(gzip_config()),
         "bad-operator",
-        ["http://127.0.0.1:9/"],
+        Crawl::seeds(["http://127.0.0.1:9/"]),
         &path,
     )?
     .operator("Line\r\nBreak", None)
@@ -1344,7 +1370,7 @@ fn session_retries_transient_failures_with_backoff() -> Result<(), Box<dyn std::
             ..gzip_config()
         }),
         "retry",
-        [&url],
+        Crawl::seeds([&url]),
         &path,
     )?
     .retry(RetryConfig {
@@ -1388,26 +1414,31 @@ fn session_retries_retryable_http_statuses() -> Result<(), Box<dyn std::error::E
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_for_sink = Arc::clone(&events);
 
-    let summary = Session::new(archiver(gzip_config()), "status-retry", [&url], &path)?
-        .events(move |event: CaptureEvent<'_>| {
-            events_for_sink
-                .lock()
-                .expect("event lock")
-                .push(match event {
-                    CaptureEvent::Started { attempt, .. } => format!("started:{attempt}"),
-                    CaptureEvent::Retrying { attempt, .. } => format!("retrying:{attempt}"),
-                    CaptureEvent::Captured { .. } => "captured".to_owned(),
-                    CaptureEvent::Written { .. } => "written".to_owned(),
-                    CaptureEvent::Failed { .. } => "failed".to_owned(),
-                });
-            CaptureControl::Continue
-        })
-        .retry(RetryConfig {
-            attempts: 2,
-            initial_backoff: Duration::from_secs(30),
-            max_backoff: Duration::from_secs(30),
-        })
-        .run()?;
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "status-retry",
+        Crawl::seeds([&url]),
+        &path,
+    )?
+    .events(move |event: CaptureEvent<'_>| {
+        events_for_sink
+            .lock()
+            .expect("event lock")
+            .push(match event {
+                CaptureEvent::Started { attempt, .. } => format!("started:{attempt}"),
+                CaptureEvent::Retrying { attempt, .. } => format!("retrying:{attempt}"),
+                CaptureEvent::Captured { .. } => "captured".to_owned(),
+                CaptureEvent::Written { .. } => "written".to_owned(),
+                CaptureEvent::Failed { .. } => "failed".to_owned(),
+            });
+        CaptureControl::Continue
+    })
+    .retry(RetryConfig {
+        attempts: 2,
+        initial_backoff: Duration::from_secs(30),
+        max_backoff: Duration::from_secs(30),
+    })
+    .run()?;
     let requests = server.join().expect("server thread should not panic");
 
     assert_eq!(attempts.load(Ordering::Relaxed), 2);
@@ -1473,19 +1504,24 @@ fn session_honours_an_http_date_retry_after() -> Result<(), Box<dyn std::error::
     let delays = Arc::new(Mutex::new(Vec::new()));
     let delays_for_sink = Arc::clone(&delays);
 
-    let summary = Session::new(archiver(gzip_config()), "date-retry", [&url], &path)?
-        .events(move |event: CaptureEvent<'_>| {
-            if let CaptureEvent::Retrying { delay, .. } = event {
-                delays_for_sink.lock().expect("delay lock").push(delay);
-            }
-            CaptureControl::Continue
-        })
-        .retry(RetryConfig {
-            attempts: 2,
-            initial_backoff: Duration::from_secs(30),
-            max_backoff: Duration::from_secs(30),
-        })
-        .run()?;
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "date-retry",
+        Crawl::seeds([&url]),
+        &path,
+    )?
+    .events(move |event: CaptureEvent<'_>| {
+        if let CaptureEvent::Retrying { delay, .. } = event {
+            delays_for_sink.lock().expect("delay lock").push(delay);
+        }
+        CaptureControl::Continue
+    })
+    .retry(RetryConfig {
+        attempts: 2,
+        initial_backoff: Duration::from_secs(30),
+        max_backoff: Duration::from_secs(30),
+    })
+    .run()?;
     server.join().expect("server thread should not panic");
 
     assert_eq!(attempts.load(Ordering::Relaxed), 2);
@@ -1517,7 +1553,7 @@ fn session_reports_exhausted_http_status_retries() -> Result<(), Box<dyn std::er
     let summary = Session::new(
         archiver(revisiting_config()),
         "status-exhausted",
-        [&url],
+        Crawl::seeds([&url]),
         &path,
     )?
     .retry(RetryConfig {
@@ -1564,20 +1600,26 @@ fn session_cancelled_during_a_retry_keeps_the_completed_attempt()
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("status-cancelled.warc.gz");
 
-    let summary = Session::new(archiver(gzip_config()), "status-cancelled", [&url], &path)?
-        .events(|event: CaptureEvent<'_>| {
-            if matches!(event, CaptureEvent::Retrying { .. }) {
-                CaptureControl::Cancel
-            } else {
-                CaptureControl::Continue
-            }
-        })
-        .retry(RetryConfig {
-            attempts: 2,
-            initial_backoff: Duration::from_secs(30),
-            max_backoff: Duration::from_secs(30),
-        })
-        .run()?;
+    let mut crawl = Crawl::seeds([&url]);
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "status-cancelled",
+        &mut crawl,
+        &path,
+    )?
+    .events(|event: CaptureEvent<'_>| {
+        if matches!(event, CaptureEvent::Retrying { .. }) {
+            CaptureControl::Cancel
+        } else {
+            CaptureControl::Continue
+        }
+    })
+    .retry(RetryConfig {
+        attempts: 2,
+        initial_backoff: Duration::from_secs(30),
+        max_backoff: Duration::from_secs(30),
+    })
+    .run()?;
     server.join().expect("server thread should not panic");
 
     // The cancelled capture is neither a capture nor a failure, but its 503 exchange is archived,
@@ -1585,7 +1627,10 @@ fn session_cancelled_during_a_retry_keeps_the_completed_attempt()
     assert!(summary.cancelled);
     assert!(summary.seed_captures.is_empty());
     assert!(summary.failures.is_empty());
-    assert_eq!(summary.unrequested, [(url, None)]);
+    assert_eq!(
+        crawl.unrequested().cloned().collect::<Vec<_>>(),
+        [session::Request::seed(url)]
+    );
     assert_eq!(
         records(&std::fs::read(&path)?)?
             .iter()
@@ -1604,13 +1649,17 @@ fn processor_failure_stops_with_an_incomplete_summary() -> Result<(), Box<dyn st
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("processor-failure.warc.gz");
 
-    let summary = Session::new(archiver(gzip_config()), "processor-failure", [&url], &path)?
-        .processor(FailingProcessor)
-        .run()?;
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "processor-failure",
+        Crawl::seeds([&url]).processor(FailingProcessor),
+        &path,
+    )?
+    .run()?;
     server.join().expect("server thread should not panic");
 
     assert!(!summary.is_complete());
-    assert!(matches!(summary.failures[0].error, Error::Processor { .. }));
+    assert!(matches!(summary.failures[0].error, Error::Driver { .. }));
 
     Ok(())
 }
@@ -1623,13 +1672,18 @@ fn session_reports_exhausted_retries_as_failures() -> Result<(), Box<dyn std::er
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("session.warc.gz");
 
-    let summary = Session::new(archiver(gzip_config()), "unreachable", [&url], &path)?
-        .retry(RetryConfig {
-            attempts: 2,
-            initial_backoff: Duration::from_millis(10),
-            max_backoff: Duration::from_millis(10),
-        })
-        .run()?;
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "unreachable",
+        Crawl::seeds([&url]),
+        &path,
+    )?
+    .retry(RetryConfig {
+        attempts: 2,
+        initial_backoff: Duration::from_millis(10),
+        max_backoff: Duration::from_millis(10),
+    })
+    .run()?;
 
     assert!(!summary.is_complete());
     assert!(summary.fatal_error.is_none());
@@ -1651,7 +1705,7 @@ fn session_does_not_retry_permanent_failures() -> Result<(), Box<dyn std::error:
     let summary = Session::new(
         archiver(gzip_config()),
         "no-retry",
-        ["data:text/plain,hi"],
+        Crawl::seeds(["data:text/plain,hi"]),
         &path,
     )?
     .retry(RetryConfig {
@@ -1673,12 +1727,26 @@ fn session_rejects_invalid_identifiers() {
 
     for id in ["", "has space", "sl/ash", "qu?ery", "ünïcode"] {
         assert!(
-            Session::new(archiver(gzip_config()), id, seeds, "out.warc.gz").is_err(),
+            Session::new(
+                archiver(gzip_config()),
+                id,
+                Crawl::seeds(seeds),
+                "out.warc.gz"
+            )
+            .is_err(),
             "identifier {id:?} should be rejected"
         );
     }
 
-    assert!(Session::new(archiver(gzip_config()), "ok-id_1.2~3", seeds, "out.warc.gz").is_ok());
+    assert!(
+        Session::new(
+            archiver(gzip_config()),
+            "ok-id_1.2~3",
+            Crawl::seeds(seeds),
+            "out.warc.gz"
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -1689,9 +1757,14 @@ fn session_refuses_an_existing_output() -> Result<(), Box<dyn std::error::Error>
     std::fs::write(&path, b"existing")?;
     let url = "https://example.com/";
 
-    let result = Session::new(archiver(gzip_config()), "existing", [url], &path)?
-        .revisit_index(&database)
-        .run();
+    let result = Session::new(
+        archiver(gzip_config()),
+        "existing",
+        Crawl::seeds([url]),
+        &path,
+    )?
+    .revisit_index(&database)
+    .run();
 
     assert!(result.is_err());
     let key = ResourceKey::new(Uri::parse(url)?.to_owned());
@@ -1706,7 +1779,8 @@ fn session_with_no_seeds_writes_an_empty_collection() -> Result<(), Box<dyn std:
     let path = directory.path().join("session.warc.gz");
 
     let seeds: [&str; 0] = [];
-    let summary = Session::new(archiver(gzip_config()), "empty", seeds, &path)?.run()?;
+    let summary =
+        Session::new(archiver(gzip_config()), "empty", Crawl::seeds(seeds), &path)?.run()?;
 
     assert!(summary.is_complete());
     assert!(summary.seed_captures.is_empty());
@@ -1726,17 +1800,22 @@ fn session_writes_to_named_partial_before_publishing() -> Result<(), Box<dyn std
     let url = format!("http://127.0.0.1:{port}/");
     let mut saw_partial = false;
 
-    let summary = Session::new(archiver(gzip_config()), "visible-partial", [&url], &path)?
-        .events(|event: CaptureEvent<'_>| {
-            if matches!(event, CaptureEvent::Started { .. }) {
-                saw_partial = true;
-                assert!(partial_path.exists());
-                assert!(std::fs::metadata(&partial_path).is_ok_and(|metadata| metadata.len() > 0));
-                assert!(!path.exists());
-            }
-            CaptureControl::Continue
-        })
-        .run()?;
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "visible-partial",
+        Crawl::seeds([&url]),
+        &path,
+    )?
+    .events(|event: CaptureEvent<'_>| {
+        if matches!(event, CaptureEvent::Started { .. }) {
+            saw_partial = true;
+            assert!(partial_path.exists());
+            assert!(std::fs::metadata(&partial_path).is_ok_and(|metadata| metadata.len() > 0));
+            assert!(!path.exists());
+        }
+        CaptureControl::Continue
+    })
+    .run()?;
     server.join().expect("server thread should not panic");
 
     assert!(summary.is_complete());
@@ -1759,11 +1838,15 @@ fn session_processor_sees_the_final_response_of_a_chain() -> Result<(), Box<dyn 
     let path = directory.path().join("session.warc.gz");
 
     let mut observed = Vec::new();
-    let summary = Session::new(archiver(gzip_config()), "final-hop", [&url], &path)?
-        .processor(ObservingProcessor {
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "final-hop",
+        Crawl::seeds([&url]).processor(ObservingProcessor {
             observed: &mut observed,
-        })
-        .run()?;
+        }),
+        &path,
+    )?
+    .run()?;
     server.join().expect("server thread should not panic");
 
     assert!(summary.is_complete());
@@ -1792,9 +1875,13 @@ fn session_skips_a_discovery_that_repeats_a_later_seed() -> Result<(), Box<dyn s
     let about = seeds[1].clone();
     let missing = format!("http://127.0.0.1:{port}/missing");
     let discovered = vec![about, missing.clone()];
-    let summary = Session::new(archiver(gzip_config()), "seed-set", &seeds, &path)?
-        .processor(FixedLinksProcessor { links: discovered })
-        .run()?;
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "seed-set",
+        Crawl::seeds(&seeds).processor(FixedLinksProcessor { links: discovered }),
+        &path,
+    )?
+    .run()?;
 
     assert_eq!(
         server.join().expect("server thread should not panic"),

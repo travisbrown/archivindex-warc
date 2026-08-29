@@ -24,9 +24,10 @@
 //! # }
 //! ```
 //!
-//! The [`session`] module provides depth-first crawls. A user-supplied processor can inspect each
-//! response, discover URLs, and propose titles for metadata. Sessions retry transient network
-//! failures, archiving the exchanges of every attempt, and can use a persistent revisit index to
+//! The [`session`] module provides crawls steered by a user-supplied driver, which hands the
+//! session each URL to request, sees each response, and proposes titles for metadata. The
+//! [`Crawl`](session::Crawl) driver follows discovered links depth first. Sessions retry
+//! transient network failures, archiving the exchanges of every attempt, and can use a persistent revisit index to
 //! deduplicate captures and reuse HTTP validators across runs. A `304 Not Modified` response
 //! becomes a `server-not-modified` revisit record.
 //!
@@ -34,7 +35,7 @@
 //!
 //! * [`capture`]: what a capture run reports and observes
 //! * [`recorder`]: byte-exact capture of live HTTP exchanges
-//! * [`session`]: queue-driven crawl sessions
+//! * [`session`]: driver-steered crawl sessions
 
 pub mod capture;
 mod client;
@@ -106,7 +107,6 @@ pub struct Archiver {
 /// [session]
 /// request-delay = "0s"
 /// # revisit-index = "revisits.sqlite3"  # none by default
-/// dedupe-discoveries = true
 ///
 /// [session.retry]
 /// attempts = 3
@@ -227,12 +227,12 @@ pub enum Error {
         /// The final HTTP response status.
         status: u16,
     },
-    /// A capture processor could not complete its traversal.
-    #[error("capture processor failed for {url}: {message}")]
-    Processor {
+    /// A session driver could not continue its traversal.
+    #[error("session driver failed for {url}: {message}")]
+    Driver {
         /// The URL being inspected.
         url: String,
-        /// The processor's description of the failure.
+        /// The driver's description of the failure.
         message: String,
     },
     /// The configuration cannot be used by an archiver.

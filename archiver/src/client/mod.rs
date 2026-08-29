@@ -245,7 +245,7 @@ impl Archiver {
                 }
                 let outcome = self.capture(url, None);
                 cancelled |= notify_outcome(events, url, &outcome);
-                collection.record(url.to_owned(), outcome, Origin::Seed, None, None)?;
+                collection.record(url.to_owned(), outcome, Origin::Seed, None)?;
                 cancelled |= events.event(CaptureEvent::Written { url }) == CaptureControl::Cancel;
                 if cancelled {
                     break;
