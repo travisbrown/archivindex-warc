@@ -194,6 +194,7 @@ dependencies = [
 name = "archivindex-warc-digest"
 version = "0.1.0"
 dependencies = [
+ "archivindex-test-support",
  "blake2",
  "blake3",
  "data-encoding",
