@@ -121,27 +121,29 @@ dependencies = [
  "archivindex-archiver",
  "archivindex-cli-support",
  "clap",
- "indicatif",
  "log",
- "serde_json",
- "toml",
 ]
 
 [[package]]
 name = "archivindex-cli-support"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex-core#b6c1cd9083e06cf92753780a992ae19f732ec07a"
+source = "git+https://github.com/travisbrown/archivindex-core#8bd3736a8905d7f364ca0a177ca9d57cbec23cdb"
 dependencies = [
  "clap",
  "ctrlc",
+ "indicatif",
  "log",
+ "serde",
+ "serde_json",
  "simplelog",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]
 name = "archivindex-test-support"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex-core#b6c1cd9083e06cf92753780a992ae19f732ec07a"
+source = "git+https://github.com/travisbrown/archivindex-core#8bd3736a8905d7f364ca0a177ca9d57cbec23cdb"
 dependencies = [
  "proptest",
 ]

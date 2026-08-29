@@ -1,17 +1,17 @@
 //! A command-line front end for archiving URLs into WARC files.
 
-use std::ffi::OsStr;
 use std::io::BufRead;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::Ordering;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
+use archivindex_archiver::Archiver;
 use archivindex_archiver::capture::{CaptureControl, CaptureEvent};
-use archivindex_archiver::{Archiver, Config};
-use archivindex_cli_support::{CommandOutcome, Verbosity, exit_code, interrupt_flag, plural};
+use archivindex_cli_support::{
+    CommandOutcome, Verbosity, exit_code, interrupt_flag, load_config, plural, spinner,
+};
 use clap::Parser;
-use indicatif::{ProgressBar, ProgressStyle};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -34,7 +34,7 @@ fn archive(options: &ArchiveOptions, quiet: bool) -> Result<CommandOutcome> {
     let archiver = Archiver::new(config).context("cannot configure the archiver")?;
     let mut input_error = None;
     let urls = read_urls(std::io::stdin().lock(), &mut input_error);
-    let progress = progress_spinner("Archiving", "URLs");
+    let progress = spinner("Archiving", Some("URLs"));
     let interrupted = interrupt_flag();
     let mut events = |event: CaptureEvent<'_>| {
         if matches!(event, CaptureEvent::Written { .. }) {
@@ -97,55 +97,6 @@ fn archive(options: &ArchiveOptions, quiet: bool) -> Result<CommandOutcome> {
     }
 }
 
-/// Read the configuration file at `path`, or take the default configuration without one.
-fn load_config(path: Option<&Path>) -> Result<Config> {
-    path.map_or_else(
-        || Ok(Config::default()),
-        |path| {
-            let format = ConfigFormat::of(path)?;
-            let text = std::fs::read_to_string(path)
-                .with_context(|| format!("cannot read configuration file {}", path.display()))?;
-
-            format
-                .parse(&text)
-                .with_context(|| format!("cannot parse configuration file {}", path.display()))
-        },
-    )
-}
-
-/// The document formats a configuration file is read as, recognized by extension.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ConfigFormat {
-    Toml,
-    Json,
-}
-
-impl ConfigFormat {
-    /// The format of the file at `path`, from its `.toml` or `.json` extension in any case.
-    fn of(path: &Path) -> Result<Self> {
-        let extension = path
-            .extension()
-            .and_then(OsStr::to_str)
-            .map(str::to_ascii_lowercase);
-
-        match extension.as_deref() {
-            Some("toml") => Ok(Self::Toml),
-            Some("json") => Ok(Self::Json),
-            _ => bail!(
-                "configuration file {} must have a .toml or .json extension",
-                path.display()
-            ),
-        }
-    }
-
-    fn parse(self, text: &str) -> Result<Config> {
-        match self {
-            Self::Toml => toml::from_str(text).map_err(anyhow::Error::from),
-            Self::Json => serde_json::from_str(text).map_err(anyhow::Error::from),
-        }
-    }
-}
-
 /// Read one URL per line, trimming surrounding whitespace and skipping blank lines.
 ///
 /// A read failure ends iteration and is stored in `error`.
@@ -166,16 +117,6 @@ fn read_urls<'a, R: BufRead + 'a>(
             }
         })
         .flatten()
-}
-
-fn progress_spinner(message: &'static str, unit: &str) -> ProgressBar {
-    let progress = ProgressBar::new_spinner();
-    progress.set_style(
-        ProgressStyle::with_template(&format!("{{msg}} {{human_pos}} {unit} {{spinner}}"))
-            .expect("valid progress spinner template"),
-    );
-    progress.set_message(message);
-    progress
 }
 
 #[derive(Debug, Parser)]
@@ -212,9 +153,11 @@ struct ArchiveOptions {
 mod tests {
     use std::path::Path;
 
+    use archivindex_archiver::Config;
+    use archivindex_cli_support::ConfigFormat;
     use clap::{CommandFactory, Parser};
 
-    use super::{Cli, Command, Config, ConfigFormat, load_config};
+    use super::{Cli, Command};
 
     #[test]
     fn clap_definition_is_consistent() {
@@ -259,45 +202,24 @@ mod tests {
     }
 
     #[test]
-    fn no_configuration_file_is_the_default_configuration() {
-        let config = load_config(None).expect("the default configuration");
-
-        assert_eq!(config, Config::default());
-    }
-
-    #[test]
     fn the_default_configuration_file_is_the_default_configuration() {
         let config = ConfigFormat::Toml
-            .parse(include_str!("../default-config.toml"))
+            .parse::<Config>(include_str!("../default-config.toml"))
             .expect("a configuration");
 
         assert_eq!(config, Config::default());
-    }
-
-    #[test]
-    fn a_configuration_file_is_recognized_by_its_extension() {
-        assert_eq!(
-            ConfigFormat::of(Path::new("capture.toml")).ok(),
-            Some(ConfigFormat::Toml)
-        );
-        assert_eq!(
-            ConfigFormat::of(Path::new("capture.JSON")).ok(),
-            Some(ConfigFormat::Json)
-        );
-        assert!(ConfigFormat::of(Path::new("capture.yaml")).is_err());
-        assert!(ConfigFormat::of(Path::new("capture")).is_err());
     }
 
     #[test]
     fn a_configuration_file_sets_paths_bounds_and_flags() {
         let toml = ConfigFormat::Toml
-            .parse(
+            .parse::<Config>(
                 "max-capture-time = \"unbounded\"\ngzip-warc = true\n\
                  [session]\nrevisit-index = \"revisits.sqlite3\"\n",
             )
             .expect("a configuration");
         let json = ConfigFormat::Json
-            .parse(r#"{"max-response-length": "unbounded", "concurrency": 4}"#)
+            .parse::<Config>(r#"{"max-response-length": "unbounded", "concurrency": 4}"#)
             .expect("a configuration");
 
         assert_eq!(toml.max_capture_time, None);
@@ -313,7 +235,7 @@ mod tests {
     #[test]
     fn a_configuration_file_names_the_software_and_operator() {
         let config = ConfigFormat::Toml
-            .parse(
+            .parse::<Config>(
                 "[software]\nname = \"example-crawler\"\nversion = \"2.0\"\n\n\
                  [operator]\nname = \"Example Operator\"\nemail = \"operator@example.com\"\n",
             )
@@ -328,6 +250,6 @@ mod tests {
 
     #[test]
     fn a_configuration_file_cannot_hold_an_unknown_key() {
-        assert!(ConfigFormat::Toml.parse("gzip = true\n").is_err());
+        assert!(ConfigFormat::Toml.parse::<Config>("gzip = true\n").is_err());
     }
 }
