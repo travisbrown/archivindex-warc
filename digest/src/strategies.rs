@@ -1,16 +1,12 @@
 //! Proptest strategies derived from the crate's grammars and type tables.
 
+use archivindex_test_support::strategies::string_of;
 use proptest::prelude::*;
 use proptest::sample::select;
 
 use crate::label::compatibility_label;
 use crate::token::is_token_char;
 use crate::{Algorithm, Encoding};
-
-/// A string of one to `max` characters drawn from the given set.
-fn string_of(chars: Vec<char>, max: usize) -> impl Strategy<Value = String> {
-    proptest::collection::vec(select(chars), 1..=max).prop_map(|chars| chars.into_iter().collect())
-}
 
 /// The characters the `token` grammar allows.
 fn token_chars() -> Vec<char> {
