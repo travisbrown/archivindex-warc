@@ -111,7 +111,7 @@ impl Archiver {
                     pending.insert(index, (url, outcome));
                     while let Some((url, outcome)) = pending.remove(&next_to_record) {
                         if let Err(error) =
-                            collection.record(url.clone(), outcome, Origin::Seed, None, None)
+                            collection.record(url.clone(), outcome, Origin::Seed, None)
                         {
                             result = Err(error);
                             break;

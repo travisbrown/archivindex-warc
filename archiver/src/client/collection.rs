@@ -224,14 +224,13 @@ impl Collection {
         outcome: CaptureOutcome,
         origin: Origin,
         title: Option<&str>,
-        via: Option<&str>,
     ) -> Result<(), Error> {
         match outcome {
             CaptureOutcome::Captured {
                 exchanges,
                 redirects,
             } => {
-                let last = self.record_exchanges(exchanges, title, via)?;
+                let last = self.record_exchanges(exchanges, title, origin.via())?;
                 let FinalHop {
                     date,
                     status,
@@ -241,7 +240,6 @@ impl Collection {
                 self.summary.captures.push(CaptureSummary {
                     url,
                     origin,
-                    via: via.map(str::to_owned),
                     date,
                     status,
                     size,
@@ -250,13 +248,8 @@ impl Collection {
                 });
             }
             CaptureOutcome::Failed { exchanges, error } => {
-                self.record_exchanges(exchanges, title, via)?;
-                self.summary.failures.push(Failure {
-                    url,
-                    origin,
-                    via: via.map(str::to_owned),
-                    error,
-                });
+                self.record_exchanges(exchanges, title, origin.via())?;
+                self.summary.failures.push(Failure { url, origin, error });
             }
         }
 

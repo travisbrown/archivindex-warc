@@ -1,26 +1,18 @@
-//! Depth-first traversal, processor dispatch, and retry policy.
+//! The request loop, driver dispatch, and retry policy.
 
 use std::borrow::Cow;
-use std::collections::HashSet;
 use std::thread;
 use std::time::Duration;
 
 use archivindex_warc::record::header::truncated_type::TruncatedType;
 use archivindex_warc_revisit_index::Index as RevisitIndex;
 
-use super::{Capture, Inspection, Session, SessionSummary};
+use super::{Capture, Inspection, Request, Session, SessionSummary};
 use crate::Error;
 use crate::capture::{ArchiveSummary, CaptureControl, CaptureEvent, Origin};
 use crate::client::collection::Collection;
 use crate::client::notify_outcome;
 use crate::client::outcome::{CaptureOutcome, Exchange};
-
-/// A URL waiting to be requested.
-struct Queued {
-    url: String,
-    origin: Origin,
-    via: Option<String>,
-}
 
 enum AttemptOutcome {
     Finished(CaptureOutcome),
@@ -35,26 +27,18 @@ enum CrawlOutcome {
 }
 
 impl CrawlOutcome {
-    fn finish(
-        self,
-        archive: Result<ArchiveSummary, Error>,
-        unrequested: Vec<(String, Option<String>)>,
-    ) -> Result<SessionSummary, Error> {
+    fn finish(self, archive: Result<ArchiveSummary, Error>) -> Result<SessionSummary, Error> {
         match (self, archive) {
             (Self::Fatal(error), Err(_)) | (_, Err(error)) => Err(error),
-            (outcome, Ok(summary)) => Ok(outcome.into_summary(summary, unrequested)),
+            (outcome, Ok(summary)) => Ok(outcome.into_summary(summary)),
         }
     }
 
-    fn into_summary(
-        self,
-        summary: ArchiveSummary,
-        unrequested: Vec<(String, Option<String>)>,
-    ) -> SessionSummary {
+    fn into_summary(self, summary: ArchiveSummary) -> SessionSummary {
         let (seed_captures, extra_captures) = summary
             .captures
             .into_iter()
-            .partition(|capture| capture.origin == Origin::Seed);
+            .partition(|capture| matches!(capture.origin, Origin::Seed));
         let (fatal_error, cancelled) = match self {
             Self::Complete => (None, false),
             Self::Cancelled => (None, true),
@@ -67,13 +51,13 @@ impl CrawlOutcome {
             failures: summary.failures,
             fatal_error,
             cancelled,
-            unrequested,
         }
     }
 }
 
 impl Session<'_> {
-    /// Run the crawl until nothing is left to request and atomically publish its WARC file.
+    /// Run the crawl until the driver has nothing left to request and atomically publish its
+    /// WARC file.
     pub fn run(mut self) -> Result<SessionSummary, Error> {
         let persistent_index = self
             .revisit_index
@@ -87,13 +71,6 @@ impl Session<'_> {
             &self.output,
             persistent_index,
         )?;
-        let mut stack = self.given();
-        let mut seen = self.dedupe_discoveries.then(|| {
-            stack
-                .iter()
-                .map(|queued| queued.url.clone())
-                .collect::<HashSet<_>>()
-        });
         let mut capture_count = 0;
         let mut requested = false;
 
@@ -101,7 +78,7 @@ impl Session<'_> {
             if self.limit.is_some_and(|limit| capture_count >= limit) {
                 break CrawlOutcome::Complete;
             }
-            let Some(queued) = stack.pop() else {
+            let Some(Request { url, origin }) = self.driver.next() else {
                 break CrawlOutcome::Complete;
             };
             if requested {
@@ -111,17 +88,14 @@ impl Session<'_> {
             if self
                 .events
                 .as_mut()
-                .is_some_and(|events| events.started(&queued.url, 1))
+                .is_some_and(|events| events.started(&url, 1))
             {
-                stack.push(queued);
                 break CrawlOutcome::Cancelled;
             }
-            let mut outcome = match self.capture_with_retry(&queued.url, &collection) {
+            let mut outcome = match self.capture_with_retry(&url, &collection) {
                 AttemptOutcome::Finished(outcome) => outcome,
                 AttemptOutcome::Cancelled(exchanges) => {
-                    let recorded = collection.record_abandoned(exchanges, queued.via.as_deref());
-                    stack.push(queued);
-                    break match recorded {
+                    break match collection.record_abandoned(exchanges, origin.via()) {
                         Ok(()) => CrawlOutcome::Cancelled,
                         Err(error) => CrawlOutcome::Fatal(error),
                     };
@@ -130,34 +104,29 @@ impl Session<'_> {
             let cancel_after_write = self
                 .events
                 .as_mut()
-                .is_some_and(|events| notify_outcome(events.as_mut(), &queued.url, &outcome));
-            let (title, processor_error) = match &outcome {
+                .is_some_and(|events| notify_outcome(events.as_mut(), &url, &outcome));
+            let (title, driver_error) = match &outcome {
                 CaptureOutcome::Captured { exchanges, .. } => {
-                    let inspection =
-                        self.process_capture(&queued, exchanges, seen.as_mut(), &mut stack);
+                    let inspection = self.inspect(&url, exchanges);
                     if inspection.1.is_none() {
                         capture_count += 1;
                     }
                     inspection
                 }
-                CaptureOutcome::Failed { .. } => (None, None),
+                CaptureOutcome::Failed { error, .. } => {
+                    self.driver.failed(&url, error);
+                    (None, None)
+                }
             };
-            let stop_after_write = processor_error.is_some();
-            if let Some(error) = processor_error {
+            let stop_after_write = driver_error.is_some();
+            if let Some(error) = driver_error {
                 outcome = outcome.fail(error);
             }
-            if let Err(error) = collection.record(
-                queued.url.clone(),
-                outcome,
-                queued.origin,
-                title.as_deref(),
-                queued.via.as_deref(),
-            ) {
-                stack.push(queued);
+            if let Err(error) = collection.record(url.clone(), outcome, origin, title.as_deref()) {
                 break CrawlOutcome::Fatal(error);
             }
             if cancel_after_write
-                || self.event(CaptureEvent::Written { url: &queued.url }) == CaptureControl::Cancel
+                || self.event(CaptureEvent::Written { url: &url }) == CaptureControl::Cancel
             {
                 break CrawlOutcome::Cancelled;
             }
@@ -166,95 +135,30 @@ impl Session<'_> {
             }
         };
 
-        let unrequested = stack
-            .into_iter()
-            .rev()
-            .map(|queued| (queued.url, queued.via))
-            .collect();
-
-        crawl_outcome.finish(collection.finish_to_path(&self.output), unrequested)
+        crawl_outcome.finish(collection.finish_to_path(&self.output))
     }
 
-    /// The extras and seeds as a stack, filled in reverse so that the first extra is requested
-    /// first.
-    fn given(&mut self) -> Vec<Queued> {
-        let mut stack = Vec::with_capacity(self.seeds.len() + self.extras.len());
-        stack.extend(
-            std::mem::take(&mut self.seeds)
-                .into_iter()
-                .rev()
-                .map(|url| Queued {
-                    url,
-                    origin: Origin::Seed,
-                    via: None,
-                }),
-        );
-        stack.extend(
-            std::mem::take(&mut self.extras)
-                .into_iter()
-                .rev()
-                .map(|(url, via)| Queued {
-                    url,
-                    origin: Origin::Extra,
-                    via: Some(via),
-                }),
-        );
-
-        stack
-    }
-
-    /// Show a successful capture to the processor and push its discoveries, so that they are
-    /// requested next.
-    fn process_capture(
-        &mut self,
-        queued: &Queued,
-        exchanges: &[Exchange],
-        mut seen: Option<&mut HashSet<String>>,
-        stack: &mut Vec<Queued>,
-    ) -> (Option<String>, Option<Error>) {
-        let Some(processor) = self.processor.as_mut() else {
-            return (None, None);
-        };
+    /// Show a successful capture to the driver.
+    fn inspect(&mut self, url: &str, exchanges: &[Exchange]) -> (Option<String>, Option<Error>) {
         let last = exchanges
             .last()
             .expect("a capture without an error has at least one exchange");
-        let capture = Capture {
-            url: &queued.url,
+        let Inspection { title, error } = self.driver.inspect(&Capture {
+            url,
             final_url: last.captured.target_uri.as_str(),
-            origin: queued.origin,
             status: last.status,
             payload: last.payload(),
             response: &last.captured.response,
             response_metadata: Cow::Borrowed(&last.captured.response_metadata),
-        };
-        let Inspection {
-            mut links,
-            title,
-            error,
-        } = processor.inspect(&capture);
-
-        if let Some(message) = error {
-            return (
-                title,
-                Some(Error::Processor {
-                    url: queued.url.clone(),
-                    message,
-                }),
-            );
-        }
-
-        links.retain(|link| {
-            seen.as_deref_mut()
-                .is_none_or(|seen| seen.insert(link.clone()))
         });
-        // The stack is filled in reverse so that the first link is requested first.
-        stack.extend(links.into_iter().rev().map(|url| Queued {
-            url,
-            origin: Origin::Discovered,
-            via: Some(capture.final_url.to_owned()),
-        }));
 
-        (title, None)
+        (
+            title,
+            error.map(|message| Error::Driver {
+                url: url.to_owned(),
+                message,
+            }),
+        )
     }
 
     /// Capture a URL, revalidating the collection's earlier captures and retrying transient

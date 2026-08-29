@@ -1,8 +1,8 @@
-//! Depth-first crawl sessions written to a single WARC file.
+//! Driver-steered crawl sessions written to a single WARC file.
 //!
-//! A session requests its extras, then its seeds, in the order given, and follows the URLs its
-//! processor discovers depth first, in the order the processor returns them. A discovery that
-//! repeats a URL already given or discovered is skipped unless deduplication is turned off. A
+//! A session asks its [`Driver`] for one URL at a time, requests it, and shows the driver the
+//! capture before asking again, so the driver decides what is requested and in what order.
+//! [`Crawl`] is a driver that follows the links a [`CaptureProcessor`] discovers depth first. A
 //! repeated request for a URL whose earlier response carried an `ETag` or `Last-Modified`
 //! validator is conditional, so that the server may answer `304 Not Modified` instead of
 //! repeating the payload. Sessions retry transient failures, archiving the exchanges of every
@@ -18,7 +18,10 @@ use crate::capture::{
 use crate::config::SessionConfig;
 use crate::{Archiver, Error};
 
+mod crawl;
 mod run;
+
+pub use crawl::Crawl;
 
 /// A session identifier is empty or contains a character outside the RFC 3986 unreserved set.
 ///
@@ -31,15 +34,13 @@ pub struct SessionIdError(String);
 
 pub use crate::config::{Operator, Software};
 
-/// A successfully captured page shown to a [`CaptureProcessor`].
+/// A successfully captured page shown to a [`Driver`].
 #[derive(Clone, Debug)]
 pub struct Capture<'a> {
     /// The URL as requested.
     pub url: &'a str,
     /// The final URL after redirects.
     pub final_url: &'a str,
-    /// Where the URL came from.
-    pub origin: Origin,
     /// The final HTTP status: `304` when the server revalidated a repeated request instead of
     /// repeating its payload.
     pub status: u16,
@@ -52,17 +53,15 @@ pub struct Capture<'a> {
 }
 
 impl<'a> Capture<'a> {
-    /// Build a capture from recorded response bytes to drive a [`CaptureProcessor`] outside a
-    /// session.
+    /// Build a capture from recorded response bytes to show a [`Driver`] outside a session.
     ///
-    /// The status and headers are read from `response`, so a processor is shown exactly what a
+    /// The status and headers are read from `response`, so a driver is shown exactly what a
     /// session would show it for that recording. Returns `None` if `response` does not begin with
     /// a complete HTTP response head.
     #[must_use]
     pub fn new(
         url: &'a str,
         final_url: &'a str,
-        origin: Origin,
         payload: &'a [u8],
         response: &'a [u8],
     ) -> Option<Self> {
@@ -71,7 +70,6 @@ impl<'a> Capture<'a> {
         Some(Self {
             url,
             final_url,
-            origin,
             status: response_metadata.status,
             payload,
             response,
@@ -88,16 +86,36 @@ impl<'a> Capture<'a> {
     }
 }
 
-/// Discoveries and a page title produced by a processor.
+/// A URL a [`Driver`] asks its session to request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Request {
+    /// The URL to request.
+    pub url: String,
+    /// Whether the URL is a seed or an extra, and what the extra was requested via.
+    pub origin: Origin,
+}
+
+impl Request {
+    /// A request for a URL's own sake.
+    pub fn seed(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            origin: Origin::Seed,
+        }
+    }
+
+    /// A request made because of the capture of `via`, which the metadata record names.
+    pub fn extra(url: impl Into<String>, via: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            origin: Origin::Extra { via: via.into() },
+        }
+    }
+}
+
+/// A title and verdict a driver gives a capture.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Inspection {
-    /// URLs to request next, in order, before anything else waiting in the session.
-    ///
-    /// Each is recorded with the inspected capture's final URL as `via`. A URL already given or
-    /// discovered is skipped unless the session repeats discoveries, in which case a repeated
-    /// request is conditional on the validators of the URL's earlier response, and a
-    /// `304 Not Modified` answer reaches the processor with an empty payload.
-    pub links: Vec<String>,
     /// A proposed title, recorded in the capture's metadata record.
     pub title: Option<String>,
     /// A failure that makes the traversal incomplete and stops the session after recording this
@@ -106,6 +124,75 @@ pub struct Inspection {
 }
 
 impl Inspection {
+    /// Stop traversal with a driver error after recording the current capture.
+    #[must_use]
+    pub fn error(message: impl Into<String>) -> Self {
+        Self {
+            title: None,
+            error: Some(message.into()),
+        }
+    }
+}
+
+/// Steer a session by choosing each URL it requests.
+///
+/// The session calls [`next`](Self::next) whenever it is ready to request a URL, and shows the
+/// outcome of that request to [`inspect`](Self::inspect) or [`failed`](Self::failed) before
+/// calling `next` again. A driver keeps whatever state it needs to decide the next request:
+/// a queue of discovered links, a pagination cursor, or the results of earlier captures. A
+/// request the session was cancelled before completing is reported to neither method.
+///
+/// A `&mut D` is itself a driver, so that a driver's state can be read after its session runs.
+pub trait Driver {
+    /// The next URL to request, or `None` when the traversal is complete.
+    fn next(&mut self) -> Option<Request>;
+
+    /// Inspect the successful capture of the request last returned by [`next`](Self::next).
+    ///
+    /// A repeated request the server answered with `304 Not Modified` arrives with an empty
+    /// payload, since the earlier capture holds its unchanged payload.
+    fn inspect(&mut self, capture: &Capture<'_>) -> Inspection;
+
+    /// Note that the request last returned by [`next`](Self::next) exhausted its capture
+    /// attempts.
+    ///
+    /// The session continues with the next request, so a driver waiting on the failed URL must
+    /// move on rather than return it again. Does nothing by default.
+    fn failed(&mut self, url: &str, error: &Error) {
+        let _ = (url, error);
+    }
+}
+
+impl<D: Driver + ?Sized> Driver for &mut D {
+    fn next(&mut self) -> Option<Request> {
+        (**self).next()
+    }
+
+    fn inspect(&mut self, capture: &Capture<'_>) -> Inspection {
+        (**self).inspect(capture)
+    }
+
+    fn failed(&mut self, url: &str, error: &Error) {
+        (**self).failed(url, error);
+    }
+}
+
+/// Links, a title, and a verdict a [`CaptureProcessor`] produces for a capture.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Discovery {
+    /// URLs to request next, in order, before anything else waiting in the crawl.
+    ///
+    /// Each is recorded with the inspected capture's final URL as `via`. A URL already given or
+    /// discovered is skipped unless the crawl repeats discoveries.
+    pub links: Vec<String>,
+    /// A proposed title, recorded in the capture's metadata record.
+    pub title: Option<String>,
+    /// A failure that makes the traversal incomplete and stops the session after recording this
+    /// capture. Its links are not followed.
+    pub error: Option<String>,
+}
+
+impl Discovery {
     /// Stop traversal with a processor error after recording the current capture.
     #[must_use]
     pub fn error(message: impl Into<String>) -> Self {
@@ -116,10 +203,10 @@ impl Inspection {
     }
 }
 
-/// Inspect successful captures to discover URLs and supply titles.
+/// Inspect the successful captures of a [`Crawl`] to discover URLs and supply titles.
 pub trait CaptureProcessor {
     /// Inspect one successful capture.
-    fn inspect(&mut self, capture: &Capture<'_>) -> Inspection;
+    fn inspect(&mut self, capture: &Capture<'_>) -> Discovery;
 }
 
 /// Retry policy for transient network failures.
@@ -164,13 +251,6 @@ pub struct SessionSummary {
     pub fatal_error: Option<Error>,
     /// Whether an event sink requested a clean stop.
     pub cancelled: bool,
-    /// The URLs still to request when the session stopped, each with its `via`, in the order they
-    /// would have been requested. A capture that was cancelled or could not be recorded comes
-    /// first.
-    ///
-    /// A session resumes by passing the pairs with a `via` as its extras and the rest as its
-    /// seeds.
-    pub unrequested: Vec<(String, Option<String>)>,
 }
 
 impl SessionSummary {
@@ -191,39 +271,36 @@ impl SessionSummary {
     }
 }
 
-/// A crawl of extras and seeds whose processor may discover more URLs.
+/// A crawl of the URLs a [`Driver`] asks for.
 pub struct Session<'a> {
     archiver: Archiver,
     id: String,
     operator: Option<Operator>,
     software: Software,
-    seeds: Vec<String>,
-    extras: Vec<(String, String)>,
+    driver: Box<dyn Driver + 'a>,
     output: PathBuf,
-    processor: Option<Box<dyn CaptureProcessor + 'a>>,
     retry: RetryConfig,
     request_delay: Duration,
     limit: Option<usize>,
     revisit_index: Option<PathBuf>,
     events: Option<Box<dyn CaptureEventSink + 'a>>,
-    dedupe_discoveries: bool,
 }
 
 impl<'a> Session<'a> {
     /// Create a session, validating its URI-unreserved identifier.
     ///
     /// The software and operator recorded in `warcinfo` start as the archiver's
-    /// [`Config`](crate::Config), and the retry policy, request delay, revisit index, and
-    /// discovery deduplication as its [`SessionConfig`]; the builder methods override them.
+    /// [`Config`](crate::Config), and the retry policy, request delay, and revisit index as its
+    /// [`SessionConfig`]; the builder methods override them.
     ///
     /// # Errors
     ///
     /// Returns [`SessionIdError`] if `id` is empty or contains a character outside the URI
     /// unreserved set.
-    pub fn new<I: IntoIterator<Item = S>, S: AsRef<str>, P: Into<PathBuf>>(
+    pub fn new<D: Driver + 'a, P: Into<PathBuf>>(
         archiver: Archiver,
         id: &str,
-        seeds: I,
+        driver: D,
         output: P,
     ) -> Result<Self, SessionIdError> {
         if id.is_empty()
@@ -238,7 +315,6 @@ impl<'a> Session<'a> {
             retry,
             request_delay,
             revisit_index,
-            dedupe_discoveries,
         } = archiver.config.session.clone();
         let software = archiver.config.software.clone();
         let operator = archiver.config.operator.clone();
@@ -248,19 +324,13 @@ impl<'a> Session<'a> {
             id: id.to_owned(),
             operator,
             software,
-            seeds: seeds
-                .into_iter()
-                .map(|seed| seed.as_ref().to_owned())
-                .collect(),
-            extras: Vec::new(),
+            driver: Box::new(driver),
             output: output.into(),
-            processor: None,
             retry,
             request_delay,
             limit: None,
             revisit_index,
             events: None,
-            dedupe_discoveries,
         })
     }
 
@@ -287,42 +357,6 @@ impl<'a> Session<'a> {
             name: name.into(),
             email,
         });
-        self
-    }
-
-    /// Request `extras` before the seeds, each as a pair of the URL to capture and the URL it was
-    /// discovered on, which is recorded as `via` in its metadata record.
-    ///
-    /// Extras are requested in the order given, whether or not they repeat each other or a seed,
-    /// and their discoveries are followed like a seed's. A session that stopped early resumes
-    /// from the [`unrequested`](SessionSummary::unrequested) URLs of its summary.
-    #[must_use]
-    pub fn extras<I: IntoIterator<Item = (U, V)>, U: AsRef<str>, V: AsRef<str>>(
-        mut self,
-        extras: I,
-    ) -> Self {
-        self.extras = extras
-            .into_iter()
-            .map(|(url, via)| (url.as_ref().to_owned(), via.as_ref().to_owned()))
-            .collect();
-        self
-    }
-
-    /// Set the processor called for every successful capture.
-    #[must_use]
-    pub fn processor<P: CaptureProcessor + 'a>(mut self, processor: P) -> Self {
-        self.processor = Some(Box::new(processor));
-        self
-    }
-
-    /// Skip a discovered URL that repeats one already given or discovered, or request it again
-    /// when `dedupe` is false.
-    ///
-    /// Seeds and extras are requested as given either way. Without deduplication, a processor
-    /// is responsible for ending a crawl of pages that link to each other.
-    #[must_use]
-    pub const fn dedupe_discoveries(mut self, dedupe: bool) -> Self {
-        self.dedupe_discoveries = dedupe;
         self
     }
 
@@ -355,7 +389,7 @@ impl<'a> Session<'a> {
         self
     }
 
-    /// Limit successful requested-URL captures; failures do not count toward the limit.
+    /// Limit successful captures; failures do not count toward the limit.
     #[must_use]
     pub const fn limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
