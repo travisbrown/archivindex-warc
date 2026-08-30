@@ -10,6 +10,7 @@ use archivindex_warc::io::read::{self, WarcReader};
 use archivindex_warc::io::write::{self, Compression, WarcWriter};
 
 use crate::file::transform;
+use crate::header::{is_warcinfo, output_filename, set_filename};
 
 /// A failure while compressing a WARC file.
 #[derive(Debug, thiserror::Error)]
@@ -68,7 +69,8 @@ pub fn compress<R: BufRead, W: Write>(
 
 /// Compress the WARC file at `input` into the file at `output` at `level`.
 ///
-/// The records are compressed as by [`compress`], but written to `<output>.partial`, which must
+/// The records are compressed as by [`compress`]. Every `WARC-Filename` field in a warcinfo record
+/// is rewritten to the name of `output`. The records are written to `<output>.partial`, which must
 /// not already exist, and moved into place once the last one is written, so a failure leaves any
 /// file already at `output` as it was, and an output that is a hard link or symbolic link to the
 /// input leaves the input as it was.
@@ -79,9 +81,45 @@ pub fn compress<R: BufRead, W: Write>(
 /// read, and otherwise the error of the step that failed: opening, reading, creating, writing,
 /// flushing, or publishing.
 pub fn compress_path(input: &Path, level: u32, output: &Path) -> crate::Result<CompressSummary> {
+    compress_path_with_filename(input, level, output, true)
+}
+
+/// Compress the WARC file at `input`, keeping its warcinfo filenames unchanged.
+///
+/// This behaves as [`compress_path`] except that `WARC-Filename` fields are copied as read.
+///
+/// # Errors
+///
+/// Returns the errors described by [`compress_path`].
+pub fn compress_path_keeping_filename(
+    input: &Path,
+    level: u32,
+    output: &Path,
+) -> crate::Result<CompressSummary> {
+    compress_path_with_filename(input, level, output, false)
+}
+
+/// Compress a path, optionally rewriting warcinfo filenames to the output name.
+fn compress_path_with_filename(
+    input: &Path,
+    level: u32,
+    output: &Path,
+    rewrite_filename: bool,
+) -> crate::Result<CompressSummary> {
     let compression =
         Compression::gzip_with_level(level).map_err(crate::Error::CompressionLevel)?;
-    let summary = transform(&[input], output, compression, |_, record| Ok(Some(record)))?;
+    let filename = if rewrite_filename {
+        output_filename(output)
+    } else {
+        None
+    };
+    let summary = transform(&[input], output, compression, |_, mut record| {
+        if rewrite_filename && is_warcinfo(&record.header) {
+            set_filename(&mut record.header, filename.as_deref());
+        }
+
+        Ok(Some(record))
+    })?;
 
     Ok(CompressSummary {
         records: summary.records,
@@ -108,6 +146,20 @@ mod tests {
                 ("WARC-Date", "2024-01-01T00:00:00Z"),
             ],
             body,
+        )
+    }
+
+    /// A WARC 1.1 warcinfo record naming `filename`.
+    fn warcinfo(id: &str, filename: &str) -> Vec<u8> {
+        render(
+            &[
+                ("WARC-Type", "warcinfo"),
+                ("WARC-Record-ID", &format!("<urn:uuid:{id}>")),
+                ("WARC-Date", "2024-01-01T00:00:00Z"),
+                ("WARC-Filename", filename),
+                ("Content-Type", "application/warc-fields"),
+            ],
+            "software: example/1.0\r\n",
         )
     }
 
@@ -241,6 +293,52 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(read, records(&archive()));
+    }
+
+    #[test]
+    fn a_path_rewrites_every_warcinfo_filename_to_the_output_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input.warc");
+        let output = directory.path().join("output.warc.gz");
+        let mut contents = warcinfo("a", "first.warc");
+        contents.extend(warcinfo("b", "second.warc"));
+        std::fs::write(&input, contents).unwrap();
+
+        compress_path(&input, 6, &output).unwrap();
+
+        let records = crate::file::open(&output)
+            .unwrap()
+            .iter_raw_records()
+            .records()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(records.len(), 2);
+        for record in records {
+            assert_eq!(
+                record.header.get("WARC-Filename").map(<[u8]>::trim_ascii),
+                Some(b"output.warc.gz".as_slice())
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_can_keep_warcinfo_filenames() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input.warc");
+        let output = directory.path().join("output.warc.gz");
+        let contents = warcinfo("a", "input.warc");
+        std::fs::write(&input, &contents).unwrap();
+
+        compress_path_keeping_filename(&input, 6, &output).unwrap();
+
+        let record = crate::file::open(&output)
+            .unwrap()
+            .iter_raw_records()
+            .records()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(record, records(&contents).remove(0));
     }
 
     #[test]
