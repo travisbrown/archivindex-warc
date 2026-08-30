@@ -59,9 +59,13 @@ enum Command {
         )]
         level: u32,
 
-        /// The file to write, which must have a .gz extension.
+        /// Keep each warcinfo record's WARC-Filename field unchanged.
+        #[arg(long)]
+        keep_filename: bool,
+
+        /// The file to write, which must have a .gz extension; defaults to INPUT.gz.
         #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
-        output: PathBuf,
+        output: Option<PathBuf>,
     },
 
     /// Rewrite payload digests over HTTP message bodies as framed, transfer-coding included.
@@ -298,8 +302,12 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
         Command::Compress {
             input,
             level,
+            keep_filename,
             output,
-        } => compress(&input, level, &output, quiet)?,
+        } => {
+            let output = output.unwrap_or_else(|| default_compress_output(&input));
+            compress(&input, level, &output, keep_filename, quiet)?;
+        }
         Command::Export { input, format } => {
             let reader = archivindex_warc_ops::file::read(&input)?;
             let stdout = std::io::stdout().lock();
@@ -532,7 +540,13 @@ fn load_revisit_index(database: &Path, input: &Path, quiet: bool) -> Result<()> 
 }
 
 /// Compress `input` record by record into the gzip WARC at `output`.
-fn compress(input: &Path, level: u32, output: &Path, quiet: bool) -> Result<()> {
+fn compress(
+    input: &Path,
+    level: u32,
+    output: &Path,
+    keep_filename: bool,
+    quiet: bool,
+) -> Result<()> {
     if !archivindex_warc_ops::file::is_gzip(output) {
         bail!(
             "a compressed output must be named with a .gz extension: {}",
@@ -540,7 +554,11 @@ fn compress(input: &Path, level: u32, output: &Path, quiet: bool) -> Result<()> 
         );
     }
 
-    let summary = archivindex_warc_ops::compress::compress_path(input, level, output)?;
+    let summary = if keep_filename {
+        archivindex_warc_ops::compress::compress_path_keeping_filename(input, level, output)?
+    } else {
+        archivindex_warc_ops::compress::compress_path(input, level, output)?
+    };
 
     if !quiet {
         println!(
@@ -552,6 +570,14 @@ fn compress(input: &Path, level: u32, output: &Path, quiet: bool) -> Result<()> 
     }
 
     Ok(())
+}
+
+/// The default compressed output path, formed by appending `.gz` to all of `input`.
+fn default_compress_output(input: &Path) -> PathBuf {
+    let mut output = input.as_os_str().to_os_string();
+    output.push(".gz");
+
+    output.into()
 }
 
 /// Report every finding in `input`, returning the outcome the findings call for.
@@ -630,6 +656,7 @@ fn parse_text(value: &str) -> Result<Text, TextError> {
 mod tests {
     use std::path::Path;
 
+    use archivindex_test_support::warc::render;
     use clap::CommandFactory;
 
     use super::*;
@@ -689,15 +716,8 @@ mod tests {
 
     #[test]
     fn compress_defaults_its_level_and_bounds_it() {
-        let default = Cli::try_parse_from([
-            "archivindex-warc",
-            "compress",
-            "-i",
-            "input.warc",
-            "-o",
-            "output.warc.gz",
-        ])
-        .unwrap();
+        let default =
+            Cli::try_parse_from(["archivindex-warc", "compress", "-i", "input.warc"]).unwrap();
         let chosen = Cli::try_parse_from([
             "archivindex-warc",
             "compress",
@@ -709,12 +729,42 @@ mod tests {
             "output.warc.gz",
         ])
         .unwrap();
+        let kept = Cli::try_parse_from([
+            "archivindex-warc",
+            "compress",
+            "-i",
+            "input.warc",
+            "--keep-filename",
+            "-o",
+            "output.warc.gz",
+        ])
+        .unwrap();
 
         assert!(matches!(
             default.command,
-            Command::Compress { level: 6, .. }
+            Command::Compress {
+                level: 6,
+                keep_filename: false,
+                output: None,
+                ..
+            }
         ));
-        assert!(matches!(chosen.command, Command::Compress { level: 0, .. }));
+        assert!(matches!(
+            chosen.command,
+            Command::Compress {
+                level: 0,
+                keep_filename: false,
+                output: Some(output),
+                ..
+            } if output.as_path() == Path::new("output.warc.gz")
+        ));
+        assert!(matches!(
+            kept.command,
+            Command::Compress {
+                keep_filename: true,
+                ..
+            }
+        ));
         assert!(
             Cli::try_parse_from([
                 "archivindex-warc",
@@ -740,6 +790,60 @@ mod tests {
                 "output.warc.gz",
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn compress_defaults_its_output_to_the_input_path_plus_gz() {
+        assert_eq!(
+            default_compress_output(Path::new("somewhere/archive.warc")),
+            Path::new("somewhere/archive.warc.gz")
+        );
+        assert_eq!(
+            default_compress_output(Path::new("archive.warc.gz")),
+            Path::new("archive.warc.gz.gz")
+        );
+    }
+
+    #[test]
+    fn compress_writes_the_default_output_and_names_it_in_warcinfo() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("archive.warc");
+        std::fs::write(
+            &input,
+            render(
+                &[
+                    ("WARC-Type", "warcinfo"),
+                    ("WARC-Record-ID", "<urn:uuid:a>"),
+                    ("WARC-Date", "2024-01-01T00:00:00Z"),
+                    ("WARC-Filename", "old.warc"),
+                    ("Content-Type", "application/warc-fields"),
+                ],
+                "software: example/1.0\r\n",
+            ),
+        )
+        .unwrap();
+        let cli = Cli::try_parse_from([
+            "archivindex-warc",
+            "compress",
+            "-i",
+            input.to_str().unwrap(),
+        ])
+        .unwrap();
+
+        run(cli).unwrap();
+
+        let output = default_compress_output(&input);
+        let record = archivindex_warc_ops::file::open(&output)
+            .unwrap()
+            .iter_raw_records()
+            .records()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            record.header.get("WARC-Filename").map(<[u8]>::trim_ascii),
+            Some(b"archive.warc.gz".as_slice())
         );
     }
 

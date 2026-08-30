@@ -26,11 +26,13 @@ preserved.
 ## compress
 
 ```console
-cargo run --manifest-path cli/Cargo.toml -- compress -i input.warc -o output.warc.gz
+cargo run --manifest-path cli/Cargo.toml -- compress -i input.warc
 ```
 
-Compresses each record as a separate gzip member. The output name must end in `.gz`; use
-`--level` to choose a compression level from 0 through 9.
+Compresses each record as a separate gzip member. Every `WARC-Filename` field in a `warcinfo`
+record is rewritten to the output filename; use `--keep-filename` to leave these fields unchanged.
+The output defaults to the input path with `.gz` appended; use `--output` to choose another name,
+which must end in `.gz`. Use `--level` to choose a compression level from 0 through 9.
 
 ## digest-framed-payloads
 

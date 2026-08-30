@@ -1,6 +1,9 @@
 //! Header fields read by more than one operation.
 
+use std::path::Path;
+
 use archivindex_warc::parse::raw;
+use archivindex_warc::value::Text;
 
 /// Fields whose values are the identifiers of other records.
 pub const REFERENCE_FIELDS: [&str; 4] = [
@@ -50,6 +53,39 @@ pub fn normalize_id(value: &[u8]) -> &[u8] {
         .strip_prefix(b"<")
         .and_then(|inner| inner.strip_suffix(b">"))
         .unwrap_or(value)
+}
+
+/// The `WARC-Filename` value naming `output`, when its name can be written as one.
+///
+/// A name that is not valid UTF-8, or that no `TEXT` value can spell, has no accurate field value.
+pub(crate) fn output_filename(output: &Path) -> Option<Vec<u8>> {
+    let name = output.file_name()?.to_str()?;
+    let spelled = Text::parse(name.as_bytes()).ok()?;
+    let spelled = spelled.to_bytes();
+    let mut value = Vec::with_capacity(spelled.len() + 1);
+    value.push(b' ');
+    value.extend_from_slice(&spelled);
+
+    Some(value)
+}
+
+/// Name the file a warcinfo record is now in, dropping the field when it cannot be named.
+///
+/// WARC 1.1 clause 5.17 defines `WARC-Filename` as the name of the containing file, so a record
+/// written into a different output cannot keep the name of the file it was read from.
+pub(crate) fn set_filename(header: &mut raw::RecordHeader, filename: Option<&[u8]>) {
+    header.headers.retain_mut(|(name, value)| {
+        if !name.eq_ignore_ascii_case("WARC-Filename") {
+            return true;
+        }
+        let Some(filename) = filename else {
+            return false;
+        };
+        value.clear();
+        value.extend_from_slice(filename);
+
+        true
+    });
 }
 
 #[cfg(test)]

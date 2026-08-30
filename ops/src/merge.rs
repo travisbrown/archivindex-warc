@@ -19,11 +19,11 @@ use std::path::Path;
 
 use archivindex_warc::parse::raw;
 use archivindex_warc::record::fields::warcinfo::WarcinfoBody;
-use archivindex_warc::value::{Text, WarcDate};
+use archivindex_warc::value::WarcDate;
 use archivindex_warc::version::WarcVersion;
 
 use crate::file::{compression, is_stdin, open, transform};
-use crate::header::{REFERENCE_FIELDS, is_warcinfo, normalize_id};
+use crate::header::{REFERENCE_FIELDS, is_warcinfo, normalize_id, output_filename, set_filename};
 use crate::{Error, Result};
 
 /// Fields that vary between otherwise identical warcinfo records: the generated identifier, the
@@ -358,39 +358,6 @@ fn redirect_references(header: &mut raw::RecordHeader, redirects: &HashMap<Vec<u
             value.clone_from(replacement);
         }
     }
-}
-
-/// The `WARC-Filename` value naming the output, when its name can be written as one.
-///
-/// A name that is not valid UTF-8, or that no `TEXT` value can spell, has no accurate field value.
-fn output_filename(output: &Path) -> Option<Vec<u8>> {
-    let name = output.file_name()?.to_str()?;
-    let spelled = Text::parse(name.as_bytes()).ok()?;
-    let spelled = spelled.to_bytes();
-    let mut value = Vec::with_capacity(spelled.len() + 1);
-    value.push(b' ');
-    value.extend_from_slice(&spelled);
-
-    Some(value)
-}
-
-/// Name the file a warcinfo record is now in, dropping the field when it cannot be named.
-///
-/// WARC 1.1 clause 5.17 defines `WARC-Filename` as the name of the containing file, so a record
-/// written into the output cannot keep the name of the file it was read from.
-fn set_filename(header: &mut raw::RecordHeader, filename: Option<&[u8]>) {
-    header.headers.retain_mut(|(name, value)| {
-        if !name.eq_ignore_ascii_case("WARC-Filename") {
-            return true;
-        }
-        let Some(filename) = filename else {
-            return false;
-        };
-        value.clear();
-        value.extend_from_slice(filename);
-
-        true
-    });
 }
 
 /// The trimmed `WARC-Record-ID` value of a record.
