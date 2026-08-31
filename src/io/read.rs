@@ -253,6 +253,12 @@ macro_rules! located_iterator {
             pub const fn records(self) -> Records<Self> {
                 Records { located: self }
             }
+
+            /// Whether the records are read from a gzip stream, member by member.
+            #[must_use]
+            pub const fn is_gzip(&self) -> bool {
+                self.$($reading).+.is_gzip()
+            }
         }
     };
 }
@@ -276,6 +282,17 @@ enum Source<R> {
     /// The members of a gzip stream, decompressed.
     #[cfg(feature = "gzip")]
     Members(MemberReader<R>),
+}
+
+impl<R> Source<R> {
+    /// Whether the stream is a gzip stream, read member by member.
+    const fn is_gzip(&self) -> bool {
+        match self {
+            Self::Bytes(_) => false,
+            #[cfg(feature = "gzip")]
+            Self::Members(_) => true,
+        }
+    }
 }
 
 impl<R: BufRead> Source<R> {
@@ -801,6 +818,11 @@ impl<R> Reading<R> {
         } else {
             None
         }
+    }
+
+    /// Whether the records are read from a gzip stream, member by member.
+    const fn is_gzip(&self) -> bool {
+        self.reader.get().is_gzip()
     }
 }
 
@@ -2331,6 +2353,18 @@ mod gzip_tests {
             &[("WARC-Type", "response"), ("WARC-Target-URI", url)],
             body,
         )
+    }
+
+    /// Iterators at every representation level report whether they use gzip decoding, even before
+    /// reading a record.
+    #[test]
+    fn iterators_report_the_stream_they_read() {
+        let file: &[u8] = b"";
+
+        assert!(WarcReader::from_gzip(file).iter_raw_records().is_gzip());
+        assert!(WarcReader::from_gzip(file).iter_untyped_records().is_gzip());
+        assert!(!WarcReader::new(file).iter_raw_records().is_gzip());
+        assert!(!WarcReader::new(file).iter_untyped_records().is_gzip());
     }
 
     /// Records written one gzip member at a time read back as the records they were.

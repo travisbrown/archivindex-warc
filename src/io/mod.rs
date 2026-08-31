@@ -44,6 +44,10 @@ impl<R> Counted<R> {
         }
     }
 
+    pub(crate) const fn get(&self) -> &R {
+        &self.reader
+    }
+
     pub(crate) const fn get_mut(&mut self) -> &mut R {
         &mut self.reader
     }
