@@ -12,7 +12,7 @@ use fluent_uri::Uri;
 
 use crate::lint::{Linter, Violation};
 
-impl<R: BufRead> Linter<R> {
+impl<R: BufRead> Linter<'_, R> {
     /// Check that the file opens with a `warcinfo` record and that every other record names the
     /// closest one, that a `warcinfo` record names its collection and is in the file named for
     /// it, and that a `request` record targets the collection's host.
@@ -57,6 +57,8 @@ impl<R: BufRead> Linter<R> {
 
     /// Check that a `warcinfo` record names a well-formed collection and is in the file named for
     /// it, and remember the collection's host for the requests that follow.
+    ///
+    /// The file is named for the collection and the extension of the stream it is read from.
     fn check_collection(
         &mut self,
         index: usize,
@@ -85,18 +87,21 @@ impl<R: BufRead> Linter<R> {
             ),
         }
 
+        // `WARC-Filename` names the file holding the record, so a file read as it stands is named
+        // for itself rather than for the compressed output it may end up in.
+        let extension = if self.gzip { ".warc.gz" } else { ".warc" };
         let named_for_collection = header
             .filename
             .as_ref()
             .and_then(Text::to_str)
-            .and_then(|name| name.strip_suffix(".warc.gz"))
+            .and_then(|name| name.strip_suffix(extension))
             == Some(collection);
         if !named_for_collection {
             self.report(
                 index,
                 record_id,
                 Violation::WrongFilename {
-                    expected: format!("{collection}.warc.gz"),
+                    expected: format!("{collection}{extension}"),
                     found: header.filename.clone(),
                 },
             );
@@ -241,6 +246,39 @@ mod tests {
         );
     }
 
+    /// `WARC-Filename` names the file the record lies in, so the name that is right in the
+    /// compressed file is wrong in the uncompressed one it was compressed from, and the other
+    /// way about.
+    #[test]
+    fn a_file_is_named_for_the_stream_it_is_read_from() {
+        let rendered = capture()
+            .iter()
+            .map(|record| render(std::slice::from_ref(record)))
+            .collect::<Vec<_>>();
+        let members = rendered.iter().map(Vec::as_slice).collect::<Vec<_>>();
+
+        assert_eq!(
+            findings(&gzip_capture()),
+            [(
+                0,
+                Violation::WrongFilename {
+                    expected: FILENAME.to_owned(),
+                    found: Text::parse(GZIP_FILENAME.as_bytes()).ok()
+                }
+            )]
+        );
+        assert_eq!(
+            gzip_findings(&members),
+            [(
+                0,
+                Violation::WrongFilename {
+                    expected: GZIP_FILENAME.to_owned(),
+                    found: Text::parse(FILENAME.as_bytes()).ok()
+                }
+            )]
+        );
+    }
+
     #[test]
     fn a_collection_id_is_a_host_path_parts_and_a_timestamp() {
         for (collection, host) in [
@@ -260,7 +298,7 @@ mod tests {
             let identifier = other_id(index);
             let mut warcinfo = warcinfo_with_id(&identifier);
             warcinfo.body = format!("software: test\r\nisPartOf: {collection}\r\n");
-            records.push(warcinfo.set("WARC-Filename", &format!("{collection}.warc.gz")));
+            records.push(warcinfo.set("WARC-Filename", &format!("{collection}.warc")));
             if index == 0 {
                 records.extend(copies(&capture()[1..], 1).iter().map(|record| {
                     record

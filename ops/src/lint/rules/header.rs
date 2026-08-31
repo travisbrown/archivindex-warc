@@ -24,7 +24,7 @@ pub fn canonical_order_violation(header: &untyped::RecordHeader) -> Option<Viola
     })
 }
 
-impl<R: BufRead> Linter<R> {
+impl<R: BufRead> Linter<'_, R> {
     /// Report `order_violation`, found in the header as read, then check that no earlier record
     /// used this record's identifier and that the record is dated no earlier than the record
     /// before it, remembering both.

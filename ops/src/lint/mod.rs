@@ -32,8 +32,9 @@
 //!     precedes it.
 //! 12. Every `warcinfo` record names its collection in an `isPartOf` field, as a host, any number
 //!     of path parts, and a timestamp of digits, all joined by `-`, and its `WARC-Filename` is that
-//!     identifier followed by `.warc.gz`. A path part such as `en` holds no `.`, which tells it
-//!     from the host.
+//!     identifier followed by the extension of the file it is read from: `.warc.gz` for a gzip
+//!     file, and `.warc` for one read as it stands. A path part such as `en` holds no `.`, which
+//!     tells it from the host.
 //! 13. Every `request` record's target URI has, as its host, exactly the host of the collection
 //!     identifier named by the `warcinfo` record that most closely precedes it. A request that no
 //!     well-formed collection identifier governs is not held to this rule.
@@ -61,10 +62,17 @@
 //! Each rule a record breaks is one [`Finding`]. A record that breaks none is reported by its
 //! identifier alone.
 //!
+//! A pass also runs any rule handed to [`Linter::with_rule`], which holds a file to conventions
+//! this crate does not know: a project archiving one kind of site can check the shape its captures
+//! take without a pass of its own. An added rule sees every record the pass reads, in order,
+//! faults a record or the file as a whole, and reports as an error or a warning. What it reports
+//! joins the same results.
+//!
 //! The rules live in one module per family under `rules`, in that order; what they report is in
-//! `report`.
+//! `report`, and what an added rule reports through is in `rule`.
 
 mod report;
+mod rule;
 mod rules;
 
 #[cfg(test)]
@@ -78,7 +86,8 @@ use archivindex_warc::record::Record;
 use archivindex_warc::record::extension::NoExtension;
 use archivindex_warc::value::WarcDate;
 use fluent_uri::Uri;
-pub use report::{Checked, Finding, Violation};
+pub use report::{Checked, Custom, Finding, Severity, Subject, Violation};
+pub use rule::{Findings, Rule};
 use rules::capture::Pending;
 use rules::framing::Framing;
 use rules::header::canonical_order_violation;
@@ -89,8 +98,12 @@ use rules::header::canonical_order_violation;
 /// iteration, as it does for the reader. A record the standard refuses is reported and skipped:
 /// it takes a position in the file but is checked against no rule, and a capture waiting on it is
 /// forgotten without a finding.
-pub struct Linter<R> {
+pub struct Linter<'a, R> {
     records: UntypedIter<R>,
+    /// Whether the records are read from a gzip stream, which the file is named for.
+    gzip: bool,
+    /// The rules added to the pass, run after the rules this module defines.
+    rules: Vec<Box<dyn Rule + 'a>>,
     /// The position of the next record read.
     index: usize,
     /// The position of the record the gzip member being read holds first.
@@ -114,16 +127,22 @@ pub struct Linter<R> {
     queue: VecDeque<Checked>,
     /// A read error to yield once the results queued before it have been.
     deferred: Option<read::Error>,
+    /// Whether the end of the file has been settled.
+    finished: bool,
 }
 
-impl<R: BufRead> Linter<R> {
+impl<'a, R: BufRead> Linter<'a, R> {
     /// Lint the WARC records `reader` reads.
     ///
     /// The gzip framing of the file is checked when the reader places its records, as one made
     /// by [`WarcReader::from_gzip`] does.
     pub fn new(reader: WarcReader<R>) -> Self {
+        let records = reader.iter_untyped_records();
+
         Self {
-            records: reader.iter_untyped_records(),
+            gzip: records.is_gzip(),
+            records,
+            rules: Vec::new(),
             index: 0,
             member_first: 0,
             last_record: None,
@@ -135,7 +154,19 @@ impl<R: BufRead> Linter<R> {
             clean: None,
             queue: VecDeque::new(),
             deferred: None,
+            finished: false,
         }
+    }
+
+    /// Check every record against `rule` as well, after the rules this module defines.
+    ///
+    /// A rule added by mutable reference is borrowed for the life of the pass, so one that
+    /// gathers a summary beside its findings can be read once the pass is done with.
+    #[must_use]
+    pub fn with_rule(mut self, rule: impl Rule + 'a) -> Self {
+        self.rules.push(Box::new(rule));
+
+        self
     }
 
     /// The number of records consumed so far, counting unreadable ones.
@@ -165,9 +196,17 @@ impl<R: BufRead> Linter<R> {
         self.check_warcinfo(index, record);
         self.check_capture(index, record, expected);
         self.check_revisit(index, record);
+        self.check_rules(index, record);
         self.last_record = Some((index, record.core().record_id.clone()));
         if self.queue.len() == mark {
             self.clean = Some(record.core().record_id.clone());
+        }
+    }
+
+    /// Run the rules added to the pass over the record at `index`.
+    fn check_rules(&mut self, index: usize, record: &Record) {
+        for rule in &mut self.rules {
+            rule.check(index, record, &mut Findings::new(&mut self.queue));
         }
     }
 
@@ -188,11 +227,21 @@ impl<R: BufRead> Linter<R> {
     }
 
     /// Report a capture left waiting at the end of the file, and the blank lines it ends with.
+    ///
+    /// The iterator polls the records again once they run out, so this returns without reporting
+    /// after the first call: an added rule may report in [`Rule::finish`] whenever it is asked.
     fn finish(&mut self) {
+        if std::mem::replace(&mut self.finished, true) {
+            return;
+        }
+
         let mark = self.queue.len();
         self.finish_capture();
         self.finish_framing();
         self.settle_clean(mark);
+        for rule in &mut self.rules {
+            rule.finish(&mut Findings::new(&mut self.queue));
+        }
     }
 
     /// Take a record that cannot be checked out of the file, keeping its position.
@@ -200,6 +249,9 @@ impl<R: BufRead> Linter<R> {
     /// The capture expectation it might have met is forgotten without a finding, so the record
     /// before it can no longer be faulted.
     fn skip(&mut self, error: read::Error) {
+        for rule in &mut self.rules {
+            rule.skip(self.index);
+        }
         self.index += 1;
         self.pending = None;
         self.last_record = None;
@@ -215,14 +267,16 @@ impl<R: BufRead> Linter<R> {
     /// Queue a finding against a record by its position and identifier.
     fn report(&mut self, index: usize, record_id: &Uri<String>, violation: Violation) {
         self.queue.push_back(Err(Box::new(Finding {
-            index,
-            record_id: record_id.clone(),
+            subject: Some(Subject {
+                index,
+                record_id: record_id.clone(),
+            }),
             violation,
         })));
     }
 }
 
-impl<R: BufRead> Iterator for Linter<R> {
+impl<R: BufRead> Iterator for Linter<'_, R> {
     type Item = Result<Checked, read::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -280,13 +334,13 @@ mod tests {
             lint(&records),
             [
                 Ok(uri(WARCINFO_ID)),
-                Err(Box::new(Finding {
-                    index: 1,
-                    record_id: uri(REQUEST_ID),
-                    violation: Violation::RequestWithoutResponse {
+                fault(
+                    1,
+                    REQUEST_ID,
+                    Violation::RequestWithoutResponse {
                         found: Some("resource".to_owned()),
                     },
-                })),
+                ),
                 Ok(uri(OTHER_ID)),
             ]
         );
@@ -301,11 +355,11 @@ mod tests {
             lint(&records),
             [
                 Ok(uri(WARCINFO_ID)),
-                Err(Box::new(Finding {
-                    index: 1,
-                    record_id: uri(REQUEST_ID),
-                    violation: Violation::RequestWithoutResponse { found: None },
-                })),
+                fault(
+                    1,
+                    REQUEST_ID,
+                    Violation::RequestWithoutResponse { found: None },
+                ),
             ]
         );
     }
@@ -325,7 +379,7 @@ mod tests {
         assert!(matches!(
             &items[3],
             Ok(Err(finding))
-                if finding.index == 3
+                if finding.subject.as_ref().is_some_and(|subject| subject.index == 3)
                     && matches!(finding.violation, Violation::UnexpectedConcurrentTo { .. })
         ));
     }
@@ -339,6 +393,104 @@ mod tests {
 
         assert_eq!(items.len(), 4);
         assert!(matches!(items[3], Err(read::Error::UnexpectedEndOfBody)));
+    }
+
+    /// A rule that faults every metadata record and reports how long the file was.
+    #[derive(Default)]
+    struct Counting {
+        records: usize,
+        skipped: Vec<usize>,
+    }
+
+    impl Rule for Counting {
+        fn check(&mut self, index: usize, record: &Record, findings: &mut Findings<'_>) {
+            self.records += 1;
+            if matches!(record, Record::Metadata { .. }) {
+                findings.fault(
+                    index,
+                    &record.core().record_id,
+                    Custom::warning("metadata_record", "the record is a metadata record"),
+                );
+            }
+        }
+
+        fn finish(&mut self, findings: &mut Findings<'_>) {
+            findings.fault_file(Custom::error(
+                "record_count",
+                format!("the file holds {} records", self.records),
+            ));
+        }
+
+        fn skip(&mut self, index: usize) {
+            self.skipped.push(index);
+        }
+    }
+
+    /// An added rule faults a record the built-in rules pass, and reports against the file once
+    /// every record has been read.
+    #[test]
+    fn an_added_rule_reports_beside_the_built_in_rules() {
+        let mut rule = Counting::default();
+
+        let checked: Vec<Checked> = Linter::new(WarcReader::new(&render(&capture())[..]))
+            .with_rule(&mut rule)
+            .collect::<Result<_, _>>()
+            .expect("every record reads");
+
+        assert_eq!(
+            checked,
+            [
+                Ok(uri(WARCINFO_ID)),
+                Ok(uri(REQUEST_ID)),
+                Ok(uri(RESPONSE_ID)),
+                fault(
+                    3,
+                    METADATA_ID,
+                    Custom::warning("metadata_record", "the record is a metadata record").into(),
+                ),
+                Err(Box::new(Finding {
+                    subject: None,
+                    violation: Custom::error("record_count", "the file holds 4 records").into(),
+                })),
+            ]
+        );
+        assert_eq!(rule.records, 4);
+        assert!(rule.skipped.is_empty());
+    }
+
+    /// The end of the file settles once, however often an exhausted pass is polled, so a rule
+    /// reporting in `finish` reports there once rather than on every poll.
+    #[test]
+    fn an_added_rule_settles_the_end_of_the_file_once() {
+        let bytes = render(&capture());
+        let mut rule = Counting::default();
+        let mut linter = Linter::new(WarcReader::new(&bytes[..])).with_rule(&mut rule);
+
+        // Bounded, so a pass that reports forever fails here instead of running out of memory.
+        let checked = linter.by_ref().take(64).count();
+
+        assert_eq!(checked, 5);
+        assert!(linter.next().is_none());
+        assert!(linter.next().is_none());
+    }
+
+    /// A record the pass cannot read is checked against no added rule either.
+    #[test]
+    fn an_added_rule_is_told_of_a_record_that_cannot_be_read() {
+        let mut records = capture();
+        records[2] = records[2].clone().set("WARC-Date", "yesterday");
+        let mut rule = Counting::default();
+
+        let items: Vec<_> = Linter::new(WarcReader::new(&render(&records)[..]))
+            .with_rule(&mut rule)
+            .collect();
+
+        // The two records that read, the read error, the finding against the metadata record,
+        // and the added rule's findings against that record and against the file.
+        assert_eq!(items.len(), 6);
+        assert!(matches!(items[2], Err(read::Error::Untyped(_))));
+        assert_eq!(rule.records, 3);
+        assert_eq!(rule.skipped, [2]);
     }
 
     #[test]
@@ -358,7 +510,11 @@ mod tests {
             checked
                 .into_iter()
                 .filter_map(Result::err)
-                .map(|finding| (finding.index, finding.violation))
+                .map(|finding| {
+                    let subject = finding.subject.expect("the finding is against a record");
+
+                    (subject.index, finding.violation)
+                })
                 .collect::<Vec<_>>(),
             [
                 (

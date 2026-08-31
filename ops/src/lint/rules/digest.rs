@@ -8,7 +8,7 @@ use archivindex_warc::record::{BlockError, Record};
 use super::has_http_target;
 use crate::lint::{Linter, Violation};
 
-impl<R: BufRead> Linter<R> {
+impl<R: BufRead> Linter<'_, R> {
     /// Check that a record declares the digests its block calls for, and that each is the digest
     /// of what it covers.
     ///

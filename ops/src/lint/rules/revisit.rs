@@ -10,7 +10,7 @@ use archivindex_warc::record::header::{RevisitHeader, RevisitProfile};
 
 use crate::lint::{Linter, Violation};
 
-impl<R: BufRead> Linter<R> {
+impl<R: BufRead> Linter<'_, R> {
     /// Check that a `revisit` record declares the truncation its block is, carries every
     /// `WARC-Refers-To` field, and names in `WARC-Refers-To` a record that precedes it.
     pub(crate) fn check_revisit(&mut self, index: usize, record: &Record) {

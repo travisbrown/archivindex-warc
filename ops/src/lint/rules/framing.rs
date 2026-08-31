@@ -27,7 +27,7 @@ struct Members {
     count: u64,
 }
 
-impl<R: BufRead> Linter<R> {
+impl<R: BufRead> Linter<'_, R> {
     /// Where the record just read sat in the file.
     ///
     /// The members are reported only for a file the reader places its records in.
@@ -102,7 +102,7 @@ mod tests {
     /// A compressed file is written one record to a member, which is what the rule asks for.
     #[test]
     fn each_record_lies_in_a_gzip_member_of_its_own() {
-        let records = capture()
+        let records = gzip_capture()
             .iter()
             .map(|record| render(std::slice::from_ref(record)))
             .collect::<Vec<_>>();
@@ -115,7 +115,7 @@ mod tests {
     /// record but the one its member holds first.
     #[test]
     fn records_sharing_a_gzip_member_are_reported() {
-        let records = capture();
+        let records = gzip_capture();
 
         assert_eq!(
             gzip_findings(&[&render(&records)]),
@@ -130,7 +130,7 @@ mod tests {
     /// A record whose octets are split is reported, and the record after it still begins a member.
     #[test]
     fn a_record_split_across_gzip_members_is_reported() {
-        let records = capture();
+        let records = gzip_capture();
         let warcinfo = render(&records[..1]);
         let request = render(&records[1..2]);
         let (opening, rest) = request.split_at(request.len() / 2);
