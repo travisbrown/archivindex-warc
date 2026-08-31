@@ -50,7 +50,7 @@ impl Slot {
     }
 }
 
-impl<R: BufRead> Linter<R> {
+impl<R: BufRead> Linter<'_, R> {
     /// Resolve a waiting capture expectation against the record just read.
     ///
     /// Returns the expectation when this record is the kind it waited for. Otherwise the record

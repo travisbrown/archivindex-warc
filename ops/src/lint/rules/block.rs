@@ -8,7 +8,7 @@ use archivindex_warc::value::MediaType;
 use super::has_http_target;
 use crate::lint::{Linter, Violation};
 
-impl<R: BufRead> Linter<R> {
+impl<R: BufRead> Linter<'_, R> {
     /// Check that a record with a block declares the `Content-Type` its type calls for.
     pub(crate) fn check_block(&mut self, index: usize, record: &Record) {
         match &record.core().content_type {

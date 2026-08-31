@@ -6,6 +6,97 @@ use archivindex_warc::parse::untyped::name::Field;
 use archivindex_warc::value::{LabelledDigest, MediaType, Text, WarcDate};
 use fluent_uri::Uri;
 
+/// Whether a finding reports a rule every file is held to, or a convention a file is better for
+/// following.
+///
+/// Every rule this crate defines is an error. A rule added to a pass chooses.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    /// A rule the file breaks.
+    #[default]
+    Error,
+    /// A convention the file does not follow.
+    Warning,
+}
+
+impl Display for Severity {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+        })
+    }
+}
+
+/// A rule defined outside this crate, as a lint pass reports it.
+///
+/// A rule added to a pass names and describes what it reports, since this crate knows neither.
+/// The name belongs to the rule that reports it and should tell it from the names of the rules
+/// this crate defines, which [`Violation::rule`] lists.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct Custom {
+    /// The name of the rule, as the serialized form writes it.
+    rule: String,
+    /// Whether breaking it is an error or a warning.
+    #[serde(skip_serializing_if = "is_error")]
+    severity: Severity,
+    /// What the rule reports, as the text form shows it.
+    message: String,
+}
+
+impl Custom {
+    /// A rule the file is held to, broken, named as the serialized form writes it.
+    #[must_use]
+    pub fn error(rule: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            rule: rule.into(),
+            severity: Severity::Error,
+            message: message.into(),
+        }
+    }
+
+    /// A convention the file is better for following, not followed.
+    #[must_use]
+    pub fn warning(rule: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            rule: rule.into(),
+            severity: Severity::Warning,
+            message: message.into(),
+        }
+    }
+
+    /// The name of the rule, as the serialized form writes it.
+    #[must_use]
+    pub fn rule(&self) -> &str {
+        &self.rule
+    }
+
+    /// Whether breaking the rule is an error or a warning.
+    #[must_use]
+    pub const fn severity(&self) -> Severity {
+        self.severity
+    }
+
+    /// What the rule reports.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl Display for Custom {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl From<Custom> for Violation {
+    fn from(custom: Custom) -> Self {
+        Self::Custom(custom)
+    }
+}
+
 /// A rule a record breaks.
 ///
 /// The module documentation lists the rules. The fields carry what the rule expected and what the
@@ -149,8 +240,8 @@ pub enum Violation {
         /// The collection identifier the record names.
         found: String,
     },
-    /// A `warcinfo` record's `WARC-Filename` is not its collection identifier followed by
-    /// `.warc.gz`.
+    /// A `warcinfo` record's `WARC-Filename` is not its collection identifier followed by the
+    /// extension of the file it is read from.
     #[error("`WARC-Filename` should be `{expected}`, but {}", filename(found.as_ref()))]
     WrongFilename {
         /// The file name the collection identifier calls for.
@@ -239,12 +330,16 @@ pub enum Violation {
         #[serde(serialize_with = "serialize_display")]
         found: Uri<String>,
     },
+    /// A rule a rule added to the pass defines.
+    #[error("{0}")]
+    #[serde(untagged)]
+    Custom(Custom),
 }
 
 impl Violation {
     /// The name of the rule this breaks, as the serialized form writes it.
     #[must_use]
-    pub const fn rule(&self) -> &'static str {
+    pub fn rule(&self) -> &str {
         match self {
             Self::SharedGzipMember { .. } => "shared_gzip_member",
             Self::SplitGzipMember { .. } => "split_gzip_member",
@@ -278,6 +373,17 @@ impl Violation {
             Self::UndeclaredRevisitTruncation { .. } => "undeclared_revisit_truncation",
             Self::MissingRefersToFields { .. } => "missing_refers_to_fields",
             Self::RefersToUnknownRecord { .. } => "refers_to_unknown_record",
+            Self::Custom(custom) => custom.rule(),
+        }
+    }
+
+    /// Whether breaking this rule is an error or a warning.
+    #[must_use]
+    pub const fn severity(&self) -> Severity {
+        if let Self::Custom(custom) = self {
+            custom.severity()
+        } else {
+            Severity::Error
         }
     }
 }
@@ -391,6 +497,13 @@ fn serialize_field_names<S: serde::ser::Serializer>(
     serializer.collect_seq(fields.iter().map(|field| field.standard_name()))
 }
 
+/// Whether a severity is the one every rule this crate defines reports.
+// `skip_serializing_if` hands the field over as it is declared, so this takes a reference.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_error(severity: &Severity) -> bool {
+    matches!(severity, Severity::Error)
+}
+
 /// Describe a target URI's host in a message.
 fn host(found: Option<&str>) -> String {
     found.map_or_else(
@@ -399,18 +512,27 @@ fn host(found: Option<&str>) -> String {
     )
 }
 
-/// One rule one record breaks.
-///
-/// The serialized form is one flat object: the position, the identifier, the rule's name, and
-/// whatever the rule reports.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, thiserror::Error)]
-pub struct Finding {
+/// The record a finding is against.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct Subject {
     /// The record's zero-based position in the file, counting records that failed to read.
     pub index: usize,
     /// The record's `WARC-Record-ID`.
     #[serde(serialize_with = "serialize_display")]
     pub record_id: Uri<String>,
-    /// The rule the record breaks.
+}
+
+/// One rule one record breaks, or one the file breaks that no one record accounts for.
+///
+/// The serialized form is one flat object: the position and identifier of the record the finding
+/// is against, if one is, then the rule's name and whatever the rule reports. A warning names its
+/// severity; an error, which every rule this crate defines reports, does not.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, thiserror::Error)]
+pub struct Finding {
+    /// The record the finding is against, or `None` for a rule the file breaks.
+    #[serde(flatten)]
+    pub subject: Option<Subject>,
+    /// The rule broken.
     #[serde(flatten)]
     #[source]
     pub violation: Violation,
@@ -418,11 +540,21 @@ pub struct Finding {
 
 impl Display for Finding {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "record {} ({}): {}",
-            self.index, self.record_id, self.violation
-        )
+        match &self.subject {
+            Some(subject) => write!(
+                formatter,
+                "record {} ({})",
+                subject.index, subject.record_id
+            )?,
+            None => formatter.write_str("the file")?,
+        }
+
+        let severity = self.violation.severity();
+        if severity == Severity::Error {
+            write!(formatter, ": {}", self.violation)
+        } else {
+            write!(formatter, ": {severity}: {}", self.violation)
+        }
     }
 }
 
@@ -442,8 +574,10 @@ mod tests {
     #[test]
     fn a_finding_states_its_record_and_rule() {
         let finding = Finding {
-            index: 2,
-            record_id: uri(RESPONSE_ID),
+            subject: Some(Subject {
+                index: 2,
+                record_id: uri(RESPONSE_ID),
+            }),
             violation: Violation::WrongConcurrentTo {
                 expected: uri(REQUEST_ID),
                 found: vec![],
@@ -521,12 +655,66 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_custom_finding_states_its_severity_and_message() {
+        let record = Finding {
+            subject: Some(Subject {
+                index: 2,
+                record_id: uri(RESPONSE_ID),
+            }),
+            violation: Custom::warning("late_page", "page 2 was captured before page 1").into(),
+        };
+        let file = Finding {
+            subject: None,
+            violation: Custom::error("missing_probe", "the posts probe is missing").into(),
+        };
+
+        assert_eq!(
+            record.to_string(),
+            format!("record 2 ({RESPONSE_ID}): warning: page 2 was captured before page 1")
+        );
+        assert_eq!(file.to_string(), "the file: the posts probe is missing");
+        assert_eq!(record.violation.rule(), "late_page");
+        assert_eq!(record.violation.severity(), Severity::Warning);
+        assert_eq!(file.violation.severity(), Severity::Error);
+    }
+
+    /// A custom finding serializes as the flat object its own rule name tags, and a finding
+    /// against no record carries no position.
+    #[test]
+    fn serializes_a_custom_finding_as_a_flat_object() {
+        let record = Finding {
+            subject: Some(Subject {
+                index: 2,
+                record_id: uri(RESPONSE_ID),
+            }),
+            violation: Custom::warning("late_page", "page 2 was captured before page 1").into(),
+        };
+        let file = Finding {
+            subject: None,
+            violation: Custom::error("missing_probe", "the posts probe is missing").into(),
+        };
+
+        assert_eq!(
+            serde_json::to_string(&record).expect("a finding serializes"),
+            format!(
+                r#"{{"index":2,"record_id":"{RESPONSE_ID}","rule":"late_page","severity":"warning","message":"page 2 was captured before page 1"}}"#
+            )
+        );
+        assert_eq!(
+            serde_json::to_string(&file).expect("a finding serializes"),
+            r#"{"rule":"missing_probe","message":"the posts probe is missing"}"#
+        );
+    }
+
     /// A finding serializes as one flat object naming the rule it reports.
     #[test]
     fn serializes_a_finding_as_a_flat_object() {
         let finding = Finding {
-            index: 2,
-            record_id: uri(RESPONSE_ID),
+            subject: Some(Subject {
+                index: 2,
+                record_id: uri(RESPONSE_ID),
+            }),
             violation: Violation::WrongTargetUri {
                 expected: uri(TARGET),
                 found: None,

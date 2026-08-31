@@ -10,7 +10,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use fluent_uri::Uri;
 
-use super::{Checked, Finding, Linter, Violation};
+use super::{Checked, Finding, Linter, Subject, Violation};
 
 pub(super) const WARCINFO_ID: &str = "urn:uuid:aaaaaaaa-0000-4000-8000-000000000000";
 pub(super) const REQUEST_ID: &str = "urn:uuid:bbbbbbbb-0000-4000-8000-000000000000";
@@ -19,7 +19,10 @@ pub(super) const METADATA_ID: &str = "urn:uuid:dddddddd-0000-4000-8000-000000000
 pub(super) const OTHER_ID: &str = "urn:uuid:eeeeeeee-0000-4000-8000-000000000000";
 pub(super) const HOST: &str = "example.com";
 pub(super) const COLLECTION: &str = "example.com-20240401120000";
-pub(super) const FILENAME: &str = "example.com-20240401120000.warc.gz";
+/// The name of the file the fixtures are read from, which is uncompressed.
+pub(super) const FILENAME: &str = "example.com-20240401120000.warc";
+/// The name of the same file compressed, which the fixtures read as a gzip stream are named for.
+pub(super) const GZIP_FILENAME: &str = "example.com-20240401120000.warc.gz";
 pub(super) const TARGET: &str = "https://example.com/";
 pub(super) const DATE: &str = "2024-04-01T12:00:00Z";
 /// What a fixture writes where the digest of the field's subject belongs, which rendering
@@ -280,9 +283,30 @@ pub(super) fn faults(checked: Vec<Checked>) -> Vec<(usize, Violation)> {
         .map(|finding| {
             assert_eq!(serialized_rule(&finding), finding.violation.rule());
 
-            (finding.index, finding.violation)
+            let subject = finding.subject.expect("the finding is against a record");
+
+            (subject.index, finding.violation)
         })
         .collect()
+}
+
+/// A finding against the record at `index`.
+pub(super) fn fault(index: usize, record_id: &str, violation: Violation) -> Checked {
+    Err(Box::new(Finding {
+        subject: Some(Subject {
+            index,
+            record_id: uri(record_id),
+        }),
+        violation,
+    }))
+}
+
+/// A capture in the compressed file its `warcinfo` record names, for a pass over a gzip stream.
+pub(super) fn gzip_capture() -> Vec<TestRecord> {
+    let mut records = capture();
+    records[0] = records[0].clone().set("WARC-Filename", GZIP_FILENAME);
+
+    records
 }
 
 /// The members spelled as one gzip stream.
