@@ -78,9 +78,10 @@ impl Session<'_> {
             if self.limit.is_some_and(|limit| capture_count >= limit) {
                 break CrawlOutcome::Complete;
             }
-            let Some(Request { url, origin }) = self.driver.next() else {
+            let Some(request) = self.driver.next() else {
                 break CrawlOutcome::Complete;
             };
+            let Request { url, origin, .. } = &request;
             if requested {
                 thread::sleep(self.request_delay);
             }
@@ -88,11 +89,11 @@ impl Session<'_> {
             if self
                 .events
                 .as_mut()
-                .is_some_and(|events| events.started(&url, 1))
+                .is_some_and(|events| events.started(url, 1))
             {
                 break CrawlOutcome::Cancelled;
             }
-            let mut outcome = match self.capture_with_retry(&url, &collection) {
+            let mut outcome = match self.capture_with_retry(&request, &collection) {
                 AttemptOutcome::Finished(outcome) => outcome,
                 AttemptOutcome::Cancelled(exchanges) => {
                     break match collection.record_abandoned(exchanges, origin.via()) {
@@ -104,17 +105,17 @@ impl Session<'_> {
             let cancel_after_write = self
                 .events
                 .as_mut()
-                .is_some_and(|events| notify_outcome(events.as_mut(), &url, &outcome));
+                .is_some_and(|events| notify_outcome(events.as_mut(), url, &outcome));
             let (title, driver_error) = match &outcome {
                 CaptureOutcome::Captured { exchanges, .. } => {
-                    let inspection = self.inspect(&url, exchanges);
+                    let inspection = self.inspect(url, exchanges);
                     if inspection.1.is_none() {
                         capture_count += 1;
                     }
                     inspection
                 }
                 CaptureOutcome::Failed { error, .. } => {
-                    self.driver.failed(&url, error);
+                    self.driver.failed(url, error);
                     (None, None)
                 }
             };
@@ -122,11 +123,13 @@ impl Session<'_> {
             if let Some(error) = driver_error {
                 outcome = outcome.fail(error);
             }
-            if let Err(error) = collection.record(url.clone(), outcome, origin, title.as_deref()) {
+            if let Err(error) =
+                collection.record(url.clone(), outcome, origin.clone(), title.as_deref())
+            {
                 break CrawlOutcome::Fatal(error);
             }
             if cancel_after_write
-                || self.event(CaptureEvent::Written { url: &url }) == CaptureControl::Cancel
+                || self.event(CaptureEvent::Written { url }) == CaptureControl::Cancel
             {
                 break CrawlOutcome::Cancelled;
             }
@@ -165,10 +168,19 @@ impl Session<'_> {
     /// failures, retryable statuses, and responses cut short by a lost connection or an exceeded
     /// time bound, with exponential backoff.
     ///
+    /// A request whose method is not idempotent is attempted once, whatever the configuration
+    /// allows: the server may have acted on it before the response was lost, and repeating it
+    /// would ask for that action again.
+    ///
     /// The exchanges every attempt completed are returned in order, ahead of the final attempt's,
     /// so that the WARC file holds each retried response.
-    fn capture_with_retry(&mut self, url: &str, collection: &Collection) -> AttemptOutcome {
-        let attempts = self.retry.attempts.max(1);
+    fn capture_with_retry(&mut self, request: &Request, collection: &Collection) -> AttemptOutcome {
+        let url = request.url.as_str();
+        let attempts = if request.method.is_idempotent() {
+            self.retry.attempts.max(1)
+        } else {
+            1
+        };
         let mut delays = RetryDelays::new(&self.retry);
         let mut earlier = Vec::new();
 
@@ -182,7 +194,8 @@ impl Session<'_> {
                 return AttemptOutcome::Cancelled(earlier);
             }
             let last = attempt + 1 == attempts;
-            let (exchanges, delay) = match self.archiver.capture(url, Some(collection)) {
+            let (exchanges, delay) = match self.archiver.capture_request(request, Some(collection))
+            {
                 CaptureOutcome::Failed { exchanges, error } if is_transient(&error) && !last => {
                     (exchanges, delays.backoff)
                 }

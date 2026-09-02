@@ -9,13 +9,17 @@ use archivindex_warc::value::{DigestFormat, LabelledDigest, WarcDate, WarcDatePr
 use archivindex_warc_revisit_index::payload::RevisitTarget;
 use archivindex_warc_revisit_index::resource::{ResourceKey, ResourceState, declared_vary};
 use fluent_uri::Uri;
-use http::StatusCode;
-use http::header::{COOKIE, HeaderMap, HeaderValue, IF_MODIFIED_SINCE, IF_NONE_MATCH};
+use http::header::{
+    AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, HeaderMap, HeaderValue,
+    IF_MODIFIED_SINCE, IF_NONE_MATCH, PROXY_AUTHORIZATION, TRANSFER_ENCODING,
+};
+use http::{Method, StatusCode};
 use url::{Position, Url};
 
 use super::challenge::{self, Challenge};
 use super::collection::Collection;
 use crate::recorder::CapturedExchange;
+use crate::session::Request;
 use crate::{Archiver, Error};
 
 /// The number of challenges answered for one URL before its response is recorded as it stands.
@@ -81,6 +85,8 @@ pub const DATE_PRECISION: WarcDatePrecision = WarcDatePrecision::Fraction(6);
 pub struct Exchange {
     /// The capture date at the recorded precision, shared by the WARC records.
     pub date: WarcDate,
+    /// The method the request was sent with.
+    pub method: Method,
     pub status: u16,
     /// The decoded entity body when it differs from the stored body.
     decoded: Option<Vec<u8>>,
@@ -97,6 +103,7 @@ impl Exchange {
     /// Record a captured exchange, decoding and digesting its entity body once.
     pub fn new(
         captured: CapturedExchange,
+        method: &Method,
         revalidated: Option<RevisitTarget>,
         format: DigestFormat,
     ) -> Self {
@@ -117,6 +124,7 @@ impl Exchange {
 
         Self {
             date: WarcDate::new(captured.date, DATE_PRECISION),
+            method: method.clone(),
             status: captured.response_metadata.status,
             decoded,
             payload_digest,
@@ -144,9 +152,16 @@ impl Exchange {
             })
     }
 
-    /// The resource key for the recorded target URI.
-    pub fn resource_key(&self) -> ResourceKey {
-        ResourceKey::new(self.captured.target_uri.clone())
+    /// The resource key for the recorded target URI, when the request asked for a shared
+    /// representation of it.
+    ///
+    /// Only `GET` and `HEAD` do. Another method's response describes the outcome of acting on the
+    /// resource rather than the bytes a later request will be given, so storing it as the URI's
+    /// state would have the next conditional `GET` revisit a payload it never received. This is
+    /// the write side of the restriction the archiver applies when it reads that state back to
+    /// build an [`Original`].
+    pub fn resource_key(&self) -> Option<ResourceKey> {
+        revalidatable(&self.method).then(|| ResourceKey::new(self.captured.target_uri.clone()))
     }
 
     /// The response's `Vary` field, with any several lines it was sent as combined.
@@ -203,25 +218,10 @@ pub fn request_field<'a>(headers: &'a HeaderMap, name: &str) -> Option<Cow<'a, s
     combined_field(headers.get_all(name).iter().map(HeaderValue::as_bytes))
 }
 
-/// A request's value for `name`, counting the cookie the jar adds to the configured fields.
-///
-/// The `Cookie` field is injected per request from the challenge jar, so a response declaring
-/// `Vary: Cookie` is selected by a value the configured fields do not hold.
-fn sent_field<'a>(
-    headers: &'a HeaderMap,
-    cookie: Option<&'a HeaderValue>,
-    name: &str,
-) -> Option<Cow<'a, str>> {
-    cookie
-        .filter(|_| name.eq_ignore_ascii_case(COOKIE.as_str()))
-        .map_or_else(
-            || request_field(headers, name),
-            |cookie| {
-                std::str::from_utf8(cookie.as_bytes())
-                    .ok()
-                    .map(Cow::Borrowed)
-            },
-        )
+/// Whether a method asks for a shared representation of its target, which is the state a
+/// collection revalidates against.
+const fn revalidatable(method: &Method) -> bool {
+    matches!(*method, Method::GET | Method::HEAD)
 }
 
 impl Original {
@@ -230,16 +230,16 @@ impl Original {
     /// Returns `None` when `request` does not select the representation the state was stored for:
     /// its validators describe other bytes, and a server answering `304 Not Modified` to them
     /// would have the archiver record a revisit of a payload this request never received.
+    ///
+    /// `request` holds every field the request will send, the resolved `Cookie` included, so a
+    /// field sent as several lines is selected by their combined value, as the recorded request
+    /// resolves it.
     pub fn from_state(
         state: ResourceState,
         canonical: Option<RevisitTarget>,
         request: &HeaderMap,
-        cookie: Option<&HeaderValue>,
     ) -> Option<Self> {
-        if !state
-            .variance
-            .matches(|name| sent_field(request, cookie, name))
-        {
+        if !state.variance.matches(|name| request_field(request, name)) {
             return None;
         }
         let payload_digest = state.payload_digest?;
@@ -293,6 +293,32 @@ impl Archiver {
     /// [`MAX_CHALLENGE_ANSWERS`], each counted on its own, so that answering a challenge does not
     /// spend the redirect budget. The whole chain shares the configured capture time.
     pub(crate) fn capture(&self, url: &str, revalidate: Option<&Collection>) -> CaptureOutcome {
+        self.capture_parts(url, &Method::GET, &HeaderMap::new(), None, revalidate)
+    }
+
+    /// Fetch a driver-supplied request and every redirect or challenge exchange it causes.
+    pub(crate) fn capture_request(
+        &self,
+        request: &Request,
+        revalidate: Option<&Collection>,
+    ) -> CaptureOutcome {
+        self.capture_parts(
+            &request.url,
+            &request.method,
+            &request.headers,
+            request.body.as_deref(),
+            revalidate,
+        )
+    }
+
+    fn capture_parts(
+        &self,
+        url: &str,
+        method: &Method,
+        headers: &HeaderMap,
+        body: Option<&[u8]>,
+        revalidate: Option<&Collection>,
+    ) -> CaptureOutcome {
         let deadline = self
             .config
             .max_capture_time
@@ -309,17 +335,36 @@ impl Archiver {
                 };
             }
         };
+        let mut method = method.clone();
+        let mut headers = headers.clone();
+        let mut body = body.map(<[u8]>::to_vec);
 
         loop {
-            let (exchange, follow_up) = match self.fetch(&current, revalidate, deadline) {
+            let (exchange, follow_up) = match self.fetch(
+                &current,
+                &method,
+                &headers,
+                body.as_deref(),
+                revalidate,
+                deadline,
+            ) {
                 Ok(fetched) => fetched,
                 Err(error) => return CaptureOutcome::Failed { exchanges, error },
             };
+            let status = exchange.status;
             exchanges.push(exchange);
 
             match follow_up {
                 Some(FollowUp::Request(next)) if redirects < self.config.max_redirects => {
                     redirects += 1;
+                    redirect_request(
+                        &current,
+                        &next,
+                        status,
+                        &mut method,
+                        &mut headers,
+                        &mut body,
+                    );
                     current = next;
                 }
                 Some(FollowUp::Challenge(challenge)) if answered < MAX_CHALLENGE_ANSWERS => {
@@ -340,10 +385,13 @@ impl Archiver {
         }
     }
 
-    /// Perform one `GET` request and return its recorded exchange and what to request next.
+    /// Perform one request and return its recorded exchange and what to request next.
     fn fetch(
         &self,
         url: &Url,
+        method: &Method,
+        request_headers: &HeaderMap,
+        body: Option<&[u8]>,
         revalidate: Option<&Collection>,
         deadline: Option<Instant>,
     ) -> Result<(Exchange, Option<FollowUp>), Error> {
@@ -361,30 +409,34 @@ impl Archiver {
                 url: url.to_string(),
                 source,
             })?;
-        // The cookie is resolved first, since a response may have declared it as selecting.
-        let cookie = self.cookie_jar().get(url);
+        let mut headers = merged_headers(&self.headers, request_headers);
+        // A pair the request supplies wins over one held for the host, and the jar's other pairs
+        // still join it, so that a supplied cookie does not withhold a challenge's clearance. The
+        // sent value is resolved into the fields as a single line, before revalidation, since a
+        // response may have declared `Cookie` as selecting.
+        let jar_cookie = self.cookie_jar().merged(url, headers.get_all(COOKIE));
+        if let Some(cookie) = jar_cookie {
+            headers.insert(COOKIE, cookie);
+        }
         // The collection keys captures by the recorded target URI, which carries no fragment.
-        let original = revalidate
+        let original = revalidatable(method)
+            .then_some(revalidate)
+            .flatten()
             .map(|collection| {
                 let target_uri = Uri::parse(request_target.as_ref())
                     .map_err(crate::recorder::Error::TargetUri)?
                     .to_owned();
 
-                collection.original(target_uri, cookie.as_ref())
+                collection.original(target_uri, &headers)
             })
             .transpose()?
             .flatten();
-        let mut headers = original
-            .as_ref()
-            .map_or(Cow::Borrowed(&self.headers), |original| {
-                Cow::Owned(original.conditional_headers(&self.headers))
-            });
-        if let Some(cookie) = cookie {
-            headers.to_mut().insert(COOKIE, cookie);
+        if let Some(original) = &original {
+            headers = original.conditional_headers(&headers);
         }
-        let captured =
-            self.recorder
-                .fetch_within(&http::Method::GET, &target, &headers, None, deadline)?;
+        let captured = self
+            .recorder
+            .fetch_within(method, &target, &headers, body, deadline)?;
         let status = captured.response_metadata.status;
         let location = captured
             .response_metadata
@@ -401,9 +453,53 @@ impl Archiver {
             .map(|original| original.target);
 
         Ok((
-            Exchange::new(captured, revalidated, self.digests.payload),
+            Exchange::new(captured, method, revalidated, self.digests.payload),
             follow_up,
         ))
+    }
+}
+
+/// Add a request's fields to the archiver defaults, replacing defaults with the same name.
+fn merged_headers(defaults: &HeaderMap, supplied: &HeaderMap) -> HeaderMap {
+    let mut merged = defaults.clone();
+    for name in supplied.keys() {
+        merged.remove(name);
+        for value in supplied.get_all(name) {
+            merged.append(name.clone(), value.clone());
+        }
+    }
+    merged
+}
+
+/// Prepare the next request in a redirect chain using common user-agent semantics.
+///
+/// `POST` becomes `GET` after `301`, `302`, or `303`; other methods become `GET` after `303`.
+/// `307` and `308` preserve the method and body. Authority-specific fields, a caller-supplied
+/// `Host` among them, are not forwarded to another origin; a redirect within one origin keeps
+/// them, so that a crawl addressing a virtual host by IP address goes on reaching it.
+fn redirect_request(
+    current: &Url,
+    next: &Url,
+    status: u16,
+    method: &mut Method,
+    headers: &mut HeaderMap,
+    body: &mut Option<Vec<u8>>,
+) {
+    if current.origin() != next.origin() {
+        headers.remove(HOST);
+        headers.remove(AUTHORIZATION);
+        headers.remove(PROXY_AUTHORIZATION);
+        headers.remove(COOKIE);
+    }
+
+    let becomes_get = (matches!(status, 301 | 302) && *method == Method::POST)
+        || (status == 303 && *method != Method::HEAD);
+    if becomes_get {
+        *method = Method::GET;
+        *body = None;
+        headers.remove(CONTENT_LENGTH);
+        headers.remove(CONTENT_TYPE);
+        headers.remove(TRANSFER_ENCODING);
     }
 }
 
@@ -508,16 +604,16 @@ mod tests {
         assert!(Uri::parse(target.as_ref()).is_ok());
     }
 
-    /// A selecting field sent as several lines resolves to their combined value, and the jar's
-    /// cookie stands in for a configured one.
+    /// A selecting field sent as several lines resolves to their combined value, as the recorded
+    /// request resolves it, so that a `Cookie` given as two lines still selects a variant.
     #[test]
     fn request_fields_resolve_as_combined_values() {
         let mut headers = HeaderMap::new();
         headers.append(ACCEPT_LANGUAGE, HeaderValue::from_static("en"));
         headers.append(ACCEPT_LANGUAGE, HeaderValue::from_static("de"));
         headers.insert(USER_AGENT, HeaderValue::from_static("Bot/1.0"));
-        headers.insert(COOKIE, HeaderValue::from_static("configured=1"));
-        let cookie = HeaderValue::from_static("session=clearance");
+        headers.append(COOKIE, HeaderValue::from_static("configured=1"));
+        headers.append(COOKIE, HeaderValue::from_static("clearance=2"));
 
         assert_eq!(
             request_field(&headers, "accept-language"),
@@ -529,13 +625,57 @@ mod tests {
         );
         assert_eq!(request_field(&headers, "accept"), None);
         assert_eq!(
-            sent_field(&headers, Some(&cookie), "cookie").as_deref(),
-            Some("session=clearance")
+            request_field(&headers, "cookie"),
+            Some(Cow::Owned("configured=1, clearance=2".to_owned()))
+        );
+    }
+
+    /// A redirect within one origin keeps the authority-specific fields a caller set, and one to
+    /// another origin does not.
+    #[test]
+    fn a_host_override_survives_a_same_origin_redirect() {
+        let current = Url::parse("http://10.0.0.5/one").expect("valid URL");
+        let mut method = Method::GET;
+        let mut body = None;
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("example.com"));
+        headers.insert(COOKIE, HeaderValue::from_static("session=1"));
+
+        let next = Url::parse("http://10.0.0.5/two").expect("valid URL");
+        redirect_request(&current, &next, 302, &mut method, &mut headers, &mut body);
+        assert_eq!(
+            headers.get(HOST),
+            Some(&HeaderValue::from_static("example.com"))
         );
         assert_eq!(
-            sent_field(&headers, None, "cookie").as_deref(),
-            Some("configured=1")
+            headers.get(COOKIE),
+            Some(&HeaderValue::from_static("session=1"))
         );
+
+        let next = Url::parse("http://10.0.0.6/two").expect("valid URL");
+        redirect_request(&current, &next, 302, &mut method, &mut headers, &mut body);
+        assert_eq!(headers.get(HOST), None);
+        assert_eq!(headers.get(COOKIE), None);
+    }
+
+    /// A `POST` redirected by a `303` becomes a bodiless `GET`, and a `307` preserves it.
+    #[test]
+    fn a_redirect_rewrites_the_method_as_user_agents_do() {
+        let current = Url::parse("http://example.com/one").expect("valid URL");
+        let next = Url::parse("http://example.com/two").expect("valid URL");
+
+        let mut method = Method::POST;
+        let mut body = Some(b"a=1".to_vec());
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        redirect_request(&current, &next, 307, &mut method, &mut headers, &mut body);
+        assert_eq!(method, Method::POST);
+        assert_eq!(body.as_deref(), Some(&b"a=1"[..]));
+
+        redirect_request(&current, &next, 303, &mut method, &mut headers, &mut body);
+        assert_eq!(method, Method::GET);
+        assert_eq!(body, None);
+        assert_eq!(headers.get(CONTENT_TYPE), None);
     }
 
     #[test]

@@ -1145,6 +1145,208 @@ fn extras_are_captured_before_the_seeds_with_their_via() -> Result<(), Box<dyn s
 }
 
 #[test]
+fn session_captures_post_requests_with_headers_and_bodies() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (port, server) = serve_with(1, |request| {
+        (
+            response(
+                "200 OK",
+                &[("content-type", "application/json")],
+                r#"{"ok":true}"#,
+            ),
+            request.clone(),
+        )
+    })?;
+    let url = format!("http://127.0.0.1:{port}/lookup");
+    let directory = tempfile::tempdir()?;
+    let output = directory.path().join("post.warc");
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("application/json"),
+    );
+    headers.insert(
+        "x-api-key",
+        http::HeaderValue::from_static("test-credential"),
+    );
+    let body = br#"{"email":"person@example.com"}"#.to_vec();
+    let request = session::Request::post(&url, body.clone()).with_headers(headers);
+
+    let summary = Session::new(
+        archiver(Config::default()),
+        "post",
+        Crawl::new([request]),
+        &output,
+    )?
+    .retry(RetryConfig {
+        attempts: 1,
+        ..RetryConfig::default()
+    })
+    .run()?;
+    let requests = server.join().expect("server thread should not panic");
+
+    assert!(summary.is_complete());
+    assert_eq!(requests[0].method(), "POST");
+    assert_eq!(requests[0].path(), "/lookup");
+    assert_eq!(requests[0].header("content-type"), Some("application/json"));
+    assert_eq!(requests[0].header("x-api-key"), Some("test-credential"));
+    assert_eq!(requests[0].body(), body);
+
+    let archive = records(&std::fs::read(output)?)?;
+    let recorded_request = archive.iter().find_map(|record| match record {
+        Record::Request { body, .. } => Some(body.as_slice()),
+        _ => None,
+    });
+    assert!(recorded_request.is_some_and(|request| request.ends_with(&body)));
+
+    Ok(())
+}
+
+/// A response to a method other than `GET` or `HEAD` describes the outcome of acting on the
+/// resource, not the bytes a later request will be given, so it must not become the state the next
+/// `GET` of that URL revalidates against. Storing it would have that `GET` sent the `POST`
+/// response's validators and record its `304` as a revisit of a payload it never received.
+#[test]
+fn a_post_response_is_not_stored_as_the_urls_representation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (port, server) = serve_with(2, |request| {
+        (
+            response(
+                "200 OK",
+                &[
+                    ("content-type", "text/html"),
+                    ("etag", "\"v1\""),
+                    ("last-modified", LAST_MODIFIED),
+                ],
+                "<html>acted</html>",
+            ),
+            request.clone(),
+        )
+    })?;
+    let url = format!("http://127.0.0.1:{port}/lookup");
+    let directory = tempfile::tempdir()?;
+    let output = directory.path().join("post-state.warc.gz");
+
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "post-state",
+        Crawl::new([
+            session::Request::post(&url, b"q=1".to_vec()),
+            session::Request::seed(&url),
+        ]),
+        &output,
+    )?
+    .run()?;
+    let requests = server.join().expect("server thread");
+
+    assert!(summary.is_complete());
+    assert_eq!(requests[0].method(), "POST");
+    assert_eq!(requests[1].method(), "GET");
+
+    // The `GET` is unconditional: the `POST` left no representation state to revalidate against.
+    assert_eq!(requests[1].header("if-none-match"), None);
+    assert_eq!(requests[1].header("if-modified-since"), None);
+
+    // Both captures are stored in full, so neither claims a payload the other received.
+    let records = records(&std::fs::read(&output)?)?;
+    assert_eq!(
+        records.iter().map(Record::type_name).collect::<Vec<_>>(),
+        [
+            "warcinfo", "request", "response", "metadata", "request", "response", "metadata",
+        ]
+    );
+
+    Ok(())
+}
+
+/// A cookie a request supplies wins over a held pair of the same name, and the other pairs held
+/// for the host still join it, so that supplying one does not withhold the clearance a challenge
+/// issued, which the host expects back on every later request. Several supplied lines are sent as
+/// the one value the grammar combines them into, which is also the value a declared `Vary: Cookie`
+/// is resolved against.
+#[test]
+fn a_supplied_cookie_joins_the_pairs_held_for_the_host() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, server) = serve_with(1, |request| (respond(request.path()), request.clone()))?;
+    let url = format!("http://127.0.0.1:{port}/");
+    let directory = tempfile::tempdir()?;
+    let output = directory.path().join("supplied-cookie.warc.gz");
+    let mut headers = http::HeaderMap::new();
+    headers.append(
+        http::header::COOKIE,
+        http::HeaderValue::from_static("session=supplied"),
+    );
+    headers.append(
+        http::header::COOKIE,
+        http::HeaderValue::from_static("theme=dark"),
+    );
+
+    let summary = Session::new(
+        archiver(gzip_config()).cookie_for(&url, "session=held; clearance=2")?,
+        "supplied-cookie",
+        Crawl::new([session::Request::seed(&url).with_headers(headers)]),
+        &output,
+    )?
+    .run()?;
+    let requests = server.join().expect("server thread");
+
+    assert!(summary.is_complete());
+    // The supplied lines and the held pairs are sent as one `Cookie` line, which is the value a
+    // declared `Vary: Cookie` is resolved against on both the request and the record side.
+    assert_eq!(
+        requests[0]
+            .head()
+            .to_ascii_lowercase()
+            .matches("\r\ncookie:")
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests[0].header("cookie"),
+        Some("session=supplied; theme=dark; clearance=2")
+    );
+
+    Ok(())
+}
+
+/// A request the server may have already acted on is not replayed, whatever the retry
+/// configuration allows, since repeating it would ask for that action a second time.
+#[test]
+fn a_post_that_fails_is_not_retried() -> Result<(), Box<dyn std::error::Error>> {
+    let port = dead_port()?;
+    let url = format!("http://127.0.0.1:{port}/submit");
+    let directory = tempfile::tempdir()?;
+    let output = directory.path().join("post-retry.warc.gz");
+    let started = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&started);
+
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "post-retry",
+        Crawl::new([session::Request::post(&url, b"q=1".to_vec())]),
+        &output,
+    )?
+    .events(move |event: CaptureEvent<'_>| {
+        if matches!(event, CaptureEvent::Started { .. }) {
+            counted.fetch_add(1, Ordering::Relaxed);
+        }
+        CaptureControl::Continue
+    })
+    .retry(RetryConfig {
+        attempts: 4,
+        initial_backoff: Duration::from_secs(30),
+        max_backoff: Duration::from_secs(30),
+    })
+    .run()?;
+
+    // The connection fails, which is transient, and a `GET` here would be attempted four times.
+    assert!(!summary.is_complete());
+    assert_eq!(summary.failures.len(), 1);
+    assert_eq!(started.load(Ordering::Relaxed), 1);
+
+    Ok(())
+}
+
+#[test]
 fn session_skips_discoveries_that_repeat_a_given_url() -> Result<(), Box<dyn std::error::Error>> {
     // Every page links to both seeds and itself, and one seed repeats: the seeds are requested as
     // given, and no discovery is requested.

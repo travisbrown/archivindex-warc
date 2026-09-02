@@ -14,7 +14,7 @@ use archivindex_warc_revisit_index::resource::{
     ResourceKey, ResourceState, ResourceStateUpdate, Variance,
 };
 use fluent_uri::Uri;
-use http::header::{HeaderMap, HeaderValue};
+use http::header::HeaderMap;
 use tempfile::{NamedTempFile, TempPath};
 
 use super::outcome::{CaptureOutcome, Exchange, Original, request_field};
@@ -137,16 +137,17 @@ impl Collection {
 
     /// The earlier capture of a target URI that a new capture may ask the server to revalidate.
     ///
-    /// `cookie` is the value the request will carry, which the configured fields do not hold.
+    /// `request` holds every field the new request will carry, the resolved `Cookie` included,
+    /// used to select the same representation variant as the earlier capture.
     pub fn original(
         &self,
         target_uri: Uri<String>,
-        cookie: Option<&HeaderValue>,
+        request: &HeaderMap,
     ) -> Result<Option<Original>, Error> {
         let key = ResourceKey::new(target_uri);
 
         if let Some(state) = self.session_index.lookup_resource(&key)? {
-            return self.original_from_state(state, cookie);
+            return self.original_from_state(state, request);
         }
         let Some(state) = self
             .persistent_index
@@ -170,7 +171,7 @@ impl Collection {
             },
         )?;
 
-        self.original_from_state(state, cookie)
+        self.original_from_state(state, request)
     }
 
     /// Resolve a resource state's canonical payload target across the session overlay and durable
@@ -178,7 +179,7 @@ impl Collection {
     fn original_from_state(
         &self,
         state: ResourceState,
-        cookie: Option<&HeaderValue>,
+        request: &HeaderMap,
     ) -> Result<Option<Original>, Error> {
         let canonical = state
             .payload_digest
@@ -187,12 +188,7 @@ impl Collection {
             .transpose()?
             .flatten();
 
-        Ok(Original::from_state(
-            state,
-            canonical,
-            &self.request_headers,
-            cookie,
-        ))
+        Ok(Original::from_state(state, canonical, request))
     }
 
     /// Look up a payload created in this collection before consulting earlier durable state.
@@ -336,31 +332,33 @@ impl Collection {
                 self.session_index.insert_payload(target)?;
             }
 
-            if status == 304 && revalidated {
-                self.session_index.update_resource(
-                    &resource_key,
-                    ResourceStateUpdate::NotModified {
-                        etag,
-                        last_modified,
-                        observed_at,
-                    },
-                )?;
-            } else if status == 200
-                && key.is_some()
-                && let Some(original) = looked_up.as_ref().or(target.as_ref())
-            {
-                self.session_index.update_resource(
-                    &resource_key,
-                    ResourceStateUpdate::Representation {
-                        etag,
-                        last_modified,
-                        payload_digest: Some(original.payload_digest.clone()),
-                        record_id: Some(original.record_id.clone()),
-                        warc_date: Some(original.warc_date),
-                        observed_at,
-                        variance,
-                    },
-                )?;
+            if let Some(resource_key) = &resource_key {
+                if status == 304 && revalidated {
+                    self.session_index.update_resource(
+                        resource_key,
+                        ResourceStateUpdate::NotModified {
+                            etag,
+                            last_modified,
+                            observed_at,
+                        },
+                    )?;
+                } else if status == 200
+                    && key.is_some()
+                    && let Some(original) = looked_up.as_ref().or(target.as_ref())
+                {
+                    self.session_index.update_resource(
+                        resource_key,
+                        ResourceStateUpdate::Representation {
+                            etag,
+                            last_modified,
+                            payload_digest: Some(original.payload_digest.clone()),
+                            record_id: Some(original.record_id.clone()),
+                            warc_date: Some(original.warc_date),
+                            observed_at,
+                            variance,
+                        },
+                    )?;
+                }
             }
         }
 

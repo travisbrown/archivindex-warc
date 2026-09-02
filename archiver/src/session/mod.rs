@@ -12,6 +12,8 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use http::{HeaderMap, Method};
+
 use crate::capture::{
     CaptureControl, CaptureEvent, CaptureEventSink, CaptureSummary, Failure, Origin,
 };
@@ -86,13 +88,21 @@ impl<'a> Capture<'a> {
     }
 }
 
-/// A URL a [`Driver`] asks its session to request.
+/// An HTTP request a [`Driver`] asks its session to make.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Request {
     /// The URL to request.
     pub url: String,
     /// Whether the URL is a seed or an extra, and what the extra was requested via.
     pub origin: Origin,
+    /// The HTTP method to send.
+    pub method: Method,
+    /// Header fields added to the archiver's defaults.
+    ///
+    /// A field here replaces every configured value with the same name.
+    pub headers: HeaderMap,
+    /// The request body, when one should be sent.
+    pub body: Option<Vec<u8>>,
 }
 
 impl Request {
@@ -101,6 +111,9 @@ impl Request {
         Self {
             url: url.into(),
             origin: Origin::Seed,
+            method: Method::GET,
+            headers: HeaderMap::new(),
+            body: None,
         }
     }
 
@@ -109,7 +122,38 @@ impl Request {
         Self {
             url: url.into(),
             origin: Origin::Extra { via: via.into() },
+            method: Method::GET,
+            headers: HeaderMap::new(),
+            body: None,
         }
+    }
+
+    /// A seed request that sends `body` with `POST`.
+    pub fn post(url: impl Into<String>, body: impl Into<Vec<u8>>) -> Self {
+        Self::seed(url).with_method(Method::POST).with_body(body)
+    }
+
+    /// Set the HTTP method.
+    #[must_use]
+    pub fn with_method(mut self, method: Method) -> Self {
+        self.method = method;
+        self
+    }
+
+    /// Set request header fields.
+    ///
+    /// A field here replaces every configured value with the same name.
+    #[must_use]
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
+    }
+
+    /// Set the request body.
+    #[must_use]
+    pub fn with_body(mut self, body: impl Into<Vec<u8>>) -> Self {
+        self.body = Some(body.into());
+        self
     }
 }
 

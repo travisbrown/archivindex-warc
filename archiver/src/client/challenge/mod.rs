@@ -103,8 +103,9 @@ impl Archiver {
             headers.insert(COOKIE, cookie);
         }
         let body = challenge.request_body();
+        let method = http::Method::POST;
         let captured = self.recorder.fetch_within(
-            &http::Method::POST,
+            &method,
             &target,
             &headers,
             Some(body.as_bytes()),
@@ -112,6 +113,9 @@ impl Archiver {
         )?;
         let cookie = simply::clearance_cookie(&captured, verification_url);
 
-        Ok((Exchange::new(captured, None, self.digests.payload), cookie))
+        Ok((
+            Exchange::new(captured, &method, None, self.digests.payload),
+            cookie,
+        ))
     }
 }
