@@ -40,11 +40,31 @@ pub struct StoredCookie {
 impl Cookie {
     /// The name before the `=`, or the whole pair when it has none.
     fn name(&self) -> &[u8] {
-        self.pair
-            .iter()
-            .position(|byte| *byte == b'=')
-            .map_or(&self.pair[..], |end| &self.pair[..end])
+        pair_name(&self.pair)
     }
+}
+
+/// The `name=value` pairs of a `Cookie` field value, without their surrounding whitespace.
+fn pairs(value: &[u8]) -> impl Iterator<Item = &[u8]> {
+    value
+        .split(|byte| *byte == b';')
+        .map(<[u8]>::trim_ascii)
+        .filter(|pair| !pair.is_empty())
+}
+
+/// The name before the `=` of a `name=value` pair, or the whole pair when it has none.
+fn pair_name(pair: &[u8]) -> &[u8] {
+    pair.iter()
+        .position(|byte| *byte == b'=')
+        .map_or(pair, |end| &pair[..end])
+}
+
+/// Add a pair to a `Cookie` field value being built, with the separator the grammar uses.
+fn extend_pairs(value: &mut Vec<u8>, pair: &[u8]) {
+    if !value.is_empty() {
+        value.extend_from_slice(b"; ");
+    }
+    value.extend_from_slice(pair);
 }
 
 impl CookieJar {
@@ -52,18 +72,42 @@ impl CookieJar {
     /// less the secure ones when `url` is not HTTPS.
     #[must_use]
     pub fn get(&self, url: &Url) -> Option<HeaderValue> {
+        self.merged(url, Option::<&HeaderValue>::None)
+    }
+
+    /// The `Cookie` field value to send with a request for `url` that supplies its own cookies.
+    ///
+    /// The pairs of `supplied` are sent in the order they were given, and the pairs held for the
+    /// host join them, less any of a name `supplied` already carries and, over HTTP, the secure
+    /// ones. A request's own cookie therefore wins over a stored pair of the same name without
+    /// withholding the rest, in particular the clearance a challenge issued, which the host
+    /// expects back on every later request.
+    ///
+    /// Several supplied lines are combined into the single one a request must send, as
+    /// [RFC 6265 section 5.4](https://www.rfc-editor.org/rfc/rfc6265#section-5.4) requires, which
+    /// is also the value a declared `Vary: Cookie` is then resolved against.
+    #[must_use]
+    pub fn merged<'a>(
+        &self,
+        url: &Url,
+        supplied: impl IntoIterator<Item = &'a HeaderValue>,
+    ) -> Option<HeaderValue> {
         let https = url.scheme() == "https";
         let mut value = Vec::new();
-        for cookie in self
-            .by_host
-            .get(url.host_str()?)?
-            .iter()
-            .filter(|cookie| https || !cookie.secure)
-        {
-            if !value.is_empty() {
-                value.extend_from_slice(b"; ");
+        let mut supplied_names = Vec::new();
+        for line in supplied {
+            for pair in pairs(line.as_bytes()) {
+                supplied_names.push(pair_name(pair));
+                extend_pairs(&mut value, pair);
             }
-            value.extend_from_slice(&cookie.pair);
+        }
+        let held = url.host_str().and_then(|host| self.by_host.get(host));
+        for cookie in held
+            .into_iter()
+            .flatten()
+            .filter(|cookie| (https || !cookie.secure) && !supplied_names.contains(&cookie.name()))
+        {
+            extend_pairs(&mut value, &cookie.pair);
         }
 
         // The pairs came from field values, and the separator is the one the grammar uses.
@@ -77,13 +121,7 @@ impl CookieJar {
             return;
         };
         let held = self.by_host.entry(host.to_owned()).or_default();
-        let pairs = cookie
-            .value
-            .as_bytes()
-            .split(|byte| *byte == b';')
-            .map(<[u8]>::trim_ascii)
-            .filter(|pair| !pair.is_empty());
-        for pair in pairs {
+        for pair in pairs(cookie.value.as_bytes()) {
             let cookie = Cookie {
                 pair: pair.to_vec(),
                 secure: cookie.secure,
