@@ -12,8 +12,8 @@ license = "GPL-3.0-only"
 repository = "https://github.com/travisbrown/archivindex-warc"
 
 [workspace.dependencies]
-archivindex-cli-support = { git = "https://github.com/travisbrown/archivindex-core" }
-archivindex-test-support = { git = "https://github.com/travisbrown/archivindex-core" }
+archivindex-cli-support = { git = "https://github.com/travisbrown/archivindex" }
+archivindex-test-support = { git = "https://github.com/travisbrown/archivindex" }
 archivindex-warc = { version = "0.1.0", path = "." }
 chrono = "0.4"
 clap = { version = "4.5", features = ["derive"] }
