@@ -24,7 +24,7 @@ bundled = ["archivindex-archiver/bundled"]
 
 [dependencies]
 anyhow = "1"
-archivindex-archiver = { version = "0.1.0", path = "../archiver/" }
+archivindex-archiver = { version = "0.1.0", path = "../../crates/archiver/" }
 archivindex-cli-support.workspace = true
 clap.workspace = true
 log.workspace = true

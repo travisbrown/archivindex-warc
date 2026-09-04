@@ -411,7 +411,7 @@ mod tests {
     fn leaves_an_archive_digested_that_way_unchanged() {
         let contents = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../tests/data/warcio/example-iana.org-chunked.warc"
+            "/../../tests/data/warcio/example-iana.org-chunked.warc"
         ))
         .unwrap();
 

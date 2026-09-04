@@ -497,7 +497,7 @@ mod tests {
     fn lints_a_real_archive() {
         let bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../tests/data/warcio/example-iana.org-chunked.warc"
+            "/../../tests/data/warcio/example-iana.org-chunked.warc"
         ))
         .expect("the fixture is present");
 

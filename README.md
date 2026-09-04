@@ -20,9 +20,9 @@ record framing for indexed access.
 
 ## Repository
 
-The workspace also contains crates for labelled digests, higher-level WARC operations, revisit
-indexes, web capture, and command-line applications. The [`validator`](validator/) is a separate
-Rust project so that its dependency tree does not constrain the workspace.
+The workspace's supporting library crates live under [`crates`](crates/), and its command-line
+applications live under [`tools`](tools/). The [`validator`](validator/) is a separate Rust project
+so that its dependency tree does not constrain the workspace.
 
 ## Development
 
@@ -40,16 +40,16 @@ Prototype Fund][prototype-fund].
 ## License
 
 The `archivindex-warc` library and the `archivindex-warc-digest` crate it depends on are licensed
-under the [MIT License][mit]; see [LICENSE][license] and [digest/LICENSE][digest-license] for the
-full text. Every other package in this repository is licensed under the
-[GNU General Public License, version 3][gpl-3.0]; see the `LICENSE` file in each package's
-directory for the full text.
+under the [MIT License][mit]; see [LICENSE][license] and
+[crates/digest/LICENSE][digest-license] for the full text. Every other package in this repository
+is licensed under the [GNU General Public License, version 3][gpl-3.0]; see the `LICENSE` file in
+each package's directory for the full text.
 
 [archivindex-prototype-fund]: https://www.prototypefund.de/en/projects/archivindex-builder
 [build]: https://github.com/travisbrown/archivindex-warc/actions/workflows/ci.yml
 [build-badge]: https://github.com/travisbrown/archivindex-warc/actions/workflows/ci.yml/badge.svg
 [codecov]: https://codecov.io/gh/travisbrown/archivindex-warc
-[digest-license]: digest/LICENSE
+[digest-license]: crates/digest/LICENSE
 [codecov-badge]: https://codecov.io/gh/travisbrown/archivindex-warc/branch/main/graph/badge.svg
 [crates]: https://crates.io/crates/archivindex-warc/
 [crates-downloads-badge]: https://img.shields.io/crates/d/archivindex-warc
