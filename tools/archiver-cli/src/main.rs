@@ -8,9 +8,9 @@ use std::sync::atomic::Ordering;
 use anyhow::{Context, Result};
 use archivindex_archiver::Archiver;
 use archivindex_archiver::capture::{CaptureControl, CaptureEvent};
-use archivindex_cli_support::{
-    CommandOutcome, Verbosity, exit_code, interrupt_flag, load_config, plural, spinner,
-};
+use archivindex_cli_support::config::load_config;
+use archivindex_cli_support::progress::spinner;
+use archivindex_cli_support::{CommandOutcome, Verbosity, exit_code, interrupt_flag, plural};
 use clap::Parser;
 
 fn main() -> ExitCode {
@@ -154,7 +154,7 @@ mod tests {
     use std::path::Path;
 
     use archivindex_archiver::Config;
-    use archivindex_cli_support::ConfigFormat;
+    use archivindex_cli_support::config::ConfigFormat;
     use clap::{CommandFactory, Parser};
 
     use super::{Cli, Command};
