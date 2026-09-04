@@ -84,10 +84,12 @@ impl Archiver {
     ///
     /// Returns [`CookieError::InvalidUrl`], [`CookieError::CredentialedUrl`], or
     /// [`CookieError::MissingHost`] if the cookie cannot be scoped to a host, and
-    /// [`CookieError::InvalidCookie`] if it holds a control character other than a horizontal
-    /// tab, so cannot be sent as an HTTP field value.
-    // The only bytes a field value refuses are the control characters checked above.
-    #[allow(clippy::missing_panics_doc)]
+    /// [`CookieError::InvalidCookie`] if it holds a control character other than a horizontal tab,
+    /// so cannot be sent as an HTTP field value.
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "a field value refuses only the control characters checked above"
+    )]
     pub fn cookie_for(
         self,
         url: impl AsRef<str>,

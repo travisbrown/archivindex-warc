@@ -9,10 +9,8 @@ use crate::version::WarcVersion;
 ///
 /// Any other valid name is an extension field.
 ///
-/// The variants are declared in the conventional order of a header block, which is the order a
-/// rendered block puts them in. Nothing else depends on the order, since the `serde` derives write
-/// a variant's name rather than its position.
-#[allow(missing_docs)]
+/// Variants follow the order used when rendering standard header fields.
+#[expect(missing_docs, reason = "each variant is the name the standard defines")]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Field {

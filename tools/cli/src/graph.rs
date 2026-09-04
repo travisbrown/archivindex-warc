@@ -291,7 +291,11 @@ fn colors(records: &[Record]) -> BTreeMap<String, String> {
 ///
 /// The hue is a degree in `0..360`. Every channel is a rounded value in `0.0..=255.0`, so it
 /// converts to `u8` unchanged.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "every channel is a rounded value in `0.0..=255.0`"
+)]
 fn hsl_color(hue: u16) -> String {
     let chroma = 0.45_f64;
     let sector = f64::from(hue) / 60.0;

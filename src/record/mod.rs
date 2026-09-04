@@ -482,7 +482,7 @@ macro_rules! header_accessors {
     ) => {
         $(#[$meta])*
         #[must_use]
-        #[allow(unused_variables)]
+        #[allow(unused_variables, reason = "an answer need not read the binding")]
         pub const fn $name(&self) -> $return_type {
             match self {
                 $($( Self::$variant { $field: $binding, .. } => $answer, )+)+
@@ -501,7 +501,7 @@ macro_rules! header_accessors {
         $($rest:tt)*
     ) => {
         $(#[$meta])*
-        #[allow(unused_variables)]
+        #[allow(unused_variables, reason = "an answer need not read the binding")]
         pub const fn $name(&mut self) -> $return_type {
             match self {
                 $($( Self::$variant { $field: $binding, .. } => $answer, )+)+
@@ -521,7 +521,7 @@ macro_rules! header_accessors {
     ) => {
         $(#[$meta])*
         #[must_use]
-        #[allow(unused_variables)]
+        #[allow(unused_variables, reason = "an answer need not read the binding")]
         pub fn $name(&self) -> $return_type {
             match self {
                 $($( Self::$variant { $field: $binding, .. } => $answer, )+)+

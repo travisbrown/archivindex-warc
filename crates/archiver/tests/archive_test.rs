@@ -169,7 +169,10 @@ fn archive_to_path_rejects_a_file_name_that_is_not_utf8() -> Result<(), Box<dyn 
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scripted exchange, read in order"
+)]
 fn archive_and_read_back() -> Result<(), Box<dyn std::error::Error>> {
     let (port, server) = serve(4)?;
     let urls = [

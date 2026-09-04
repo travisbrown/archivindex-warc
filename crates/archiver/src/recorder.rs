@@ -110,10 +110,12 @@ impl Recorder {
     /// Create a recorder using `webpki-roots` and `aws-lc-rs`, with [`DEFAULT_TIMEOUT`] for each
     /// connection step and [`DEFAULT_MAX_RESPONSE_LENGTH`] for the response.
     ///
-    /// The crypto provider is named rather than taken from the process default, which is
-    /// undefined when a dependency graph enables more than one.
-    // The aws-lc-rs provider supports every default protocol version, so the builder cannot fail.
-    #[allow(clippy::missing_panics_doc)]
+    /// The crypto provider is named rather than taken from the process default, which is undefined
+    /// when a dependency graph enables more than one.
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "the aws-lc-rs provider supports every default protocol version"
+    )]
     #[must_use]
     pub fn new() -> Self {
         let roots = rustls::RootCertStore {
@@ -215,8 +217,6 @@ impl Recorder {
         self.fetch_within(method, target, headers, body, Some(deadline))
     }
 
-    // The `http` crate has already validated the URI, including its use as a header value.
-    #[allow(clippy::missing_panics_doc)]
     pub(crate) fn fetch_within(
         &self,
         method: &Method,
