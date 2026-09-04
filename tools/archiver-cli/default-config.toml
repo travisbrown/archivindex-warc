@@ -1,0 +1,83 @@
+# The default configuration of archivindex-archiver.
+#
+# Top-level keys are optional and use these defaults. Unknown keys are errors. Durations use
+# humantime strings such as "30s", "1m 30s", or "10m".
+
+# The User-Agent header value sent with every request. The default is this tool's name and version.
+# user-agent = "archivindex-archiver/0.1.0"
+
+# The idle timeout for connecting and for each socket read or write.
+timeout = "30s"
+
+# The maximum time spent capturing one URL, including its redirect hops. A response still arriving
+# at the limit is archived as truncated if its headers are complete. DNS resolution is not timed.
+# Write "unbounded" to remove this limit; idle timeouts and size limits still apply.
+max-capture-time = "10m"
+
+# The maximum number of redirects followed for each URL. Answering a challenge is not a redirect.
+max-redirects = 10
+
+# Whether each WARC record is compressed as an independent gzip member.
+gzip-warc = false
+
+# The number of URLs downloaded concurrently. Captures are written in input order whatever the
+# value.
+concurrency = 1
+
+# The maximum stored response size, including headers, is 256 MiB by default. Reaching the limit
+# truncates the response if its headers are complete; an oversized header fails the fetch.
+# Write "unbounded" to remove the size limit.
+max-response-length = 268435456
+
+# The payload length in bytes below which a response is stored in full although its payload
+# duplicates an earlier capture. This avoids revisit overhead for small payloads. A conditional
+# 304 Not Modified with a known original is still stored as a revisit. Write 0 to disable the
+# minimum length.
+min-revisit-payload-length = 256
+
+# The software named in the warcinfo record of every WARC file, written as "name/version". The
+# default is this tool's name and version. When set, both the name and the version are required.
+# [software]
+# name = "archivindex-archiver"
+# version = "0.1.0"
+
+# The operator named in the warcinfo record of every WARC file, written as "name" or "name <email>".
+# No operator is named by default. The name is required; the email address is optional.
+# [operator]
+# name = "Example Operator"
+# email = "operator@example.com"
+
+# The formats of the digests written for every record. The algorithm and encoding apply to both the
+# block and the payload digest unless a [digest.block] or [digest.payload] table overrides them.
+# Algorithms are named by their WARC labels, such as "sha256", "sha1", or "sha512", and encodings
+# are "base16", "base32", or "base64". An unset encoding is the one recommended for the algorithm:
+# base32 for sha1, base16 otherwise.
+[digest]
+algorithm = "sha256"
+# encoding = "base16"
+
+# [digest.block]
+# algorithm = "sha512"
+
+# [digest.payload]
+# encoding = "base32"
+
+# The settings crawl sessions start from. The archive command does not run sessions.
+[session]
+
+# The wait between successive queued capture requests.
+request-delay = "0s"
+
+# The persistent revisit and resource-state database consulted by sessions. New captures are not
+# added automatically. Unset by default.
+# revisit-index = "revisits.sqlite3"
+
+# The policy for retrying transient failures.
+[session.retry]
+
+# Total attempts, including the first.
+attempts = 3
+
+# The delay before the first retry, doubling up to the maximum.
+initial-backoff = "1s"
+max-backoff = "30s"
