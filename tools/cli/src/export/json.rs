@@ -3,25 +3,31 @@
 use std::io::{BufRead, Write};
 
 use anyhow::{Context, Result, bail};
+use archivindex_warc::record::Record;
 use archivindex_warc::value::MediaType;
 
 use super::records;
 
 /// Write the payload of every record whose `WARC-Identified-Payload-Type` is JSON as one line.
 ///
-/// The payload is written byte for byte after any transfer coding is removed, followed by a line
-/// feed. A payload may end with one line terminator, which is not repeated. Returns the number of
-/// lines written.
+/// Revisit records are skipped because their payloads are stored in the records they refer to. The
+/// payload is written byte for byte after any transfer coding is removed, followed by a line feed.
+/// A payload may end with one line terminator, which is not repeated. Returns the number of lines
+/// written.
 ///
 /// # Errors
 ///
-/// Fails when a record cannot be read, when a JSON-typed record has no payload or a payload that
-/// cannot be extracted, when the payload is not JSON, and when it spans more than one line.
+/// Fails when a record cannot be read, when a JSON-typed non-revisit record has no payload or a
+/// payload that cannot be extracted, when the payload is not JSON, and when it spans more than one
+/// line.
 pub fn export<R: BufRead, W: Write>(reader: R, mut writer: W) -> Result<usize> {
     let mut count = 0;
 
     for result in records(reader) {
         let (index, record) = result?;
+        if matches!(&record, Record::Revisit { .. }) {
+            continue;
+        }
         if !record
             .payload()
             .and_then(|payload| payload.identified_payload_type.as_ref())
@@ -144,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn a_record_type_without_a_payload_fails() {
+    fn a_revisit_record_is_skipped() {
         let input = render(
             &[
                 ("WARC-Type", "revisit"),
@@ -160,11 +166,9 @@ mod tests {
             "",
         );
 
-        let error = export_string(&input).unwrap_err();
+        let (count, output) = export_string(&input).unwrap();
 
-        assert_eq!(
-            error.to_string(),
-            "record 0 (urn:uuid:1): the record type has no payload"
-        );
+        assert_eq!(count, 0);
+        assert!(output.is_empty());
     }
 }

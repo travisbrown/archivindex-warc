@@ -59,7 +59,8 @@ cargo run --manifest-path tools/cli/Cargo.toml -- export -i archive.warc.gz json
 ```
 
 `csv` writes the type, date, record identifier, and target URI of each record. `json` writes each
-payload identified as JSON, one value per line.
+locally stored payload identified as JSON, one value per line. Revisit records are skipped because
+their payloads are stored in the records they refer to.
 
 ## graph
 
