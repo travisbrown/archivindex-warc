@@ -123,8 +123,10 @@ impl<E: Extension> CaptureEvent<E> {
     ///
     /// Returns [`BlockError`] if a message cannot be paired with its record header. Any declared
     /// payload digest is checked later, when the response record is rendered.
-    // The target URI has already been parsed, so parsing it again cannot fail.
-    #[allow(clippy::missing_panics_doc)]
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "the target URI has already been parsed, so parsing it again cannot fail"
+    )]
     pub fn exchange(
         mut self,
         request: impl Into<Vec<u8>>,
@@ -184,8 +186,10 @@ impl<E: Extension> CaptureEvent<E> {
     /// # Errors
     ///
     /// Returns [`BlockError`] if a message cannot be paired with its record header.
-    // The target URI has already been parsed, so parsing it again cannot fail.
-    #[allow(clippy::missing_panics_doc)]
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "the target URI has already been parsed, so parsing it again cannot fail"
+    )]
     pub fn revisit_exchange(
         mut self,
         request: impl Into<Vec<u8>>,
@@ -291,8 +295,10 @@ pub struct CaptureRecords<E: Extension = NoExtension> {
 impl<E: Extension> CaptureRecords<E> {
     /// Return the response identity needed by
     /// [`revisit_exchange`](CaptureEvent::revisit_exchange).
-    // A response or revisit record always names its target URI.
-    #[allow(clippy::missing_panics_doc)]
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "a response or revisit record always names its target URI"
+    )]
     #[must_use]
     pub fn revisit_original(&self) -> RevisitOriginal {
         RevisitOriginal {

@@ -168,8 +168,10 @@ pub trait ExtensionTruncatedReason: Clone + Debug + Eq {
 pub enum Never {}
 
 impl ExtensionRecordType for Never {
-    // Dereferencing proves that this method is unreachable because `Never` has no values.
-    #[allow(clippy::uninhabited_references)]
+    #[expect(
+        clippy::uninhabited_references,
+        reason = "dereferencing proves the method unreachable, since `Never` has no values"
+    )]
     fn type_name(&self) -> &str {
         match *self {}
     }
@@ -180,7 +182,10 @@ impl ExtensionRecordType for Never {
 }
 
 impl ExtensionTruncatedReason for Never {
-    #[allow(clippy::uninhabited_references)]
+    #[expect(
+        clippy::uninhabited_references,
+        reason = "dereferencing proves the method unreachable, since `Never` has no values"
+    )]
     fn reason_token(&self) -> &str {
         match *self {}
     }

@@ -406,8 +406,10 @@ fn serialize_display<T: Display, S: serde::Serializer>(
 }
 
 /// Serialize a value that may be absent as its printed form.
-// `serialize_with` hands the field over as it is declared, so this takes a reference to the option.
-#[allow(clippy::ref_option)]
+#[expect(
+    clippy::ref_option,
+    reason = "`serialize_with` hands the field over as it is declared"
+)]
 fn serialize_optional_display<T: Display, S: serde::Serializer>(
     value: &Option<T>,
     serializer: S,
@@ -489,7 +491,6 @@ fn fields(fields: &[Field]) -> String {
 }
 
 /// Serialize header fields by their standard names.
-#[allow(clippy::trivially_copy_pass_by_ref)]
 fn serialize_field_names<S: serde::ser::Serializer>(
     fields: &[Field],
     serializer: S,
@@ -498,8 +499,10 @@ fn serialize_field_names<S: serde::ser::Serializer>(
 }
 
 /// Whether a severity is the one every rule this crate defines reports.
-// `skip_serializing_if` hands the field over as it is declared, so this takes a reference.
-#[allow(clippy::trivially_copy_pass_by_ref)]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "`skip_serializing_if` hands the field over as it is declared"
+)]
 const fn is_error(severity: &Severity) -> bool {
     matches!(severity, Severity::Error)
 }

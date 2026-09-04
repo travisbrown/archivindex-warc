@@ -64,9 +64,10 @@ impl WarcDate {
     /// to the requested precision. `Fraction` digit counts are clamped to the range one through
     /// nine.
     #[must_use]
-    // Every component written here comes from a valid date or is a truncation of one, so nothing
-    // here can panic.
-    #[allow(clippy::missing_panics_doc)]
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "every component comes from a valid date or a truncation of one"
+    )]
     pub fn new(date_time: DateTime<Utc>, precision: WarcDatePrecision) -> Self {
         const TRUNCATED: &str = "invariant violation: a truncated date component is out of range";
 

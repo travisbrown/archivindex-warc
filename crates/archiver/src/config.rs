@@ -193,8 +193,6 @@ pub mod bounded_duration {
     use std::time::Duration;
 
     /// Write the limit as a duration, or as `"unbounded"` when unset.
-    // Serde passes a reference to the field.
-    #[allow(clippy::ref_option)]
     pub fn serialize<S: serde::ser::Serializer>(
         limit: &Option<Duration>,
         serializer: S,
@@ -238,8 +236,6 @@ pub mod bounded_length {
     use serde::de::Unexpected;
 
     /// Write the limit as an integer, or as `"unbounded"` when unset.
-    // Serde passes a reference to the field.
-    #[allow(clippy::ref_option)]
     pub fn serialize<S: serde::ser::Serializer>(
         limit: &Option<u64>,
         serializer: S,

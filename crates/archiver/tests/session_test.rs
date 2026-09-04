@@ -261,7 +261,10 @@ impl CaptureProcessor for RepeatingProcessor<'_> {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scripted exchange, read in order"
+)]
 fn persistent_index_is_read_only_and_supplies_historical_and_same_session_revisit_targets()
 -> Result<(), Box<dyn std::error::Error>> {
     const HISTORICAL: &str = "historical payload";
@@ -933,7 +936,10 @@ fn session_waits_between_queued_requests() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scripted exchange, read in order"
+)]
 fn session_crawls_discovered_urls_depth_first() -> Result<(), Box<dyn std::error::Error>> {
     // The seeds are the home page and a redirect whose final URL is /about. The home page links
     // directly to /about and /missing, which are requested before the second seed.

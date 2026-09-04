@@ -1,8 +1,16 @@
 //! Feature-gated [`Supported`] implementations.
 
-#[allow(unused_imports)]
+// Each import is used only by the implementations an enabled feature provides, so this cannot
+// be an expectation: with no algorithm feature enabled the imports really are unused.
+#[allow(
+    unused_imports,
+    reason = "used only by the implementations a feature provides"
+)]
 use crate::algorithm::Algorithm;
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "used only by the implementations a feature provides"
+)]
 use crate::algorithm::marker::{self, Supported};
 
 #[cfg(feature = "md5")]

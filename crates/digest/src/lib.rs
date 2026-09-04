@@ -198,8 +198,10 @@ impl LabelledDigest {
 
     /// A labelled digest using the algorithm's recommended label and the format's encoding.
     #[must_use]
-    // Writing to a string is the one use of `encode` that cannot fail, so nothing here can panic.
-    #[allow(clippy::missing_panics_doc)]
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "writing to a string is the one use of `encode` that cannot fail"
+    )]
     pub fn from_digest_in(format: Format, digest: &[u8]) -> Self {
         let Format {
             algorithm,

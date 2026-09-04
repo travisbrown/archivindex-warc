@@ -1,20 +1,36 @@
 //! Feature-gated digest computation.
 
-// Each import is needed when its feature is the only one enabled.
+// Each import is needed when its feature is the only one enabled, and is redundant when
+// another crate re-exports the same trait, so this cannot be an expectation.
 #[cfg(feature = "blake2")]
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "needed when this feature is the only one enabled"
+)]
 use blake2::Digest as _;
 #[cfg(feature = "md5")]
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "needed when this feature is the only one enabled"
+)]
 use md5::Digest as _;
 #[cfg(feature = "sha1")]
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "needed when this feature is the only one enabled"
+)]
 use sha1::Digest as _;
 #[cfg(feature = "sha2")]
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "needed when this feature is the only one enabled"
+)]
 use sha2::Digest as _;
 #[cfg(feature = "sha3")]
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "needed when this feature is the only one enabled"
+)]
 use sha3::Digest as _;
 
 use super::{Algorithm, Digest, Hasher};
@@ -105,7 +121,7 @@ impl Algorithm {
             #[cfg(feature = "blake3")]
             Self::Blake3 => Inner::Blake3(Box::new(blake3::Hasher::new())),
             // Matches algorithms disabled in this build.
-            #[allow(unreachable_patterns)]
+            #[allow(unreachable_patterns, reason = "reachable unless every feature is on")]
             _ => return None,
         };
 
@@ -215,7 +231,7 @@ impl Hasher {
                 hasher.update(content);
             }
             // A hasher exists only for an enabled algorithm.
-            #[allow(unreachable_patterns)]
+            #[allow(unreachable_patterns, reason = "reachable unless every feature is on")]
             _ => {
                 let _ = content;
                 unreachable!("invariant violation: hasher for an algorithm the build lacks")
@@ -263,7 +279,7 @@ impl Hasher {
             #[cfg(feature = "blake3")]
             Inner::Blake3(hasher) => Digest::new(hasher.finalize().as_bytes()),
             // A hasher exists only for an enabled algorithm.
-            #[allow(unreachable_patterns)]
+            #[allow(unreachable_patterns, reason = "reachable unless every feature is on")]
             _ => unreachable!("invariant violation: hasher for an algorithm the build lacks"),
         }
     }

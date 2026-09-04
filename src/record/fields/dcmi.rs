@@ -22,7 +22,7 @@ pub const ELEMENTS_NAMESPACE: &str = "http://purl.org/dc/elements/1.1/";
 ///
 /// Each variant uses the name published by DCMI. Names outside this closed vocabulary are extension
 /// fields.
-#[allow(missing_docs)]
+#[expect(missing_docs, reason = "each variant is the name DCMI publishes")]
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub enum DcmiTerm {
     Abstract,
