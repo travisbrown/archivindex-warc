@@ -58,8 +58,10 @@ cargo run --manifest-path tools/cli/Cargo.toml -- export -i archive.warc.gz csv
 cargo run --manifest-path tools/cli/Cargo.toml -- export -i archive.warc.gz json
 ```
 
-`csv` writes the type, date, record identifier, and target URI of each record. `json` writes each
-payload identified as JSON, one value per line.
+`csv` writes the type, date, record identifier, and target URI of each record, removing the
+`urn:uuid:` prefix from UUID identifiers. `json` copies locally stored JSON payloads as JSON Lines.
+It rejects invalid or multiline JSON rather than reformatting it. Revisit records are skipped
+because their payloads are stored elsewhere.
 
 ## graph
 
