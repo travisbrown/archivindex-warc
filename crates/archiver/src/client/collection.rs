@@ -210,6 +210,7 @@ impl Collection {
     }
 
     /// Record every captured hop and add either a page summary or failure.
+    /// Returns the new capture summary, or `None` for a recorded failure.
     ///
     /// A hop whose payload digest matches an earlier capture in this collection and whose payload
     /// is at least the configured minimum length, or whose `304 Not Modified` confirms an earlier
@@ -221,7 +222,8 @@ impl Collection {
         outcome: CaptureOutcome,
         origin: Origin,
         title: Option<&str>,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<&CaptureSummary>, Error> {
+        let captured = matches!(outcome, CaptureOutcome::Captured { .. });
         match outcome {
             CaptureOutcome::Captured {
                 exchanges,
@@ -250,7 +252,12 @@ impl Collection {
             }
         }
 
-        self.flush_spool()
+        self.flush_spool()?;
+        Ok(if captured {
+            self.summary.captures.last()
+        } else {
+            None
+        })
     }
 
     /// Record the completed hops of a capture that was cancelled before it finished.

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use archivindex_archiver::capture::{CaptureControl, CaptureEvent, Origin};
+use archivindex_archiver::capture::{CaptureControl, CaptureEvent, CaptureSummary, Origin};
 use archivindex_archiver::config::{Operator, SessionConfig, Software};
 use archivindex_archiver::session::{
     self, Capture, CaptureProcessor, Crawl, Discovery, RetryConfig, Session,
@@ -2123,5 +2123,160 @@ fn session_skips_a_discovery_that_repeats_a_later_seed() -> Result<(), Box<dyn s
         [missing.as_str()]
     );
 
+    Ok(())
+}
+
+#[derive(Default)]
+struct RecordingDriver {
+    requests: std::collections::VecDeque<session::Request>,
+    inspection: session::Inspection,
+    inspected: usize,
+    acknowledgments: Vec<Option<CaptureSummary>>,
+}
+
+impl session::Driver for RecordingDriver {
+    fn next(&mut self) -> Option<session::Request> {
+        assert_eq!(self.inspected, self.acknowledgments.len());
+        self.requests.pop_front()
+    }
+
+    fn inspect(&mut self, _: &Capture<'_>) -> session::Inspection {
+        self.inspected += 1;
+        self.inspection.clone()
+    }
+
+    fn recorded(&mut self, capture: Option<&CaptureSummary>) {
+        self.acknowledgments.push(capture.cloned());
+    }
+}
+
+#[test]
+fn recording_acknowledgment_respects_cancellation_and_failures()
+-> Result<(), Box<dyn std::error::Error>> {
+    for mode in [
+        "started",
+        "captured",
+        "written",
+        "rejected",
+        "record-error",
+        "publish-error",
+    ] {
+        let (port, server) = serve(usize::from(mode != "started"))?;
+        let directory = tempfile::tempdir()?;
+        let output = directory.path().join("acknowledged.warc.gz");
+        let mut driver = RecordingDriver {
+            requests: [session::Request::seed(format!("http://127.0.0.1:{port}/"))].into(),
+            inspection: session::Inspection {
+                error: (mode == "rejected").then(|| "rejected".to_owned()),
+                title: (mode == "record-error").then(|| "invalid\0title".to_owned()),
+            },
+            ..RecordingDriver::default()
+        };
+        let result = Session::new(
+            archiver(gzip_config()),
+            "acknowledged",
+            &mut driver,
+            &output,
+        )?
+        .events(|event: CaptureEvent<'_>| {
+            if matches!(event, CaptureEvent::Written { .. }) && mode == "publish-error" {
+                std::fs::write(&output, b"existing output").expect("create publication collision");
+            }
+            if matches!(
+                (mode, event),
+                ("started", CaptureEvent::Started { .. })
+                    | ("captured", CaptureEvent::Captured { .. })
+                    | ("written", CaptureEvent::Written { .. })
+            ) {
+                CaptureControl::Cancel
+            } else {
+                CaptureControl::Continue
+            }
+        })
+        .run();
+        server.join().expect("server thread");
+        assert_eq!(driver.inspected, usize::from(mode != "started"), "{mode}");
+        match mode {
+            "record-error" => {
+                assert!(driver.acknowledgments.is_empty());
+                assert!(
+                    result.is_err()
+                        || result
+                            .as_ref()
+                            .is_ok_and(|summary| summary.fatal_error.is_some())
+                );
+            }
+            "started" => {
+                assert!(driver.acknowledgments.is_empty());
+                assert!(result?.cancelled);
+            }
+            "publish-error" => {
+                assert!(result.is_err());
+                assert_eq!(driver.acknowledgments.len(), 1);
+                assert_eq!(std::fs::read(&output)?, b"existing output");
+            }
+            "rejected" => {
+                assert_eq!(driver.acknowledgments, [None]);
+                assert_eq!(result?.failures.len(), 1);
+            }
+            _ => {
+                let summary = result?;
+                assert!(summary.cancelled);
+                assert_eq!(
+                    driver.acknowledgments,
+                    [Some(summary.seed_captures[0].clone())]
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn recording_acknowledgment_identifies_partial_occurrences_of_a_repeated_url()
+-> Result<(), Box<dyn std::error::Error>> {
+    let count = AtomicUsize::new(0);
+    let (port, server) = serve_with(3, move |_| {
+        let bytes = if count.fetch_add(1, Ordering::Relaxed) == 1 {
+            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nshort".to_vec()
+        } else {
+            response("200 OK", &[], "complete")
+        };
+        (bytes, ())
+    })?;
+    let directory = tempfile::tempdir()?;
+    let mut driver = RecordingDriver {
+        requests: vec![session::Request::seed(format!("http://127.0.0.1:{port}/")); 3].into(),
+        ..RecordingDriver::default()
+    };
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "partial",
+        &mut driver,
+        directory.path().join("partial.warc.gz"),
+    )?
+    .retry(RetryConfig {
+        attempts: 1,
+        ..RetryConfig::default()
+    })
+    .run()?;
+    server.join().expect("server thread");
+    assert_eq!(
+        driver.acknowledgments,
+        summary
+            .seed_captures
+            .iter()
+            .cloned()
+            .map(Some)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        summary
+            .seed_captures
+            .iter()
+            .map(CaptureSummary::is_partial)
+            .collect::<Vec<_>>(),
+        [false, true, false]
+    );
     Ok(())
 }
