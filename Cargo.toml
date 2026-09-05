@@ -24,6 +24,7 @@ version = "0.1.0"
 authors = ["Travis Brown <travisrobertbrown@gmail.com>"]
 edition = "2024"
 rust-version = "1.88"
+readme = "README.md"
 license = "GPL-3.0-only"
 repository = "https://github.com/travisbrown/archivindex-warc"
 
@@ -46,6 +47,23 @@ tempfile = "3"
 test-strategy = "0.4"
 thiserror = "2"
 url = "2"
+
+# Each entry excuses one package from one rule, and must say why; `cargo archivindex-build check`
+# reports an entry that no longer excuses anything.
+[[workspace.metadata.archivindex-build.exemptions]]
+package = "archivindex-warc"
+rule = "package.authors"
+reason = "The library derives from the `warc` crate and keeps its author."
+
+[[workspace.metadata.archivindex-build.exemptions]]
+package = "archivindex-warc"
+rule = "package.license"
+reason = "The library derives from the `warc` crate and keeps its license."
+
+[[workspace.metadata.archivindex-build.exemptions]]
+package = "archivindex-warc-digest"
+rule = "package.license"
+reason = "Split out of `archivindex-warc`, so it keeps that crate's license."
 
 [workspace.lints.rust]
 missing_docs = "deny"

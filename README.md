@@ -3,7 +3,7 @@
 ![GitHub last commit][last-commit-badge]
 [![build][build-badge]][build]
 [![codecov][codecov-badge]][codecov]
-[![license][license-badge]][gpl-3.0]
+[![license][license-badge]][mit]
 [![crates.io][crates-version-badge]][crates]
 [![crates.io][crates-downloads-badge]][crates]
 [![API Docs][docs-badge]][docs]
@@ -40,10 +40,9 @@ Prototype Fund][prototype-fund].
 ## License
 
 The `archivindex-warc` library and the `archivindex-warc-digest` crate it depends on are licensed
-under the [MIT License][mit]; see [LICENSE][license] and
-[crates/digest/LICENSE][digest-license] for the full text. Every other package in this repository
-is licensed under the [GNU General Public License, version 3][gpl-3.0]; see the `LICENSE` file in
-each package's directory for the full text.
+under the [MIT License][mit]; see [LICENSE][license] for the full text. Every other package in this
+repository is licensed under the [GNU General Public License, version 3][gpl-3.0]; see the `LICENSE`
+file in each package's directory for the full text.
 
 [archivindex-prototype-fund]: https://www.prototypefund.de/en/projects/archivindex-builder
 [build]: https://github.com/travisbrown/archivindex-warc/actions/workflows/ci.yml
@@ -60,7 +59,7 @@ each package's directory for the full text.
 [jedireza]: https://github.com/jedireza
 [last-commit-badge]: https://img.shields.io/github/last-commit/travisbrown/archivindex-warc
 [license]: LICENSE
-[license-badge]: https://img.shields.io/badge/license-GPL--v3-blue
+[license-badge]: https://img.shields.io/badge/license-MIT-blue
 [mit]: https://opensource.org/license/mit
 [prototype-fund]: https://www.prototypefund.de/en/
 [warc-crate]: https://crates.io/crates/warc/

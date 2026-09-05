@@ -8,6 +8,7 @@ keywords = ["warc", "web", "archive", "http"]
 categories = ["web-programming::http-client"]
 edition.workspace = true
 rust-version.workspace = true
+readme.workspace = true
 license.workspace = true
 version.workspace = true
 
@@ -16,6 +17,7 @@ workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # Passed through to the revisit index, which passes it through to rusqlite.
