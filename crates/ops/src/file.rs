@@ -4,11 +4,11 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Cursor, Read};
 use std::path::{Path, PathBuf};
 
+use archivindex_publication::{Policy, Publication};
 use archivindex_warc::io::gzip::MemberReader;
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::io::write::{Compression, WarcWriter};
 use archivindex_warc::parse::raw;
-use tempfile::TempPath;
 
 use crate::{Error, Result};
 
@@ -117,8 +117,8 @@ pub(crate) struct TransformSummary {
 ///
 /// The records are written to `<output>.partial`, synced, and moved into place once the last
 /// one is written, so a failure partway through leaves any file already at `output` as it was,
-/// and a crash after this returns cannot lose the output. The move replaces the name rather than
-/// the file it held, so an output that is a hard link or symbolic link to an input leaves the
+/// and on Unix the destination directory is synced before success is returned. The move replaces
+/// the name rather than the file it held, so an output that is a hard link or symbolic link to an input leaves the
 /// input as it was. The partial file is created exclusively: a run whose partial file already
 /// exists fails without writing, so concurrent runs cannot share one, a link or an input at that
 /// path is left as it was, and a partial file left by an interrupted run must be removed first.
@@ -139,12 +139,14 @@ pub(crate) fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Recor
         .map(|input| open(input).map(|reader| (*input, reader)))
         .collect::<Result<Vec<_>>>()?;
     let partial = partial_path(output);
-    let file = File::create_new(&partial).map_err(|source| Error::Create {
-        path: partial.clone(),
-        source,
-    })?;
-    // The path owns the file from here on, so every early return removes it.
-    let partial = TempPath::try_from_path(&partial).map_err(|source| Error::Create {
+    let publication =
+        Publication::with_partial_path(output, &partial, Policy::Replace).map_err(|source| {
+            Error::Create {
+                path: partial.clone(),
+                source,
+            }
+        })?;
+    let file = publication.reopen().map_err(|source| Error::Create {
         path: partial.clone(),
         source,
     })?;
@@ -163,7 +165,7 @@ pub(crate) fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Recor
 
             if let Some(record) = transform(index, record)? {
                 let written = writer.write(&record).map_err(|source| Error::Write {
-                    path: partial.to_path_buf(),
+                    path: partial.clone(),
                     source,
                 })?;
                 log::trace!(
@@ -178,42 +180,20 @@ pub(crate) fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Recor
     }
 
     let bytes = writer.position();
-    writer
-        .finish()
-        .map_err(io::IntoInnerError::into_error)
-        .and_then(|file| file.sync_all())
-        .map_err(|source| Error::Flush {
-            path: partial.to_path_buf(),
-            source,
-        })?;
-    partial.persist(output).map_err(|error| Error::Publish {
-        path: output.to_owned(),
-        source: error.error,
-    })?;
-    sync_directory(output).map_err(|source| Error::Publish {
-        path: output.to_owned(),
-        source,
-    })?;
+    drop(
+        writer
+            .finish()
+            .map_err(io::IntoInnerError::into_error)
+            .map_err(|source| Error::Flush {
+                path: partial,
+                source,
+            })?,
+    );
+    publication.publish()?;
 
     Ok(TransformSummary { records, bytes })
 }
 
-/// Make the rename that published `output` durable.
-///
-/// On Unix a rename is durable only once the directory holding it is synced. Windows does not
-/// open directories, and its renames need no such step.
-fn sync_directory(output: &Path) -> io::Result<()> {
-    if cfg!(unix) {
-        let parent = output
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        File::open(parent)?.sync_all()?;
-    }
-    Ok(())
-}
-
-/// The path a transformed output is written to before it is moved into place.
 fn partial_path(output: &Path) -> PathBuf {
     let mut path = output.as_os_str().to_os_string();
     path.push(".partial");

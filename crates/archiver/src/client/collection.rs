@@ -4,6 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Seek, Write};
 use std::path::{Path, PathBuf};
 
+use archivindex_publication::{Policy, Publication};
 use archivindex_warc::io::write::{Compression, WarcWriter};
 use archivindex_warc::record::Record;
 use archivindex_warc::record::header::truncated_type::TruncatedType;
@@ -398,39 +399,20 @@ impl Collection {
         } = self;
         let mut source = warc.finish().map_err(std::io::IntoInnerError::into_error)?;
         source.rewind()?;
-        let parent = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-
-        if let Some(spool_path) = spool_path {
-            source.sync_all()?;
-            NamedTempFile::from_parts(source, spool_path)
-                .persist_noclobber(path)
-                .map_err(|error| error.error)?;
+        let publication = if let Some(spool_path) = spool_path {
+            Publication::from_temporary(
+                path,
+                NamedTempFile::from_parts(source, spool_path),
+                Policy::CreateNew,
+            )?
         } else {
-            let mut temporary = NamedTempFile::new_in(parent)?;
-            std::io::copy(&mut source, &mut temporary)?;
-            temporary.flush()?;
-            temporary.as_file().sync_all()?;
-            temporary
-                .persist_noclobber(path)
-                .map_err(|error| error.error)?;
-        }
-        sync_directory(parent)?;
+            let mut publication = Publication::new(path, Policy::CreateNew)?;
+            std::io::copy(&mut source, &mut publication)?;
+            publication
+        };
+        publication.publish()?;
         Ok(summary)
     }
-}
-
-/// Make the renames in `directory` durable.
-///
-/// On Unix a rename is durable only once the directory holding it is synced. Windows does not
-/// open directories, and its renames need no such step.
-fn sync_directory(directory: &Path) -> std::io::Result<()> {
-    if cfg!(unix) {
-        File::open(directory)?.sync_all()?;
-    }
-    Ok(())
 }
 
 fn partial_path(output: &Path) -> PathBuf {

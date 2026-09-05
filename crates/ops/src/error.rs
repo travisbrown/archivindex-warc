@@ -60,15 +60,9 @@ pub enum Error {
         source: io::Error,
     },
 
-    /// A completed output could not be moved into place.
-    #[error("cannot replace {}", path.display())]
-    Publish {
-        /// The output path.
-        path: PathBuf,
-        /// The file-system failure.
-        #[source]
-        source: io::Error,
-    },
+    /// A completed output could not be published, or its published directory could not be synced.
+    #[error(transparent)]
+    Publication(#[from] archivindex_publication::Error),
 
     /// A gzip compression level was outside the levels gzip defines.
     #[error(transparent)]

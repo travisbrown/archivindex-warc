@@ -195,6 +195,9 @@ pub struct Config {
 /// An error type for archiving.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Publication failed; directory sync failures retain the published output.
+    #[error(transparent)]
+    Publication(#[from] archivindex_publication::Error),
     /// The archive could not be written.
     #[error(transparent)]
     Io(#[from] std::io::Error),

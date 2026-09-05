@@ -106,7 +106,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "archivindex-cli-support"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#8bd3736a8905d7f364ca0a177ca9d57cbec23cdb"
+source = "git+https://github.com/travisbrown/archivindex#02d9af05f2a9fb359d7c8d701652678d901ecceb"
 dependencies = [
  "clap",
  "ctrlc",
@@ -117,6 +117,15 @@ dependencies = [
  "simplelog",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "archivindex-publication"
+version = "0.1.0"
+source = "git+https://github.com/travisbrown/archivindex#02d9af05f2a9fb359d7c8d701652678d901ecceb"
+dependencies = [
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -147,12 +156,12 @@ dependencies = [
 name = "archivindex-warc-ops"
 version = "0.1.0"
 dependencies = [
+ "archivindex-publication",
  "archivindex-warc",
  "flate2",
  "fluent-uri",
  "log",
  "serde",
- "tempfile",
  "thiserror",
 ]
 

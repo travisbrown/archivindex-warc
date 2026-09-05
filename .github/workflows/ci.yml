@@ -114,14 +114,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
-      # Exclude unpublished packages because their path dependencies cannot meet Cargo's packaging
-      # requirements. Skip verification because the workspace packages are not yet on the registry.
-      - name: Package
+      # Keep tarball checks for crates whose dependencies can resolve on the registry.
+      # --no-verify skips building the tarballs, not registry dependency resolution.
+      - name: Package registry-resolvable crates
         run: >-
           cargo package --locked --workspace --no-verify
           --exclude archivindex-warc-ops
           --exclude archivindex-warc-cli
           --exclude archivindex-archiver-cli
+          --exclude archivindex-archiver
+      # The archiver depends on archivindex-publication, currently available only from Git.
+      # Until that dependency is published, check package contents without creating a tarball.
+      - name: Inspect archiver package contents
+        run: cargo package --locked -p archivindex-archiver --list
 
   deny:
     name: Check the dependency policy

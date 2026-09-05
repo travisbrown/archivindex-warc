@@ -13,14 +13,15 @@ publish = false
 workspace = true
 
 [dependencies]
+archivindex-publication.workspace = true
 archivindex-warc.workspace = true
 flate2.workspace = true
 fluent-uri.workspace = true
 log.workspace = true
 serde.workspace = true
-tempfile.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 archivindex-test-support.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
