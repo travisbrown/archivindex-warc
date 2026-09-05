@@ -123,10 +123,9 @@ impl Session<'_> {
             if let Some(error) = driver_error {
                 outcome = outcome.fail(error);
             }
-            if let Err(error) =
-                collection.record(url.clone(), outcome, origin.clone(), title.as_deref())
-            {
-                break CrawlOutcome::Fatal(error);
+            match collection.record(url.clone(), outcome, origin.clone(), title.as_deref()) {
+                Ok(capture) => self.driver.recorded(capture),
+                Err(error) => break CrawlOutcome::Fatal(error),
             }
             if cancel_after_write
                 || self.event(CaptureEvent::Written { url }) == CaptureControl::Cancel

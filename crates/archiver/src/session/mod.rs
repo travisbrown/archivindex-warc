@@ -198,8 +198,21 @@ pub trait Driver {
     /// payload, since the earlier capture holds its unchanged payload.
     fn inspect(&mut self, capture: &Capture<'_>) -> Inspection;
 
-    /// Note that the request last returned by [`next`](Self::next) exhausted its capture
-    /// attempts.
+    /// Acknowledge recording the request last returned by [`next`](Self::next).
+    ///
+    /// Called after inspection (or failure) and successful recording, before any `Written` event or
+    /// next request, even when cancellation was requested after capture. `Some` describes the
+    /// recorded capture, including unexpected truncation via [`CaptureSummary::is_partial`]. `None`
+    /// means a capture failure or inspection rejection was recorded. Cancelled attempts and
+    /// recording errors receive no acknowledgment.
+    ///
+    /// Recording does not imply publication: the session can still fail to finalize its archive.
+    /// Only a successful [`Session::run`] result confirms publication. Does nothing by default.
+    fn recorded(&mut self, capture: Option<&CaptureSummary>) {
+        let _ = capture;
+    }
+
+    /// Note that the request last returned by [`next`](Self::next) exhausted its capture attempts.
     ///
     /// The session continues with the next request, so a driver waiting on the failed URL must move
     /// on rather than return it again. Does nothing by default.
@@ -215,6 +228,10 @@ impl<D: Driver + ?Sized> Driver for &mut D {
 
     fn inspect(&mut self, capture: &Capture<'_>) -> Inspection {
         (**self).inspect(capture)
+    }
+
+    fn recorded(&mut self, capture: Option<&CaptureSummary>) {
+        (**self).recorded(capture);
     }
 
     fn failed(&mut self, url: &str, error: &Error) {
