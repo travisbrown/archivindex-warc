@@ -24,6 +24,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 bundled = ["archivindex-warc-revisit-index/bundled"]
 
 [dependencies]
+archivindex-publication.workspace = true
 archivindex-warc-revisit-index = { version = "0.1.0", path = "../revisit-index/" }
 archivindex-warc = { workspace = true, features = [
   "gzip",
