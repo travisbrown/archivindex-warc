@@ -1031,6 +1031,44 @@ impl<R: BufRead> Reading<R> {
         )
     }
 
+    /// Read the next retained record at the requested representation level.
+    ///
+    /// Conversion failures consume the body before being returned. A stream failure while
+    /// consuming that body takes precedence, since it prevents reading further records.
+    fn next_filtered<H, T>(
+        &mut self,
+        mut convert: impl FnMut(raw::RecordHeader) -> Result<H, Error>,
+        filter: &mut impl FnMut(&H) -> bool,
+        attach: impl FnOnce(H, Vec<u8>) -> Result<T, Error>,
+    ) -> Option<Located<Result<T, Error>>> {
+        let result = loop {
+            let (header, expected_body_len) = match self.next_header()? {
+                Ok(header) => header,
+                Err(error) => break Err(error),
+            };
+            let header = match convert(header) {
+                Ok(header) => header,
+                Err(refused) => {
+                    break Err(match self.skip_body(expected_body_len) {
+                        Ok(()) => refused,
+                        Err(interrupted) => interrupted,
+                    });
+                }
+            };
+
+            if filter(&header) {
+                break self
+                    .read_body(expected_body_len)
+                    .and_then(|body| attach(header, body));
+            }
+            if let Err(error) = self.skip_body(expected_body_len) {
+                break Err(error);
+            }
+        };
+
+        Some(self.located(result))
+    }
+
     /// Stop iteration if a read failed, since where the reader is left is not known.
     fn fuse_on_error<T>(&mut self, result: Result<T, Error>) -> Result<T, Error> {
         if result.is_err() {
@@ -1140,37 +1178,14 @@ pub struct FilterRawIter<R, F> {
     filter: F,
 }
 
-impl<R: BufRead, F: FnMut(&raw::RecordHeader) -> bool> FilterRawIter<R, F> {
-    /// The next record the predicate keeps, or the next error.
-    fn next_result(&mut self) -> Option<Result<raw::Record, Error>> {
-        loop {
-            let (header, expected_body_len) = match self.reading.next_header()? {
-                Ok(header) => header,
-                Err(error) => return Some(Err(error)),
-            };
-
-            if (self.filter)(&header) {
-                return Some(
-                    self.reading
-                        .read_body(expected_body_len)
-                        .map(|body| header.with_body(body)),
-                );
-            }
-
-            if let Err(error) = self.reading.skip_body(expected_body_len) {
-                return Some(Err(error));
-            }
-        }
-    }
-}
-
 impl<R: BufRead, F: FnMut(&raw::RecordHeader) -> bool> Iterator for FilterRawIter<R, F> {
     type Item = Located<Result<raw::Record, Error>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let result = self.next_result()?;
-
-        Some(self.reading.located(result))
+        self.reading
+            .next_filtered(Ok, &mut self.filter, |header, body| {
+                Ok(header.with_body(body))
+            })
     }
 }
 
@@ -1184,49 +1199,15 @@ pub struct FilterUntypedIter<R, F> {
     filter: F,
 }
 
-impl<R: BufRead, F: FnMut(&untyped::RecordHeader) -> bool> FilterUntypedIter<R, F> {
-    /// The next record the predicate keeps, or the next error.
-    fn next_result(&mut self) -> Option<Result<untyped::Record, Error>> {
-        loop {
-            let (header, expected_body_len) = match self.reading.next_header()? {
-                Ok(header) => header,
-                Err(error) => return Some(Err(error)),
-            };
-
-            let header = match untyped::RecordHeader::try_from(header) {
-                Ok(header) => header,
-                // When both fail, the stream-level failure is the one to report, since it says
-                // why nothing further can be read.
-                Err(malformed) => {
-                    return Some(Err(match self.reading.skip_body(expected_body_len) {
-                        Ok(()) => malformed.into(),
-                        Err(interrupted) => interrupted,
-                    }));
-                }
-            };
-
-            if (self.filter)(&header) {
-                return Some(
-                    self.reading
-                        .read_body(expected_body_len)
-                        .map(|body| header.with_body(body)),
-                );
-            }
-
-            if let Err(error) = self.reading.skip_body(expected_body_len) {
-                return Some(Err(error));
-            }
-        }
-    }
-}
-
 impl<R: BufRead, F: FnMut(&untyped::RecordHeader) -> bool> Iterator for FilterUntypedIter<R, F> {
     type Item = Located<Result<untyped::Record, Error>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let result = self.next_result()?;
-
-        Some(self.reading.located(result))
+        self.reading.next_filtered(
+            |header| untyped::RecordHeader::try_from(header).map_err(Error::Untyped),
+            &mut self.filter,
+            |header, body| Ok(header.with_body(body)),
+        )
     }
 }
 
@@ -1244,57 +1225,27 @@ pub struct FilterRecordIter<R, F, E = NoExtension> {
     extension: PhantomData<fn() -> E>,
 }
 
-impl<R: BufRead, E: Extension, F: FnMut(&record::RecordHeader<E>) -> bool>
-    FilterRecordIter<R, F, E>
-{
-    /// The next record the predicate keeps, or the next error.
-    fn next_result(&mut self) -> Option<Result<record::Record<E>, Error>> {
-        loop {
-            let (header, expected_body_len) = match self.reading.next_header()? {
-                Ok(header) => header,
-                Err(error) => return Some(Err(error)),
-            };
-
-            let lifted = untyped::RecordHeader::try_from(header)
-                .map_err(Error::Untyped)
-                .and_then(|header| record::RecordHeader::try_from(header).map_err(Error::Record));
-
-            let header = match lifted {
-                Ok(header) => header,
-                // When both fail, the stream-level failure is the one to report, since it says
-                // why nothing further can be read.
-                Err(refused) => {
-                    return Some(Err(match self.reading.skip_body(expected_body_len) {
-                        Ok(()) => refused,
-                        Err(interrupted) => interrupted,
-                    }));
-                }
-            };
-
-            if (self.filter)(&header) {
-                return Some(self.reading.read_body(expected_body_len).and_then(|body| {
-                    header
-                        .with_body(body)
-                        .map_err(|block| Error::Record(block.into()))
-                }));
-            }
-
-            if let Err(error) = self.reading.skip_body(expected_body_len) {
-                return Some(Err(error));
-            }
-        }
-    }
-}
-
 impl<R: BufRead, E: Extension, F: FnMut(&record::RecordHeader<E>) -> bool> Iterator
     for FilterRecordIter<R, F, E>
 {
     type Item = Located<Result<record::Record<E>, Error>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let result = self.next_result()?;
-
-        Some(self.reading.located(result))
+        self.reading.next_filtered(
+            |header| {
+                untyped::RecordHeader::try_from(header)
+                    .map_err(Error::Untyped)
+                    .and_then(|header| {
+                        record::RecordHeader::try_from(header).map_err(Error::Record)
+                    })
+            },
+            &mut self.filter,
+            |header, body| {
+                header
+                    .with_body(body)
+                    .map_err(|block| Error::Record(block.into()))
+            },
+        )
     }
 }
 
@@ -2067,6 +2018,61 @@ mod filter_tests {
             .collect::<Vec<_>>();
 
         assert_eq!(record_ids, ["<urn:test:filter:record-2>"]);
+    }
+
+    /// Skipping must report truncation even if header conversion also failed, and must
+    /// retain the consumed frame before fusing the iterator.
+    #[test]
+    fn filtered_body_failure_takes_precedence_and_fuses() {
+        fn check<T>(
+            mut records: impl Iterator<Item = super::Located<Result<T, Error>>>,
+            length: usize,
+        ) {
+            let failed = records.next().expect("truncated record");
+            assert!(matches!(failed.value, Err(Error::UnexpectedEndOfBody)));
+            assert_eq!(
+                failed.frame(),
+                Some(super::Frame {
+                    offset: 0,
+                    length: length as u64
+                })
+            );
+            assert!(records.next().is_none());
+            assert!(records.next().is_none());
+        }
+
+        let malformed = b"WARC/1.1\r\nWARC-Type: resource\r\nContent-Length: 5\r\nWARC-Date: invalid\r\n\r\nabc";
+        check(
+            WarcReader::new(&malformed[..]).filter_untyped_records(|_| {
+                panic!("a malformed header must not reach the predicate")
+            }),
+            malformed.len(),
+        );
+        check(
+            WarcReader::new(&malformed[..]).filter_records::<NoExtension, _>(|_| {
+                panic!("a malformed header must not reach the predicate")
+            }),
+            malformed.len(),
+        );
+
+        // This header parses grammatically but lacks the fields a semantic resource needs.
+        let refused = b"WARC/1.1\r\nWARC-Type: resource\r\nContent-Length: 5\r\n\r\nabc";
+        check(
+            WarcReader::new(&refused[..]).filter_records::<NoExtension, _>(|_| {
+                panic!("a refused header must not reach the predicate")
+            }),
+            refused.len(),
+        );
+        for keep in [false, true] {
+            check(
+                WarcReader::new(&refused[..]).filter_raw_records(|_| keep),
+                refused.len(),
+            );
+            check(
+                WarcReader::new(&refused[..]).filter_untyped_records(|_| keep),
+                refused.len(),
+            );
+        }
     }
 
     /// A header block the grammar refuses is a record-level error: its body is consumed before
