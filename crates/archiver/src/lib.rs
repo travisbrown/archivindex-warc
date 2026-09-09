@@ -30,15 +30,23 @@
 //! index to deduplicate captures and reuse HTTP validators across runs. A `304 Not Modified`
 //! response becomes a `server-not-modified` revisit record.
 //!
+//! Capture uses the built-in [`Recorder`](recorder::Recorder) by default. An alternative
+//! transport can be supplied instead by implementing [`downloader::Downloader`] and
+//! passing it to [`Archiver::with_downloader`]. Backends exist to change how bytes reach the
+//! wire, not what is recorded: driving [`ResponseCapture`](recorder::ResponseCapture) keeps every
+//! backend's framing, truncation, and bytes identical to the recorder's.
+//!
 //! # Modules
 //!
 //! * [`capture`]: what a capture run reports and observes
+//! * [`downloader`]: the capture backend interface
 //! * [`recorder`]: byte-exact capture of live HTTP exchanges
 //! * [`session`]: driver-steered crawl sessions
 
 pub mod capture;
 mod client;
 pub mod config;
+pub mod downloader;
 mod http_date;
 pub mod recorder;
 pub mod session;
@@ -54,16 +62,16 @@ use archivindex_warc::value::Algorithm;
 use config::{DigestConfig, DigestFormats, Operator, SessionConfig, Software};
 use http::header::HeaderMap;
 
-use crate::recorder::Recorder;
+use crate::downloader::Downloader;
 
 /// An HTTP client that captures lists of URLs in WARC files.
 ///
-/// Each fetch uses a synchronous HTTP/1.1 connection; one-shot runs can use multiple worker
+/// Each fetch synchronously captures one HTTP/1.1 exchange; one-shot runs can use multiple worker
 /// threads. Redirects and capture metadata are recorded. One-shot runs request URLs
 /// unconditionally; crawl sessions can revalidate earlier captures.
 #[derive(Clone, Debug)]
 pub struct Archiver {
-    recorder: Recorder,
+    downloader: Arc<dyn Downloader>,
     headers: HeaderMap,
     /// Cookies supplied for a host, or learned from a challenge it served.
     ///
@@ -92,6 +100,9 @@ pub struct Archiver {
 /// max-response-length = 268435456
 /// min-revisit-payload-length = 256
 ///
+/// [backend]
+/// type = "recorder"
+///
 /// [software]  # this crate's name and version
 /// name = "archivindex-archiver"
 /// version = "0.1.0"
@@ -115,11 +126,16 @@ pub struct Archiver {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
+    /// The exact HTTP/1 downloader. Defaults to the synchronous recorder.
+    pub backend: config::Backend,
     /// The `User-Agent` header value sent with every request.
     ///
     /// [`Archiver::new`] rejects values that cannot be used as HTTP field values.
     pub user_agent: String,
     /// The idle timeout, applied to connecting and to each socket read and write.
+    ///
+    /// An alternative [`downloader::Downloader`] interprets it in its own terms, and
+    /// may include name resolution or TLS in the time it allows for connecting.
     ///
     /// A fetch fails when connecting, sending the request, or reading the response header section
     /// times out. A read timing out after the header section instead truncates the response, which
@@ -130,8 +146,9 @@ pub struct Config {
     pub timeout: Duration,
     /// The maximum time spent capturing one URL, when set.
     ///
-    /// The time covers every hop of the URL's redirect chain and every challenge answered along it,
-    /// but not name resolution, which is not timed. Reaching the limit is reported as a timeout is:
+    /// The time covers every hop of the URL's redirect chain and every challenge answered along
+    /// it. The default recorder excludes name resolution; another backend may include it.
+    /// Reaching the limit is reported as a timeout is:
     /// the capture fails when no response header section has been read on the current hop, and is
     /// otherwise truncated with a `WARC-Truncated` reason of `time`. Each attempt a session makes
     /// at a URL is given the whole time. The limit is lifted when unset. The default is

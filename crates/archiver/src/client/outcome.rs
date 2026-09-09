@@ -431,7 +431,7 @@ impl Archiver {
             headers = original.conditional_headers(&headers);
         }
         let captured = self
-            .recorder
+            .downloader
             .fetch_within(method, &target, &headers, body, deadline)?;
         let status = captured.response_metadata.status;
         let location = captured

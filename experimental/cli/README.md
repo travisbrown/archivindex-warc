@@ -13,6 +13,21 @@ archivindex-archiver archive --output capture.warc < urls.txt
 
 An existing output file is not overwritten.
 
+## Capture backends
+
+By default URLs are captured with the archiver's built-in recorder, which needs
+nothing extra. Building with the `wreq` feature adds a second backend that uses
+BoringSSL with browser-derived TLS emulation:
+
+```sh
+archivindex-archiver archive --backend wreq --profile chrome_136 \
+  --output capture.warc < urls.txt
+```
+
+Every other setting applies to whichever backend is chosen, and both record
+byte-identical HTTP framing. That backend compiles BoringSSL from source and
+needs an unpublished fork of `wreq`; see [its notes](../wreq/README.md).
+
 ## Configuration
 
 Capture settings are read from a TOML or JSON file named by `--config`,

@@ -102,7 +102,7 @@ impl Archiver {
         }
         let body = challenge.request_body();
         let method = http::Method::POST;
-        let captured = self.recorder.fetch_within(
+        let captured = self.downloader.fetch_within(
             &method,
             &target,
             &headers,

@@ -2,11 +2,13 @@
 
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 
 use archivindex_warc_revisit_index::Index as RevisitIndex;
 use http::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
 
 use crate::capture::{ArchiveSummary, CaptureControl, CaptureEvent, CaptureEventSink, Origin};
+use crate::downloader::Downloader;
 use crate::recorder::Recorder;
 use crate::{Archiver, Config, ConfigError, CookieError, Error, UserAgentError};
 
@@ -43,6 +45,31 @@ impl Archiver {
     /// not enabled in this build, or [`ConfigError::UnwritableWarcinfoField`] if the configured
     /// software or operator cannot be written to the `warcinfo` record.
     pub fn new(config: Config) -> Result<Self, ConfigError> {
+        let downloader = match config.backend {
+            crate::config::Backend::Recorder {} => Arc::new(
+                Recorder::new()
+                    .connect_timeout(Some(config.timeout))
+                    .io_timeout(Some(config.timeout))
+                    .max_response_length(config.max_response_length),
+            ),
+        };
+        Self::with_downloader(config, downloader)
+    }
+
+    /// Capture with a downloader of your own rather than one named by
+    /// [`Config::backend`](crate::Config::backend).
+    ///
+    /// Every other setting still applies, including headers, cookies, redirects, challenges,
+    /// digests, limits, and session behavior. Timeouts and the response-length limit are the
+    /// downloader's to honor; a backend that ignores them changes what the archiver records.
+    ///
+    /// # Errors
+    ///
+    /// Fails for the same configuration reasons as [`Archiver::new`].
+    pub fn with_downloader(
+        config: Config,
+        downloader: Arc<dyn Downloader>,
+    ) -> Result<Self, ConfigError> {
         let user_agent = HeaderValue::from_str(&config.user_agent)
             .map_err(|_| UserAgentError(config.user_agent.clone()))?;
         check_warcinfo_fields(&config)?;
@@ -58,13 +85,8 @@ impl Archiver {
         headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
         headers.insert(USER_AGENT, user_agent);
 
-        let recorder = Recorder::new()
-            .connect_timeout(Some(config.timeout))
-            .io_timeout(Some(config.timeout))
-            .max_response_length(config.max_response_length);
-
         Ok(Self {
-            recorder,
+            downloader,
             headers,
             cookies: std::sync::Arc::default(),
             config,

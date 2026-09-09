@@ -28,10 +28,53 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
     }
 }
 
+/// Build an archiver, using an external capture backend when one is selected.
+///
+/// Backends other than the built-in recorder live in their own crates, so selecting one is this
+/// program's concern rather than the archiver's configuration.
+#[cfg(feature = "wreq")]
+fn build_archiver(
+    config: archivindex_archiver::Config,
+    options: &ArchiveOptions,
+) -> Result<Archiver> {
+    match options.backend {
+        Backend::Recorder => Archiver::new(config).map_err(Into::into),
+        Backend::Wreq => {
+            let profile = archivindex_archiver_backend_wreq::parse_profile(&options.profile)?;
+            let timeout = config.timeout;
+            let max_response_length = config.max_response_length;
+            let downloader = archivindex_archiver_backend_wreq::WreqRecorder::new(profile)
+                .connect_timeout(Some(timeout))
+                .io_timeout(Some(timeout))
+                .max_response_length(max_response_length);
+            Archiver::with_downloader(config, std::sync::Arc::new(downloader)).map_err(Into::into)
+        }
+    }
+}
+
+#[cfg(not(feature = "wreq"))]
+fn build_archiver(
+    config: archivindex_archiver::Config,
+    _options: &ArchiveOptions,
+) -> Result<Archiver> {
+    Archiver::new(config).map_err(Into::into)
+}
+
+/// The capture backend to archive with.
+#[cfg(feature = "wreq")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+enum Backend {
+    /// The built-in synchronous recorder.
+    #[default]
+    Recorder,
+    /// Browser-derived TLS emulation constrained to HTTP/1.
+    Wreq,
+}
+
 /// Archive a list of URLs read from standard input.
 fn archive(options: &ArchiveOptions, quiet: bool) -> Result<CommandOutcome> {
     let config = load_config(options.config.as_deref())?;
-    let archiver = Archiver::new(config).context("cannot configure the archiver")?;
+    let archiver = build_archiver(config, options).context("cannot configure the archiver")?;
     let mut input_error = None;
     let urls = read_urls(std::io::stdin().lock(), &mut input_error);
     let progress = spinner("Archiving", Some("URLs"));
@@ -147,6 +190,16 @@ struct ArchiveOptions {
     /// The WARC file to write; an existing file is not overwritten.
     #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
     output: PathBuf,
+
+    /// The capture backend. Every other setting applies to whichever is chosen.
+    #[cfg(feature = "wreq")]
+    #[arg(long, value_enum, default_value_t = Backend::Recorder)]
+    backend: Backend,
+
+    /// The browser profile the `wreq` backend emulates, such as `chrome_136`.
+    #[cfg(feature = "wreq")]
+    #[arg(long, value_name = "NAME", default_value = "chrome_136")]
+    profile: String,
 }
 
 #[cfg(test)]

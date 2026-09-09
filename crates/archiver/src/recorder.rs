@@ -45,6 +45,11 @@ const READ_LENGTH: usize = 8 * 1024;
 /// Errors returned while performing a recorded exchange.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// An alternative [`Downloader`](crate::downloader::Downloader) failed in its own way.
+    ///
+    /// The default recorder never produces this variant.
+    #[error(transparent)]
+    Backend(Box<dyn std::error::Error + Send + Sync + 'static>),
     /// The target is not an absolute HTTP or HTTPS URI.
     #[error("the target URI must be absolute, with an `http` or `https` scheme")]
     UnsupportedScheme,
@@ -520,177 +525,194 @@ enum BodyFraming {
     Close,
 }
 
-/// Read one response verbatim and report any truncation.
+/// Incremental capture of one response's wire bytes, shared by every downloader.
+///
+/// Feed it transport reads with [`push`](Self::push) and close it with [`end`](Self::end). The
+/// buffer holds only the final response and never grows beyond the configured cap, so any
+/// backend driving it produces the same framing, truncation, and byte content as the default
+/// recorder.
+pub struct ResponseCapture {
+    buffer: Vec<u8>,
+    head_request: bool,
+    cap: Option<u64>,
+    framing: Option<BodyFraming>,
+    header_end: usize,
+    scanner: Option<ChunkScanner>,
+    done: bool,
+    truncated: Option<TruncatedType>,
+}
+
+impl ResponseCapture {
+    /// Start a capture.
+    ///
+    /// Set `head_request` when the request method was `HEAD`, so that a declared body length is
+    /// not awaited. `cap` bounds retained wire bytes, including the header section.
+    #[must_use]
+    pub const fn new(head_request: bool, cap: Option<u64>) -> Self {
+        Self {
+            buffer: Vec::new(),
+            head_request,
+            cap,
+            framing: None,
+            header_end: 0,
+            scanner: None,
+            done: false,
+            truncated: None,
+        }
+    }
+
+    /// Whether the response is complete, capped, or truncated, so no further bytes are wanted.
+    ///
+    /// A backend should stop reading and dispose of its connection once this is true.
+    #[must_use]
+    pub const fn is_done(&self) -> bool {
+        self.done
+    }
+
+    /// Feed newly received bytes.
+    ///
+    /// Extra bytes beyond the cap provide length evidence but are never stored. Interim heads
+    /// have their own bound and do not consume the final cap. Bytes offered after the capture is
+    /// done are ignored.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the response cannot be framed, including an oversized or malformed header
+    /// section and malformed chunk framing.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if a message boundary already inside the buffer does not fit in a `usize`,
+    /// which the cap and the buffer's own length make impossible.
+    pub fn push(&mut self, mut bytes: &[u8]) -> Result<(), ResponseError> {
+        while self.framing.is_none() && !bytes.is_empty() && !self.done {
+            let bound = self.cap.unwrap_or(u64::MAX).min(MAX_HEADER_LENGTH as u64);
+            if self.buffer.len() as u64 >= bound {
+                return Err(ResponseError::OversizedHeaderSection);
+            }
+            // Scan the head incrementally so coalesced interim responses cannot consume the cap.
+            self.buffer.push(bytes[0]);
+            bytes = &bytes[1..];
+            if !self.buffer.ends_with(b"\r\n\r\n") {
+                continue;
+            }
+            let status = parse_status(&self.buffer)?;
+            if status == 101 {
+                return Err(ResponseError::UnsolicitedUpgrade);
+            }
+            if (100..200).contains(&status) {
+                self.buffer.clear();
+                continue;
+            }
+            self.header_end = self.buffer.len();
+            self.framing = Some(body_framing(&self.buffer, self.head_request, status)?);
+            if matches!(self.framing, Some(BodyFraming::Chunked)) {
+                self.scanner = Some(ChunkScanner::new(self.header_end));
+            }
+        }
+        if self.done || self.framing.is_none() {
+            return Ok(());
+        }
+        let room = self
+            .cap
+            .unwrap_or(u64::MAX)
+            .saturating_sub(self.buffer.len() as u64);
+        let kept = bytes.len().min(usize::try_from(room).unwrap_or(usize::MAX));
+        self.buffer.extend_from_slice(&bytes[..kept]);
+        let overflow = kept < bytes.len();
+        match self.framing {
+            Some(BodyFraming::None) => {
+                self.buffer.truncate(self.header_end);
+                self.done = true;
+            }
+            Some(BodyFraming::Length(length)) => {
+                let end = (self.header_end as u64).saturating_add(length);
+                if self.buffer.len() as u64 >= end {
+                    self.buffer
+                        .truncate(usize::try_from(end).expect("a buffered boundary"));
+                    self.done = true;
+                } else if self.at_cap() {
+                    self.finish(Some(TruncatedType::Length));
+                }
+            }
+            Some(BodyFraming::Chunked) => {
+                if let Some(end) = self
+                    .scanner
+                    .as_mut()
+                    .expect("a chunk scanner")
+                    .advance(&self.buffer)?
+                {
+                    self.buffer.truncate(end);
+                    self.done = true;
+                } else if overflow {
+                    self.finish(Some(TruncatedType::Length));
+                }
+            }
+            Some(BodyFraming::Close) if overflow => self.finish(Some(TruncatedType::Length)),
+            Some(BodyFraming::Close) | None => {}
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self, truncated: Option<TruncatedType>) {
+        self.done = true;
+        self.truncated = truncated;
+    }
+
+    fn at_cap(&self) -> bool {
+        self.cap.is_some_and(|cap| self.buffer.len() as u64 >= cap)
+    }
+
+    /// Close the capture because the transport ended or ran out of time.
+    ///
+    /// A close-delimited response ends complete; any other unfinished response is truncated,
+    /// with a reason of `time` when `timed_out` and `disconnect` otherwise. Calling this on a
+    /// capture that is already done changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no complete response header section was ever received.
+    pub fn end(&mut self, timed_out: bool) -> Result<(), ResponseError> {
+        if self.done {
+            return Ok(());
+        }
+        if self.framing.is_none() {
+            return Err(ResponseError::IncompleteHeaderSection);
+        }
+        self.finish(if timed_out {
+            Some(TruncatedType::Time)
+        } else if matches!(self.framing, Some(BodyFraming::Close)) {
+            None
+        } else {
+            Some(TruncatedType::Disconnect)
+        });
+        Ok(())
+    }
+
+    /// Take the retained response bytes and the reason they were truncated, if any.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<u8>, Option<TruncatedType>) {
+        (self.buffer, self.truncated)
+    }
+}
+
+/// Read one response verbatim using the same incremental parser as connection observers.
 fn read_response(
     source: &mut impl Read,
     head_request: bool,
     max_length: Option<u64>,
 ) -> Result<(Vec<u8>, Option<TruncatedType>), Error> {
-    let mut buffer = Vec::with_capacity(READ_LENGTH);
-    let header_bound = max_length.map_or(MAX_HEADER_LENGTH, |cap| {
-        MAX_HEADER_LENGTH.min(usize::try_from(cap).unwrap_or(usize::MAX))
-    });
-    let (status, header_end) = read_final_header_section(source, &mut buffer, header_bound)?;
-    let framing = body_framing(&buffer[..header_end], head_request, status)?;
-    let mut truncated = None;
-
-    match framing {
-        BodyFraming::None => buffer.truncate(header_end),
-        BodyFraming::Length(length) => {
-            let message_end = header_end as u64 + length;
-            loop {
-                if buffer.len() as u64 >= message_end {
-                    cut(&mut buffer, message_end);
-                    break;
-                }
-                if reached_cap(&buffer, max_length) {
-                    truncated = Some(TruncatedType::Length);
-                    break;
-                }
-                match fill(source, &mut buffer)? {
-                    ReadEvent::Data => {}
-                    ReadEvent::Closed => {
-                        truncated = Some(TruncatedType::Disconnect);
-                        break;
-                    }
-                    ReadEvent::TimedOut => {
-                        truncated = Some(TruncatedType::Time);
-                        break;
-                    }
-                }
-            }
-        }
-        BodyFraming::Chunked => {
-            let mut scanner = ChunkScanner::new(header_end);
-            loop {
-                if let Some(message_end) = scanner.advance(&buffer)? {
-                    buffer.truncate(message_end);
-                    break;
-                }
-                if reached_cap(&buffer, max_length) {
-                    truncated = truncation_at_cap(source, Some(TruncatedType::Disconnect))?;
-                    break;
-                }
-                match fill(source, &mut buffer)? {
-                    ReadEvent::Data => {}
-                    ReadEvent::Closed => {
-                        truncated = Some(TruncatedType::Disconnect);
-                        break;
-                    }
-                    ReadEvent::TimedOut => {
-                        truncated = Some(TruncatedType::Time);
-                        break;
-                    }
-                }
-            }
-        }
-        BodyFraming::Close => loop {
-            if reached_cap(&buffer, max_length) {
-                truncated = truncation_at_cap(source, None)?;
-                break;
-            }
-            match fill(source, &mut buffer)? {
-                ReadEvent::Data => {}
-                ReadEvent::Closed => break,
-                ReadEvent::TimedOut => {
-                    truncated = Some(TruncatedType::Time);
-                    break;
-                }
-            }
-        },
-    }
-
-    if let Some(cap) = max_length
-        && buffer.len() as u64 > cap
-    {
-        cut(&mut buffer, cap);
-        truncated = Some(TruncatedType::Length);
-    }
-
-    Ok((buffer, truncated))
-}
-
-fn truncation_at_cap(
-    source: &mut impl Read,
-    on_close: Option<TruncatedType>,
-) -> Result<Option<TruncatedType>, std::io::Error> {
-    Ok(match probe(source)? {
-        ReadEvent::Data => Some(TruncatedType::Length),
-        ReadEvent::Closed => on_close,
-        ReadEvent::TimedOut => Some(TruncatedType::Time),
-    })
-}
-
-fn probe(source: &mut impl Read) -> Result<ReadEvent, std::io::Error> {
-    let mut byte = [0];
-    loop {
-        return match source.read(&mut byte) {
-            Ok(0) => Ok(ReadEvent::Closed),
-            Ok(_) => Ok(ReadEvent::Data),
-            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-            Err(error) if error.kind() == ErrorKind::UnexpectedEof => Ok(ReadEvent::Closed),
-            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                Ok(ReadEvent::TimedOut)
-            }
-            Err(error) => Err(error),
-        };
-    }
-}
-
-fn reached_cap(buffer: &[u8], max_length: Option<u64>) -> bool {
-    max_length.is_some_and(|cap| buffer.len() as u64 >= cap)
-}
-
-fn cut(buffer: &mut Vec<u8>, boundary: u64) {
-    buffer.truncate(
-        usize::try_from(boundary)
-            .expect("invariant violation: a boundary within the buffer overflowed usize"),
-    );
-}
-
-fn find_header_end(buffer: &[u8]) -> Option<usize> {
-    buffer
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .map(|position| position + 4)
-}
-
-/// Read into `buffer` until it holds the final response's header section, returning the status and
-/// the section's length.
-///
-/// Interim responses are discarded so the recording begins at the final status line. No request
-/// asks to upgrade, so a `101` is a protocol violation after which the stream is not HTTP.
-fn read_final_header_section(
-    source: &mut impl Read,
-    buffer: &mut Vec<u8>,
-    header_bound: usize,
-) -> Result<(u16, usize), Error> {
-    loop {
-        if let Some(header_end) = find_header_end(buffer) {
-            if header_end > header_bound {
-                return Err(ResponseError::OversizedHeaderSection.into());
-            }
-            let status = parse_status(buffer)?;
-            if status == 101 {
-                return Err(ResponseError::UnsolicitedUpgrade.into());
-            }
-            if (100..200).contains(&status) {
-                buffer.drain(..header_end);
-                continue;
-            }
-
-            return Ok((status, header_end));
-        }
-        if buffer.len() > header_bound {
-            return Err(ResponseError::OversizedHeaderSection.into());
-        }
-        match fill(source, buffer)? {
-            ReadEvent::Data => {}
-            ReadEvent::Closed | ReadEvent::TimedOut => {
-                return Err(ResponseError::IncompleteHeaderSection.into());
-            }
+    let mut capture = ResponseCapture::new(head_request, max_length);
+    let mut bytes = Vec::with_capacity(READ_LENGTH);
+    while !capture.is_done() {
+        bytes.clear();
+        match fill(source, &mut bytes)? {
+            ReadEvent::Data => capture.push(&bytes)?,
+            ReadEvent::Closed => capture.end(false)?,
+            ReadEvent::TimedOut => capture.end(true)?,
         }
     }
+    Ok(capture.into_parts())
 }
 
 fn find_crlf(buffer: &[u8]) -> Option<usize> {
@@ -912,6 +934,26 @@ mod tests {
             Some(cap as u64),
         )
         .expect("a response")
+    }
+
+    #[test]
+    fn every_chunked_split_and_wire_cap_preserves_the_same_prefix() {
+        let response = b"HTTP/1.1 200 Odd\r\nTransfer-Encoding: chunked\r\n\r\n3;ext=yes\r\na\0b\r\n2\r\ncd\r\n0\r\nX-End: yes\r\n\r\n";
+        let head_end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        for split in 0..=response.len() {
+            for cap in head_end..=response.len() {
+                let mut capture = ResponseCapture::new(false, Some(cap as u64));
+                capture.push(&response[..split]).unwrap();
+                capture.push(&response[split..]).unwrap();
+                assert!(capture.is_done(), "split={split}, cap={cap}");
+                let (bytes, truncated) = capture.into_parts();
+                assert_eq!(bytes, response[..cap], "split={split}, cap={cap}");
+                assert_eq!(
+                    truncated,
+                    (cap < response.len()).then_some(TruncatedType::Length)
+                );
+            }
+        }
     }
 
     #[test]

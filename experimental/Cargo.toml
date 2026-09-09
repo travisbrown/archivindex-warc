@@ -1,0 +1,42 @@
+# This workspace builds on its own, outside the repository's root workspace, so that its
+# dependency tree cannot constrain the published library crates. Its members need an
+# observer-enabled `wreq` fork checked out beside this repository; see wreq/README.md.
+[workspace]
+members = ["cli", "wreq"]
+resolver = "3"
+
+# The observer API this workspace needs is not released. A patch rather than a plain dependency,
+# because it must also redirect the copy of `wreq` reached through `wreq-util`, leaving exactly
+# one `wreq` in the graph. The root workspace has no `wreq` dependency and is unaffected.
+[patch.crates-io]
+wreq = { git = "https://github.com/travisbrown/wreq", branch = "topic/archivindex-observer" }
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Travis Brown <travisrobertbrown@gmail.com>"]
+edition = "2024"
+rust-version = "1.98"
+license = "GPL-3.0-only"
+repository = "https://github.com/travisbrown/archivindex-warc"
+publish = false
+
+[workspace.dependencies]
+archivindex-archiver = { version = "0.1.0", path = "../crates/archiver" }
+archivindex-archiver-backend-wreq = { version = "0.1.0", path = "wreq" }
+archivindex-cli-support = { git = "https://github.com/travisbrown/archivindex" }
+archivindex-test-support = { git = "https://github.com/travisbrown/archivindex" }
+archivindex-warc = { version = "0.1.0", path = ".." }
+clap = { version = "4.5", features = ["derive"] }
+http = "1"
+log = "0.4"
+
+[workspace.lints.rust]
+missing_docs = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"

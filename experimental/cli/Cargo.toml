@@ -7,7 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 version.workspace = true
-publish = false
+publish.workspace = true
 
 [lints]
 workspace = true
@@ -19,12 +19,16 @@ path = "src/main.rs"
 doc = false
 
 [features]
+# Browser-derived TLS emulation with exact HTTP/1 capture. Compiles BoringSSL from source.
+wreq = ["dep:archivindex-archiver-backend-wreq"]
 # Compile SQLite from source rather than linking the system library.
 bundled = ["archivindex-archiver/bundled"]
 
 [dependencies]
 anyhow = "1"
-archivindex-archiver = { version = "0.1.0", path = "../../crates/archiver/" }
+archivindex-archiver.workspace = true
+archivindex-archiver-backend-wreq = { workspace = true, optional = true }
 archivindex-cli-support.workspace = true
 clap.workspace = true
 log.workspace = true
+serde = { version = "1", features = ["derive"] }
