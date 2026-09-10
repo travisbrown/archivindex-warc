@@ -1,15 +1,15 @@
-//! Exactness checks for the default recorder against scripted loopback servers.
-use archivindex_archiver::recorder::Recorder;
+//! Exactness checks for the built-in recorder backend against scripted loopback servers.
+use archivindex_archiver::recorder::Recorder as Backend;
 
-fn recorder() -> Recorder {
-    Recorder::new()
+fn backend() -> Backend {
+    Backend::new()
 }
-fn trusted_recorder(certificate: &rustls::pki_types::CertificateDer<'static>) -> Recorder {
+fn trusted_backend(certificate: &rustls::pki_types::CertificateDer<'static>) -> Backend {
     let mut roots = rustls::RootCertStore::empty();
     roots.add(certificate.clone()).expect("a root");
     let config = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    recorder().tls_config(std::sync::Arc::new(config))
+    backend().tls_config(std::sync::Arc::new(config))
 }
-include!("support/recorder_conformance.rs");
+include!("support/backend_conformance.rs");

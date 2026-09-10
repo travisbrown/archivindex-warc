@@ -15,7 +15,7 @@ An existing output file is not overwritten.
 
 ## Capture backends
 
-By default URLs are captured with the archiver's built-in recorder, which needs
+By default URLs are captured with the archiver's built-in recorder backend, which needs
 nothing extra. Building with the `wreq` feature adds a second backend that uses
 BoringSSL with browser-derived TLS emulation:
 

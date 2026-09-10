@@ -1,18 +1,18 @@
-//! Run the recorder's exactness contract against the optional wreq backend.
-use archivindex_archiver_backend_wreq::{Profile, WreqRecorder as Recorder};
+//! Run the shared exactness contract against the optional wreq backend.
+use archivindex_archiver_backend_wreq::{Profile, WreqBackend as Backend};
 
-const fn recorder() -> Recorder {
-    Recorder::new(Profile::Chrome136)
+const fn backend() -> Backend {
+    Backend::new(Profile::Chrome136)
 }
-fn trusted_recorder(certificate: &rustls::pki_types::CertificateDer<'static>) -> Recorder {
+fn trusted_backend(certificate: &rustls::pki_types::CertificateDer<'static>) -> Backend {
     let store = wreq::tls::trust::CertStore::builder()
         .add_der_cert(certificate)
         .build()
         .expect("a root");
-    recorder().tls_cert_store(store)
+    backend().tls_cert_store(store)
 }
-// The exactness contract every backend must satisfy, shared with the default recorder.
-include!("../../../crates/archiver/tests/support/recorder_conformance.rs");
+// The exactness contract every backend must satisfy, shared with the built-in recorder.
+include!("../../../crates/archiver/tests/support/backend_conformance.rs");
 
 #[test]
 fn no_hidden_redirects_or_retries() {
@@ -33,7 +33,7 @@ fn no_hidden_redirects_or_retries() {
             request
         });
         let target = format!("http://127.0.0.1:{port}/first").parse().unwrap();
-        let result = recorder()
+        let result = backend()
             .io_timeout(Some(Duration::from_millis(200)))
             .fetch(&Method::GET, &target, &HeaderMap::new(), None);
         let request = server.join().unwrap();
@@ -52,6 +52,6 @@ fn no_hidden_redirects_or_retries() {
 #[tokio::test]
 async fn synchronous_capture_works_inside_a_tokio_runtime() {
     let (port, server) = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
-    let captured = fetch(&recorder(), port, "/nested");
+    let captured = fetch(&backend(), port, "/nested");
     assert_eq!(captured.request, server.join().unwrap());
 }

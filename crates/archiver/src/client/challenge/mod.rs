@@ -21,7 +21,7 @@ use url::Url;
 
 use super::cookies::StoredCookie;
 use super::outcome::Exchange;
-use crate::recorder::CapturedExchange;
+use crate::backend::CapturedExchange;
 use crate::{Archiver, Error};
 
 mod pow;
@@ -102,7 +102,7 @@ impl Archiver {
         }
         let body = challenge.request_body();
         let method = http::Method::POST;
-        let captured = self.downloader.fetch_within(
+        let captured = self.backend.fetch_within(
             &method,
             &target,
             &headers,

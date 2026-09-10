@@ -9,7 +9,7 @@ use archivindex_warc_revisit_index::Index as RevisitIndex;
 
 use super::{Capture, Inspection, Request, Session, SessionSummary};
 use crate::Error;
-use crate::capture::{ArchiveSummary, CaptureControl, CaptureEvent, Origin};
+use crate::capture::{ArchiveSummary, Origin, ProgressControl, ProgressEvent};
 use crate::client::collection::Collection;
 use crate::client::notify_outcome;
 use crate::client::outcome::{CaptureOutcome, Exchange};
@@ -87,9 +87,9 @@ impl Session<'_> {
             }
             requested = true;
             if self
-                .events
+                .progress
                 .as_mut()
-                .is_some_and(|events| events.started(url, 1))
+                .is_some_and(|progress| progress.started(url, 1))
             {
                 break CrawlOutcome::Cancelled;
             }
@@ -103,9 +103,9 @@ impl Session<'_> {
                 }
             };
             let cancel_after_write = self
-                .events
+                .progress
                 .as_mut()
-                .is_some_and(|events| notify_outcome(events.as_mut(), url, &outcome));
+                .is_some_and(|progress| notify_outcome(progress.as_mut(), url, &outcome));
             let (title, driver_error) = match &outcome {
                 CaptureOutcome::Captured { exchanges, .. } => {
                     let inspection = self.inspect(url, exchanges);
@@ -128,7 +128,7 @@ impl Session<'_> {
                 Err(error) => break CrawlOutcome::Fatal(error),
             }
             if cancel_after_write
-                || self.event(CaptureEvent::Written { url }) == CaptureControl::Cancel
+                || self.event(ProgressEvent::Written { url }) == ProgressControl::Cancel
             {
                 break CrawlOutcome::Cancelled;
             }
@@ -185,9 +185,9 @@ impl Session<'_> {
         for attempt in 0..attempts {
             if attempt > 0
                 && self
-                    .events
+                    .progress
                     .as_mut()
-                    .is_some_and(|events| events.started(url, attempt + 1))
+                    .is_some_and(|progress| progress.started(url, attempt + 1))
             {
                 return AttemptOutcome::Cancelled(earlier);
             }
@@ -245,11 +245,11 @@ impl Session<'_> {
                 }
             };
             earlier.extend(exchanges);
-            if self.event(CaptureEvent::Retrying {
+            if self.event(ProgressEvent::Retrying {
                 url,
                 attempt: attempt + 2,
                 delay,
-            }) == CaptureControl::Cancel
+            }) == ProgressControl::Cancel
             {
                 return AttemptOutcome::Cancelled(earlier);
             }
@@ -320,7 +320,7 @@ fn parse_retry_after(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<
 
 /// Whether a capture was cut short for a reason another attempt could resolve.
 ///
-/// The recorder reports a lost connection or an exceeded time bound as a successful capture of a
+/// A backend reports a lost connection or an exceeded time bound as a successful capture of a
 /// truncated response, so there is no error to inspect. `length` is a configured bound rather than
 /// a failure, so it is never retried.
 fn is_retryable_truncation(exchanges: &[Exchange]) -> bool {
@@ -336,9 +336,9 @@ const fn is_transient(error: &Error) -> bool {
     matches!(
         error,
         Error::Fetch(
-            crate::recorder::Error::Io(_)
-                | crate::recorder::Error::Response(
-                    crate::recorder::ResponseError::IncompleteHeaderSection
+            crate::backend::Error::Io(_)
+                | crate::backend::Error::Response(
+                    crate::backend::ResponseError::IncompleteHeaderSection
                 )
         )
     )

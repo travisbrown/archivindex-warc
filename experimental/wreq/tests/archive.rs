@@ -2,7 +2,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use archivindex_archiver::{Archiver, Config};
-use archivindex_archiver_backend_wreq::{Profile, WreqRecorder};
+use archivindex_archiver_backend_wreq::{Profile, WreqBackend};
 use archivindex_test_support::http::{response, serve_with};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::extension::NoExtension;
@@ -35,9 +35,9 @@ fn redirects_and_challenge_answers_are_archived_exactly_once() {
         (reply, observed)
     })
     .unwrap();
-    let archiver = Archiver::with_downloader(
+    let archiver = Archiver::with_backend(
         Config::default(),
-        std::sync::Arc::new(WreqRecorder::new(Profile::Chrome136)),
+        std::sync::Arc::new(WreqBackend::new(Profile::Chrome136)),
     )
     .unwrap();
     let mut output = Vec::new();

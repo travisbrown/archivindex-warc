@@ -10,14 +10,14 @@ toolchain: a C and C++ compiler, CMake, and libclang for bindgen.
 use std::sync::Arc;
 
 use archivindex_archiver::{Archiver, Config};
-use archivindex_archiver_backend_wreq::{Profile, WreqRecorder};
+use archivindex_archiver_backend_wreq::{Profile, WreqBackend};
 
-let backend = WreqRecorder::new(Profile::Chrome136);
-let archiver = Archiver::with_downloader(Config::default(), Arc::new(backend))?;
+let backend = WreqBackend::new(Profile::Chrome136);
+let archiver = Archiver::with_backend(Config::default(), Arc::new(backend))?;
 ```
 
 All existing limits, headers, cookies, redirects, challenges, digests, and session settings still
-apply. `WreqRecorder` also provides standalone `fetch` and `fetch_by` methods and a custom
+apply. `WreqBackend` also provides standalone `fetch` and `fetch_by` methods and a custom
 certificate-store setter. There is no public arbitrary-client setter: supplying a client with
 redirects, retries, pooling, or incompatible protocol settings would invalidate attribution.
 
@@ -90,7 +90,7 @@ completed exchange goes through the existing outcome and WARC mapping paths. Req
 contain observed writes, including emulation/framing headers. A supplied byte body's framing is
 normalized, and `Connection: close` is forced.
 
-The archiver's `recorder::ResponseCapture` owns message framing for every backend:
+The archiver's `backend::ResponseCapture` owns message framing for every backend:
 
 - Discard interim responses; retain only the final HTTP response.
 - Preserve reason phrases, header formatting/duplicates, chunks/extensions, and trailers.
@@ -102,11 +102,11 @@ The archiver's `recorder::ResponseCapture` owns message framing for every backen
 
 The wreq HTTP codec still parses the stream to drive I/O. Its decoded frames are discarded, never
 reconstructed into archive blocks. A codec error fails an unfinished capture unless the observer
-already found the wire boundary or truncation. Some malformed responses accepted by the default
+already found the wire boundary or truncation. Some malformed responses accepted by the built-in
 recorder may therefore fail under wreq. No HTTP/2 or normalized capture mode is provided.
 
 Connect timeout includes DNS and TLS. Once connected, an idle timer is reset by observed plaintext
-reads/writes. The overall capture deadline includes DNS, unlike the default recorder. Transport
+reads/writes. The overall capture deadline includes DNS, unlike the built-in recorder. Transport
 failures before a usable head fail; timeouts after it preserve a time-truncated prefix. Concurrent
 captures cannot share observer state or connections.
 
@@ -119,8 +119,8 @@ been claimed.
 ## Validation
 
 The archiver's exactness contract lives in
-[`recorder_conformance.rs`](../../crates/archiver/tests/support/recorder_conformance.rs) and is
-included by both the default recorder's loopback suite and this crate's, so both backends are
+[`backend_conformance.rs`](../../crates/archiver/tests/support/backend_conformance.rs) and is
+included by both the built-in recorder's loopback suite and this crate's, so both backends are
 held to identical framing, truncation, and bytes. It covers trusted HTTPS, request equality,
 chunk and trailer framing, interim and duplicate headers, cap edges, cancellation, timeouts,
 disconnects, and concurrency. Additional tests here cover invocation inside Tokio, the absence of

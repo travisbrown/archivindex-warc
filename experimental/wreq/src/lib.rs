@@ -5,10 +5,11 @@
 //! this changes ALPN and therefore does not reproduce a browser's complete fingerprint.
 //! The archiver's configured headers take precedence over profile headers.
 //!
-//! The response block comes exclusively from the plaintext observer, through the recorder's
+//! The response block comes exclusively from the plaintext observer, through the archiver's
 //! shared framing parser. No parsed wreq response is reconstructed. A completed capture or limit
-//! cancels the request and disposes its connection. The HTTP codec may reject some responses
-//! the recorder accepts; codec errors are reported when the wire capture is not already complete.
+//! cancels the request and disposes its connection. The HTTP codec may reject some responses the
+//! built-in recorder accepts; codec errors are reported when the wire capture is not already
+//! complete.
 //!
 //! Calls are synchronous and run a dedicated thread/runtime, including when called within an
 //! existing Tokio runtime. Connect timeouts include DNS and TLS; the capture deadline covers DNS
@@ -19,10 +20,9 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use archivindex_archiver::downloader::Downloader;
-use archivindex_archiver::recorder::{
-    CapturedExchange, DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT, Error, ResponseCapture,
-    ResponseError,
+use archivindex_archiver::backend::{
+    Backend, CapturedExchange, DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT, Error,
+    ResponseCapture, ResponseError,
 };
 use archivindex_warc::record::http::ResponseMetadata;
 use chrono::Utc;
@@ -33,9 +33,9 @@ use wreq::connection_observer::{ConnectionEvent, ConnectionObserver};
 /// A versioned browser/client profile supplied by wreq-util.
 pub use wreq_util::Profile;
 
-/// An isolated, byte-exact HTTP/1 downloader using `BoringSSL` and browser emulation.
+/// An isolated, byte-exact HTTP/1 backend using `BoringSSL` and browser emulation.
 #[derive(Clone)]
-pub struct WreqRecorder {
+pub struct WreqBackend {
     profile: Profile,
     connect_timeout: Option<Duration>,
     io_timeout: Option<Duration>,
@@ -43,9 +43,9 @@ pub struct WreqRecorder {
     cert_store: Option<wreq::tls::trust::CertStore>,
 }
 
-impl std::fmt::Debug for WreqRecorder {
+impl std::fmt::Debug for WreqBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WreqRecorder")
+        f.debug_struct("WreqBackend")
             .field("profile", &self.profile)
             .field("connect_timeout", &self.connect_timeout)
             .field("io_timeout", &self.io_timeout)
@@ -55,7 +55,7 @@ impl std::fmt::Debug for WreqRecorder {
     }
 }
 
-impl WreqRecorder {
+impl WreqBackend {
     /// Select a profile. HTTP/1 is forced after applying it.
     #[must_use]
     pub const fn new(profile: Profile) -> Self {
@@ -287,12 +287,12 @@ pub fn parse_profile(name: &str) -> Result<Profile, UnknownProfile> {
     serde::Deserialize::deserialize(deserializer).map_err(|_| UnknownProfile(name.to_owned()))
 }
 
-/// Report a wreq failure through the archiver's backend error variant.
+/// Report a wreq failure through the archiver's catch-all backend error variant.
 fn backend_error(error: wreq::Error) -> Error {
-    Error::Backend(Box::new(error))
+    Error::Other(Box::new(error))
 }
 
-impl Downloader for WreqRecorder {
+impl Backend for WreqBackend {
     fn fetch_within(
         &self,
         method: &Method,

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use archivindex_archiver::recorder::{CapturedExchange, Error};
+use archivindex_archiver::backend::{CapturedExchange, Error};
 use archivindex_warc::record::Record;
 use archivindex_warc::record::capture::CaptureRecords;
 use archivindex_warc::record::header::truncated_type::TruncatedType;
@@ -63,12 +63,12 @@ fn serve_then(response: &'static [u8], linger: Duration) -> (u16, thread::JoinHa
 }
 
 /// Fetch from a loopback server without optional headers or a body.
-fn fetch(recorder: &Recorder, port: u16, path: &str) -> CapturedExchange {
+fn fetch(backend: &Backend, port: u16, path: &str) -> CapturedExchange {
     let target: Uri = format!("http://127.0.0.1:{port}{path}")
         .parse()
         .expect("a target");
 
-    recorder
+    backend
         .fetch(&Method::GET, &target, &HeaderMap::new(), None)
         .expect("a recorded exchange")
 }
@@ -83,9 +83,9 @@ fn records_the_request_and_response_bytes_exactly() {
         .parse()
         .expect("a target");
     let mut headers = HeaderMap::new();
-    headers.insert("user-agent", HeaderValue::from_static("recorder-test/0.0"));
+    headers.insert("user-agent", HeaderValue::from_static("backend-test/0.0"));
 
-    let captured = recorder()
+    let captured = backend()
         .fetch(&Method::GET, &target, &headers, None)
         .expect("a recorded exchange");
     let received = capture.join().expect("a served request");
@@ -102,7 +102,7 @@ fn records_the_request_and_response_bytes_exactly() {
         "{request}"
     );
     assert!(
-        request.contains("user-agent: recorder-test/0.0\r\n"),
+        request.contains("user-agent: backend-test/0.0\r\n"),
         "{request}"
     );
     assert!(request.contains("connection: close\r\n"), "{request}");
@@ -120,7 +120,7 @@ fn records_a_chunked_response_verbatim_and_renders_its_records() {
         4;ext=a\r\nWiki\r\n5\r\npedia\r\n0\r\nX-Checksum: abc\r\n\r\n";
     let (port, capture) = serve(response);
 
-    let captured = fetch(&recorder(), port, "/chunked");
+    let captured = fetch(&backend(), port, "/chunked");
     capture.join().expect("a served request");
 
     assert_eq!(captured.response, response);
@@ -141,7 +141,7 @@ fn records_a_close_delimited_response_to_the_close() {
     let response: &[u8] = b"HTTP/1.1 200 OK\r\nX-No-Framing: declared\r\n\r\nthe close ends this";
     let (port, capture) = serve(response);
 
-    let captured = fetch(&recorder(), port, "/unframed");
+    let captured = fetch(&backend(), port, "/unframed");
     capture.join().expect("a served request");
 
     assert_eq!(captured.response, response);
@@ -156,7 +156,7 @@ fn records_a_head_response_through_its_header_section() {
     let target: Uri = format!("http://127.0.0.1:{port}/")
         .parse()
         .expect("a target");
-    let captured = recorder()
+    let captured = backend()
         .fetch(&Method::HEAD, &target, &HeaderMap::new(), None)
         .expect("a recorded exchange");
     capture.join().expect("a served request");
@@ -173,7 +173,7 @@ fn frames_and_records_a_request_body() {
     let target: Uri = format!("http://127.0.0.1:{port}/submit")
         .parse()
         .expect("a target");
-    let captured = recorder()
+    let captured = backend()
         .fetch(
             &Method::POST,
             &target,
@@ -198,7 +198,7 @@ fn the_length_bound_truncates_the_record_and_it_still_renders() {
     let (port, capture) = serve(response);
 
     let captured = fetch(
-        &recorder().max_response_length(Some(45)),
+        &backend().max_response_length(Some(45)),
         port,
         "/truncated",
     );
@@ -227,7 +227,7 @@ fn a_read_timeout_inside_the_body_truncates_for_reason_time() {
     let (port, capture) = serve_then(response, Duration::from_millis(500));
 
     let captured = fetch(
-        &recorder().io_timeout(Some(Duration::from_millis(100))),
+        &backend().io_timeout(Some(Duration::from_millis(100))),
         port,
         "/slow",
     );
@@ -256,7 +256,7 @@ fn a_deadline_inside_the_body_truncates_for_reason_time() {
         .parse()
         .expect("a target");
 
-    let captured = recorder()
+    let captured = backend()
         .io_timeout(Some(Duration::from_secs(5)))
         .fetch_by(
             &Method::GET,
@@ -280,7 +280,7 @@ fn a_deadline_inside_the_body_truncates_for_reason_time() {
 fn a_passed_deadline_fails_before_connecting() {
     let target: Uri = "http://127.0.0.1:9/".parse().expect("a target");
 
-    let result = recorder().fetch_by(
+    let result = backend().fetch_by(
         &Method::GET,
         &target,
         &HeaderMap::new(),
@@ -297,7 +297,7 @@ fn a_passed_deadline_fails_before_connecting() {
 #[test]
 fn a_non_http_scheme_is_refused() {
     let target: Uri = "ftp://example.com/".parse().expect("a target");
-    let result = recorder().fetch(&Method::GET, &target, &HeaderMap::new(), None);
+    let result = backend().fetch(&Method::GET, &target, &HeaderMap::new(), None);
 
     assert!(matches!(result, Err(Error::UnsupportedScheme)));
 }
@@ -333,7 +333,7 @@ fn records_the_exact_bytes_over_tls() {
     let target: Uri = format!("https://localhost:{port}/tls")
         .parse()
         .expect("a target");
-    let captured = trusted_recorder(&certificate)
+    let captured = trusted_backend(&certificate)
         .fetch(&Method::GET, &target, &HeaderMap::new(), None)
         .expect("a recorded exchange");
     let received = capture.join().expect("a served request");
@@ -358,7 +358,7 @@ fn preserves_interim_duplicate_headers_whitespace_and_fragmented_chunks() {
         for byte in response { stream.write_all(&[*byte]).unwrap(); }
         request
     });
-    let captured = fetch(&recorder(), port, "/fragmented");
+    let captured = fetch(&backend(), port, "/fragmented");
     assert_eq!(captured.request, server.join().unwrap());
     assert_eq!(captured.response, response);
     assert_eq!(captured.entity_body().unwrap().as_ref(), b"a\0bcd");
@@ -369,7 +369,7 @@ fn preserves_interim_duplicate_headers_whitespace_and_fragmented_chunks() {
 fn retains_a_disconnect_after_the_head() {
     let response = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort";
     let (port, server) = serve(response);
-    let captured = fetch(&recorder(), port, "/disconnect");
+    let captured = fetch(&backend(), port, "/disconnect");
     assert_eq!(captured.response, response);
     assert_eq!(captured.truncated, Some(TruncatedType::Disconnect));
     server.join().unwrap();
@@ -383,7 +383,7 @@ fn incomplete_and_oversized_heads_fail() {
     ] {
         let (port, server) = serve(response);
         let target = format!("http://127.0.0.1:{port}/").parse().unwrap();
-        assert!(recorder().max_response_length(cap).fetch(&Method::GET, &target, &HeaderMap::new(), None).is_err());
+        assert!(backend().max_response_length(cap).fetch(&Method::GET, &target, &HeaderMap::new(), None).is_err());
         server.join().unwrap();
     }
 }
@@ -396,7 +396,7 @@ fn exact_caps_complete_without_false_truncation() {
         b"HTTP/1.1 200 OK\r\n\r\nok".as_slice(),
     ] {
         let (port, server) = serve(response);
-        let captured = fetch(&recorder().max_response_length(Some(response.len() as u64)), port, "/cap");
+        let captured = fetch(&backend().max_response_length(Some(response.len() as u64)), port, "/cap");
         assert_eq!(captured.response, response);
         assert_eq!(captured.truncated, None);
         server.join().unwrap();
@@ -407,7 +407,7 @@ fn exact_caps_complete_without_false_truncation() {
 fn concurrent_captures_keep_their_own_bytes() {
     let workers: Vec<_> = (0..8).map(|index| thread::spawn(move || {
         let (port, server) = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
-        let captured = fetch(&recorder(), port, &format!("/request-{index}"));
+        let captured = fetch(&backend(), port, &format!("/request-{index}"));
         assert_eq!(captured.request, server.join().unwrap());
         assert!(captured.request.starts_with(format!("GET /request-{index} HTTP/1.1\r\n").as_bytes()));
     })).collect();
@@ -418,7 +418,7 @@ fn concurrent_captures_keep_their_own_bytes() {
 fn a_known_length_limit_does_not_wait_for_the_rest_of_the_body() {
     let response = b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\nprefix";
     let (port, server) = serve_then(response, Duration::from_millis(500));
-    let captured = fetch(&recorder().max_response_length(Some(response.len() as u64)), port, "/limit");
+    let captured = fetch(&backend().max_response_length(Some(response.len() as u64)), port, "/limit");
     assert_eq!(captured.response, response);
     assert_eq!(captured.truncated, Some(TruncatedType::Length));
     assert!(captured.fetch_time < Duration::from_millis(400));
