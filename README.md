@@ -24,6 +24,25 @@ The workspace's supporting library crates live under [`crates`](crates/), and it
 applications live under [`tools`](tools/). The [`validator`](validator/) is a separate Rust project
 so that its dependency tree does not constrain the workspace.
 
+## Archiver record IDs
+
+The archiver assigns `https://archivindex.org/record/<hash>` IDs, where `<hash>` is 64 lowercase
+hexadecimal characters encoding SHA-256 of this byte sequence, without separators or padding:
+
+| Field | Encoding |
+| --- | --- |
+| Version | `u8`, currently 1 |
+| Record type | `u8`: warcinfo = 1, response = 2, resource = 3, request = 4, metadata = 5, revisit = 6, conversion = 7, continuation = 8 |
+| Timestamp | Big-endian `i64`, Unix milliseconds from `WARC-Date` |
+| Block digest | 32 raw bytes, SHA-256 of the entire WARC content block |
+| Target URI length | Big-endian `u32`, length in bytes |
+| Target URI | Exact UTF-8 bytes, without normalization; empty when absent |
+
+The block hash is independent of configured WARC digest algorithms and text encodings. Revisit
+records hash their own stored block. Request/response links, metadata links, and revisit-index
+entries use the assigned IDs. Identical inputs produce identical IDs; header fields outside this
+sequence do not affect identity. The WARC library's standalone builders retain their UUID defaults.
+
 ## Development
 
 The workspace requires Rust 1.88 or later. Run its tests and build its documentation with:
