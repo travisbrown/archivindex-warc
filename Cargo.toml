@@ -152,3 +152,9 @@ required-features = ["gzip"]
 [[example]]
 name = "read_filtered"
 required-features = ["gzip"]
+
+# Use the sibling checkout while cross-repository changes are reviewed together.
+[patch."https://github.com/travisbrown/archivindex"]
+archivindex-cli-support = { path = "../archivindex/crates/cli-support" }
+archivindex-publication = { path = "../archivindex/crates/publication" }
+archivindex-test-support = { path = "../archivindex/crates/test-support" }

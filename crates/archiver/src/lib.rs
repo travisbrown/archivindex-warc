@@ -43,9 +43,6 @@ mod http_date;
 pub mod recorder;
 pub mod session;
 
-#[cfg(test)]
-mod strategies;
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

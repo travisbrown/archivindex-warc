@@ -127,7 +127,6 @@ dependencies = [
 [[package]]
 name = "archivindex-cli-support"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#a25373587c251dbf13188fb75f4d9b41a92ce276"
 dependencies = [
  "clap",
  "ctrlc",
@@ -143,7 +142,6 @@ dependencies = [
 [[package]]
 name = "archivindex-publication"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#a25373587c251dbf13188fb75f4d9b41a92ce276"
 dependencies = [
  "tempfile",
  "thiserror",
@@ -152,9 +150,9 @@ dependencies = [
 [[package]]
 name = "archivindex-test-support"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#a25373587c251dbf13188fb75f4d9b41a92ce276"
 dependencies = [
  "proptest",
+ "url",
 ]
 
 [[package]]
