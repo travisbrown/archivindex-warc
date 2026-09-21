@@ -1,7 +1,7 @@
 //! A command-line front end for archiving URLs into WARC files.
 
 use std::io::BufRead;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::Ordering;
 
@@ -12,6 +12,8 @@ use archivindex_cli_support::config::load_config;
 use archivindex_cli_support::progress::spinner;
 use archivindex_cli_support::{CommandOutcome, Verbosity, exit_code, interrupt_flag, plural};
 use clap::Parser;
+
+mod id;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -25,7 +27,33 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
 
     match cli.command {
         Command::Archive(options) => archive(&options, quiet),
+        Command::Reidentify { input, output } => reidentify(&input, &output, quiet),
     }
+}
+
+/// Give each record of `input` its derived identifier, writing the records to `output`.
+fn reidentify(input: &Path, output: &Path, quiet: bool) -> Result<CommandOutcome> {
+    let summary = id::record_ids(input, output)
+        .with_context(|| format!("cannot reidentify {}", input.display()))?;
+
+    if !quiet {
+        let unidentifiable = if summary.unidentifiable == 0 {
+            String::new()
+        } else {
+            format!(
+                ", retaining the identifiers of {}",
+                plural(summary.unidentifiable, "record")
+            )
+        };
+        println!(
+            "Wrote {} to {}, giving {} a derived identifier{unidentifiable}.",
+            plural(summary.records, "record"),
+            output.display(),
+            plural(summary.reidentified, "record"),
+        );
+    }
+
+    Ok(CommandOutcome::Success)
 }
 
 /// Archive a list of URLs read from standard input.
@@ -134,6 +162,24 @@ struct Cli {
 enum Command {
     /// Archive URLs read one per line from standard input.
     Archive(ArchiveOptions),
+
+    /// Give every record of a WARC file the identifier derived from its content.
+    ///
+    /// Identity includes the capture date at microsecond precision, content block, target URI,
+    /// record relationships, and segment and revisit context. References within the file are
+    /// resolved to final IDs before hashing. External references are kept. Unknown types and
+    /// unreadable identity fields retain their IDs with a warning. Duplicate IDs, output
+    /// collisions, and cyclic dependencies are refused before writing.
+    Reidentify {
+        /// The WARC file to read, which is read twice, so it cannot be standard input. A .gz
+        /// extension selects gzip decompression.
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+        input: PathBuf,
+
+        /// The file to write; a .gz extension selects record-at-a-time gzip compression.
+        #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+        output: PathBuf,
+    },
 }
 
 /// Options for archiving URLs read from standard input.
@@ -194,8 +240,12 @@ mod tests {
         ])
         .expect("valid options");
 
-        let Command::Archive(without) = without.command;
-        let Command::Archive(with) = with.command;
+        let Command::Archive(without) = without.command else {
+            panic!("expected an archive command");
+        };
+        let Command::Archive(with) = with.command else {
+            panic!("expected an archive command");
+        };
 
         assert_eq!(without.config, None);
         assert_eq!(with.config.as_deref(), Some(Path::new("capture.toml")));

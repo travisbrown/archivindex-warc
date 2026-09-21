@@ -26,5 +26,13 @@ bundled = ["archivindex-archiver/bundled"]
 anyhow = "1"
 archivindex-archiver = { version = "0.1.0", path = "../../crates/archiver/" }
 archivindex-cli-support.workspace = true
+archivindex-warc.workspace = true
+archivindex-warc-ops = { path = "../../crates/ops" }
 clap.workspace = true
+fluent-uri.workspace = true
 log.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+archivindex-test-support.workspace = true
+tempfile.workspace = true

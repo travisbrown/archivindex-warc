@@ -7,12 +7,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use archivindex_warc::parse::raw;
 use archivindex_warc::parse::untyped::name::Field;
 use archivindex_warc::value::MediaType;
 
 use crate::file::{compression, is_stdin, open, transform};
-use crate::header::{is_response, is_revisit, normalize_id};
+use crate::header::{insert_field, is_response, is_revisit, normalize_id};
 use crate::{Error, Result};
 
 /// The field a revisit takes from its original.
@@ -112,28 +111,10 @@ fn response_payload_types(input: &Path) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
     Ok(originals)
 }
 
-/// Add `field` to a header block before the first field that follows it in conventional order.
-///
-/// A header whose fields are already in that order stays in it. Extension fields follow every
-/// standard field.
-fn insert_field(header: &mut raw::RecordHeader, field: Field, value: Vec<u8>) {
-    let rank = field.canonical_rank();
-    let position = header
-        .headers
-        .iter()
-        .position(|(name, _)| {
-            Field::from_name(name).is_none_or(|existing| existing.canonical_rank() > rank)
-        })
-        .unwrap_or(header.headers.len());
-
-    header
-        .headers
-        .insert(position, (field.standard_name().to_owned(), value));
-}
-
 #[cfg(test)]
 mod tests {
     use archivindex_test_support::warc::render;
+    use archivindex_warc::parse::raw;
 
     use super::*;
     use crate::file::open;
@@ -345,36 +326,6 @@ mod tests {
         assert_eq!(
             output[2].header.get("WARC-Identified-Payload-Type"),
             Some(&b" text/plain"[..])
-        );
-    }
-
-    #[test]
-    fn places_the_field_before_the_first_that_follows_it_in_conventional_order() {
-        let mut header = raw::RecordHeader::parse(
-            b"WARC/1.1\r\nContent-Length: 0\r\nWARC-Type: revisit\r\n\
-              WARC-Refers-To: <urn:uuid:1>\r\n\r\n",
-        )
-        .unwrap()
-        .0;
-
-        insert_field(
-            &mut header,
-            Field::IdentifiedPayloadType,
-            b" text/plain".to_vec(),
-        );
-
-        assert_eq!(
-            header
-                .headers
-                .iter()
-                .map(|(name, _)| name.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "WARC-Identified-Payload-Type",
-                "Content-Length",
-                "WARC-Type",
-                "WARC-Refers-To",
-            ]
         );
     }
 
