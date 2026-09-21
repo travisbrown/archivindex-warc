@@ -136,8 +136,14 @@ dependencies = [
  "anyhow",
  "archivindex-archiver",
  "archivindex-cli-support",
+ "archivindex-test-support",
+ "archivindex-warc",
+ "archivindex-warc-ops",
  "clap",
+ "fluent-uri",
  "log",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

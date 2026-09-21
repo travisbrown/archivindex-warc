@@ -23,7 +23,9 @@ use archivindex_warc::value::WarcDate;
 use archivindex_warc::version::WarcVersion;
 
 use crate::file::{compression, is_stdin, open, transform};
-use crate::header::{REFERENCE_FIELDS, is_warcinfo, normalize_id, output_filename, set_filename};
+use crate::header::{
+    is_warcinfo, normalize_id, output_filename, record_date, redirect_references, set_filename,
+};
 use crate::{Error, Result};
 
 /// Fields that vary between otherwise identical warcinfo records: the generated identifier, the
@@ -166,7 +168,7 @@ impl MergePlan {
             let kept = *members
                 .iter()
                 .min_by_key(|&&index| {
-                    let date = record_date(&records[index]).map(WarcDate::date_time);
+                    let date = record_date(&records[index].header).map(WarcDate::date_time);
                     // An undated record sorts after every dated one, and the arrival index breaks
                     // ties in favor of the first file.
                     (date.is_none(), date, index)
@@ -343,23 +345,6 @@ fn body_line(body: &[u8], start: usize) -> (&[u8], usize) {
     (&body[start..content_end], line_feed + 1)
 }
 
-/// Point references to merged warcinfo records at the surviving record.
-fn redirect_references(header: &mut raw::RecordHeader, redirects: &HashMap<Vec<u8>, Vec<u8>>) {
-    if redirects.is_empty() {
-        return;
-    }
-
-    for (name, value) in &mut header.headers {
-        if REFERENCE_FIELDS
-            .iter()
-            .any(|field| name.eq_ignore_ascii_case(field))
-            && let Some(replacement) = redirects.get(normalize_id(value))
-        {
-            value.clone_from(replacement);
-        }
-    }
-}
-
 /// The trimmed `WARC-Record-ID` value of a record.
 fn record_id(record: &raw::Record) -> Option<&[u8]> {
     record
@@ -367,14 +352,6 @@ fn record_id(record: &raw::Record) -> Option<&[u8]> {
         .get("WARC-Record-ID")
         .map(<[u8]>::trim_ascii)
         .filter(|value| !value.is_empty())
-}
-
-/// The instant a record's `WARC-Date` declares, when it can be read.
-fn record_date(record: &raw::Record) -> Option<WarcDate> {
-    let value = record.header.get("WARC-Date")?;
-    let value = std::str::from_utf8(value.trim_ascii()).ok()?;
-
-    WarcDate::parse(value, record.header.version)
 }
 
 #[cfg(test)]
