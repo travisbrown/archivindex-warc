@@ -35,6 +35,7 @@ archivindex-test-support = { git = "https://github.com/travisbrown/archivindex" 
 archivindex-warc = { version = "0.1.0", path = "." }
 chrono = "0.4"
 clap = { version = "4.5", features = ["derive"] }
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 data-encoding = "2"
 flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
 fluent-uri = "0.4"
