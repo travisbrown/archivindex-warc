@@ -20,9 +20,11 @@ indexed access.
 
 ## Repository
 
-The workspace's supporting library crates live under [`crates`](crates/), and its command-line
-applications live under [`tools`](tools/). The [`validator`](validator/) is a separate Rust project
-so that its dependency tree does not constrain the workspace.
+The workspace's supporting library crates live under [`crates`](crates/), and the WARC
+command-line application under [`tools`](tools/). The [`validator`](validator/) and
+[`experimental`](experimental/) directories are separate Rust projects, so that their dependency
+trees do not constrain the workspace. The archiver's command-line tool and its alternative
+capture backends live in the latter.
 
 The [`archivindex-archiver` package](crates/archiver/) captures HTTP exchanges into WARC files. Its
 README describes usage and the [record ID scheme](crates/archiver/README.md#record-ids) its records
@@ -30,7 +32,13 @@ use.
 
 ## Development
 
-The workspace requires Rust 1.88 or later. Run its tests and build its documentation with:
+The workspace requires Rust 1.88 or later and needs nothing extra. The archiver's command-line
+tool and its experimental capture backends build in their own workspace under
+[experimental/](experimental), so their dependency trees cannot constrain the library crates.
+Those members need Rust 1.98 and a native BoringSSL toolchain; see
+[the backend notes](experimental/wreq/README.md).
+
+Run the workspace tests and build its documentation with:
 
 ```console
 cargo test --locked --workspace --features archivindex-warc-revisit-index/bundled
