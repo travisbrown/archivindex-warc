@@ -564,14 +564,14 @@ pub fn redact_credentials(url: &Url) -> String {
 
 #[cfg(test)]
 mod tests {
+    use archivindex_test_support::strategies;
     use http::header::{ACCEPT_LANGUAGE, USER_AGENT};
     use proptest::prelude::*;
 
     use super::*;
-    use crate::strategies;
 
     #[proptest::property_test]
-    fn request_targets_are_uris_without_a_fragment(#[strategy = strategies::url()] url: Url) {
+    fn request_targets_are_uris_without_a_fragment(#[strategy = strategies::http_url()] url: Url) {
         let target = request_target(&url);
 
         let path_start = url[..Position::BeforePath].len();
@@ -583,7 +583,7 @@ mod tests {
     }
 
     #[proptest::property_test]
-    fn redacted_urls_keep_no_credentials(#[strategy = strategies::url()] url: Url) {
+    fn redacted_urls_keep_no_credentials(#[strategy = strategies::http_url()] url: Url) {
         let redacted = redact_credentials(&url);
         let parsed = Url::parse(&redacted).unwrap();
 
