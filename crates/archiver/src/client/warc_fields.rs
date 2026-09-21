@@ -12,6 +12,7 @@ use chrono::Utc;
 use fluent_uri::Uri;
 
 use super::outcome::DATE_PRECISION;
+use super::record_id::assign_record_id;
 use crate::config::{Operator, Software};
 use crate::{Config, Error};
 
@@ -69,7 +70,9 @@ pub fn warcinfo_record(warc_name: &str, options: &WarcinfoOptions<'_>) -> Result
         builder = builder.is_part_of(session_id)?;
     }
 
-    Ok(builder.build())
+    let mut record = builder.build();
+    assign_record_id(&mut record)?;
+    Ok(record)
 }
 
 /// Build the metadata record linked to one captured response or revisit.
@@ -92,5 +95,7 @@ pub fn metadata_record(
         builder = builder.field(MetadataField::Dcmi(DcmiTerm::Title), title)?;
     }
 
-    Ok(builder.build())
+    let mut record = builder.build();
+    assign_record_id(&mut record)?;
+    Ok(record)
 }

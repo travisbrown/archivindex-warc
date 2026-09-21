@@ -382,25 +382,18 @@ pub enum Record<E: Extension = NoExtension> {
         /// The record's block, recommended to be `application/warc-fields`.
         body: FieldsBlock<WarcinfoField>,
     },
-    /// A `response` record: a complete scheme-specific response to a request.
-    Response {
-        /// The record's header block.
-        header: ResponseHeader<E>,
-        /// The record's block, the captured response as its scheme defines it.
-        body: Vec<u8>,
-    },
-    /// A `resource` record: a resource captured without full protocol information.
-    Resource {
-        /// The record's header block.
-        header: ResourceHeader<E>,
-        /// The record's block, the captured resource itself.
-        body: Vec<u8>,
-    },
     /// A `request` record: a complete scheme-specific request.
     Request {
         /// The record's header block.
         header: RequestHeader<E>,
         /// The record's block, the captured request as its scheme defines it.
+        body: Vec<u8>,
+    },
+    /// A `response` record: a complete scheme-specific response to a request.
+    Response {
+        /// The record's header block.
+        header: ResponseHeader<E>,
+        /// The record's block, the captured response as its scheme defines it.
         body: Vec<u8>,
     },
     /// A `metadata` record: content created to further describe another record.
@@ -415,6 +408,13 @@ pub enum Record<E: Extension = NoExtension> {
         /// The record's header block.
         header: RevisitHeader<E>,
         /// The record's block, whose shape the revisit profile governs.
+        body: Vec<u8>,
+    },
+    /// A `resource` record: a resource captured without full protocol information.
+    Resource {
+        /// The record's header block.
+        header: ResourceHeader<E>,
+        /// The record's block, the captured resource itself.
         body: Vec<u8>,
     },
     /// A `conversion` record: an alternative version of another record's content.
@@ -449,16 +449,16 @@ pub enum Record<E: Extension = NoExtension> {
 pub enum RecordHeader<E: Extension = NoExtension> {
     /// The header of a `warcinfo` record.
     Warcinfo(WarcinfoHeader<E>),
-    /// The header of a `response` record.
-    Response(ResponseHeader<E>),
-    /// The header of a `resource` record.
-    Resource(ResourceHeader<E>),
     /// The header of a `request` record.
     Request(RequestHeader<E>),
+    /// The header of a `response` record.
+    Response(ResponseHeader<E>),
     /// The header of a `metadata` record.
     Metadata(MetadataHeader<E>),
     /// The header of a `revisit` record.
     Revisit(RevisitHeader<E>),
+    /// The header of a `resource` record.
+    Resource(ResourceHeader<E>),
     /// The header of a `conversion` record.
     Conversion(ConversionHeader<E>),
     /// The header of a `continuation` record.
@@ -552,11 +552,11 @@ header_accessors! {
     /// The value the record's `WARC-Type` field carries.
     pub fn type_name(&self) -> &str {
         Warcinfo => "warcinfo",
-        Response => "response",
-        Resource => "resource",
         Request => "request",
+        Response => "response",
         Metadata => "metadata",
         Revisit => "revisit",
+        Resource => "resource",
         Conversion => "conversion",
         Continuation => "continuation",
         Other => header.extension.type_name(),
@@ -564,25 +564,25 @@ header_accessors! {
 
     /// The WARC version declared by this record.
     pub const fn version(&self) -> WarcVersion {
-        Warcinfo | Response | Resource | Request | Metadata | Revisit | Conversion
+        Warcinfo | Request | Response | Metadata | Revisit | Resource | Conversion
             | Continuation | Other => header.version,
     }
 
     /// Mutably access the WARC version declared by this record.
     pub const fn version_mut(&mut self) -> &mut WarcVersion {
-        Warcinfo | Response | Resource | Request | Metadata | Revisit | Conversion
+        Warcinfo | Request | Response | Metadata | Revisit | Resource | Conversion
             | Continuation | Other => &mut header.version,
     }
 
     /// The fields shared by every record type.
     pub const fn core(&self) -> &CoreHeaders<E> {
-        Warcinfo | Response | Resource | Request | Metadata | Revisit | Conversion
+        Warcinfo | Request | Response | Metadata | Revisit | Resource | Conversion
             | Continuation | Other => &header.core,
     }
 
     /// The fields every record carries, mutably.
     pub const fn core_mut(&mut self) -> &mut CoreHeaders<E> {
-        Warcinfo | Response | Resource | Request | Metadata | Revisit | Conversion
+        Warcinfo | Request | Response | Metadata | Revisit | Resource | Conversion
             | Continuation | Other => &mut header.core,
     }
 
@@ -642,7 +642,7 @@ header_accessors! {
     /// the record is not segmented.
     pub const fn segment_number(&self) -> Option<u64> {
         Continuation => Some(header.segment_number.get()),
-        Warcinfo | Response | Resource | Request | Metadata | Revisit | Conversion
+        Warcinfo | Request | Response | Metadata | Revisit | Resource | Conversion
             | Other => if header.segment_origin { Some(1) } else { None },
     }
 }
@@ -704,14 +704,15 @@ impl<E: Extension> Record<E> {
     capture_record!(store store_request, RequestHeader, "request");
 
     /// Convert this variant to its raw record type while preserving extension type spelling.
-    fn record_type(&self) -> RecordType {
+    #[must_use]
+    pub fn record_type(&self) -> RecordType {
         match self {
             Self::Warcinfo { .. } => RecordType::Warcinfo,
-            Self::Response { .. } => RecordType::Response,
-            Self::Resource { .. } => RecordType::Resource,
             Self::Request { .. } => RecordType::Request,
+            Self::Response { .. } => RecordType::Response,
             Self::Metadata { .. } => RecordType::Metadata,
             Self::Revisit { .. } => RecordType::Revisit,
+            Self::Resource { .. } => RecordType::Resource,
             Self::Conversion { .. } => RecordType::Conversion,
             Self::Continuation { .. } => RecordType::Continuation,
             Self::Other { header, .. } => {
