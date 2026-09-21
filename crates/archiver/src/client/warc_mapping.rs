@@ -11,6 +11,7 @@ use archivindex_warc_revisit_index::payload::RevisitTarget;
 use fluent_uri::Uri;
 
 use super::outcome::Exchange;
+use super::record_id::assign_record_id;
 use super::warc_fields::{MetadataValues, metadata_record};
 use crate::Error;
 use crate::config::DigestFormats;
@@ -193,6 +194,14 @@ fn capture_records(
         }
         None => event.exchange(request, response)?,
     };
+    assign_record_id(&mut records.request)?;
+    let request_id = records.request.core().record_id.clone();
+    match &mut records.response {
+        Record::Response { header, .. } => header.concurrent_to = vec![request_id],
+        Record::Revisit { header, .. } => header.concurrent_to = vec![request_id],
+        _ => unreachable!("a capture produces a response or revisit"),
+    }
+    assign_record_id(&mut records.response)?;
     records.metadata = Some(metadata_record(
         date,
         target_uri.clone(),

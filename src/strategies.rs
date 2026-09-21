@@ -376,11 +376,11 @@ macro_rules! capture_record {
 fn record_of_version(version: WarcVersion) -> impl Strategy<Value = Record<NoExtension>> {
     prop_oneof![
         warcinfo_record(version),
-        capture_record!(version, Response, ResponseHeader),
-        capture_record!(version, Resource, ResourceHeader),
         capture_record!(version, Request, RequestHeader),
+        capture_record!(version, Response, ResponseHeader),
         metadata_record(version),
         revisit_record(version),
+        capture_record!(version, Resource, ResourceHeader),
         conversion_record(version),
         continuation_record(version),
     ]

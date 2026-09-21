@@ -24,6 +24,10 @@ The workspace's supporting library crates live under [`crates`](crates/), and it
 applications live under [`tools`](tools/). The [`validator`](validator/) is a separate Rust project
 so that its dependency tree does not constrain the workspace.
 
+The [`archivindex-archiver` package](crates/archiver/) captures HTTP exchanges into WARC files. Its
+README describes usage and the [record ID scheme](crates/archiver/README.md#record-ids) its records
+use.
+
 ## Development
 
 The workspace requires Rust 1.88 or later. Run its tests and build its documentation with:

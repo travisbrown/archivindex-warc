@@ -8,18 +8,19 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use archivindex_warc::parse::raw;
+use archivindex_warc::record::record_type::RecordType;
 use archivindex_warc_ops::header::{REFERENCE_FIELDS, normalize_id};
 
 /// Stable, distinguishable colors for the standard record types.
-const TYPE_COLORS: [(&str, &str); 8] = [
-    ("warcinfo", "#F4A261"),
-    ("response", "#8ECAE6"),
-    ("resource", "#FFD166"),
-    ("request", "#90BE6D"),
-    ("metadata", "#CDB4DB"),
-    ("revisit", "#FFADAD"),
-    ("conversion", "#B8C0FF"),
-    ("continuation", "#A8DADC"),
+const TYPE_COLORS: [(RecordType, &str); 8] = [
+    (RecordType::Warcinfo, "#F4A261"),
+    (RecordType::Request, "#90BE6D"),
+    (RecordType::Response, "#8ECAE6"),
+    (RecordType::Metadata, "#CDB4DB"),
+    (RecordType::Revisit, "#FFADAD"),
+    (RecordType::Resource, "#FFD166"),
+    (RecordType::Conversion, "#B8C0FF"),
+    (RecordType::Continuation, "#A8DADC"),
 ];
 
 /// Space between the diagram and the edge of its SVG viewport.
@@ -43,7 +44,7 @@ pub struct GraphSummary {
 /// The graph-relevant part of a raw record.
 #[derive(Debug)]
 struct Record {
-    warc_type: String,
+    warc_type: RecordType,
     id: Option<Vec<u8>>,
     references: Vec<Reference>,
 }
@@ -51,8 +52,8 @@ struct Record {
 impl Record {
     /// The graph's view of a record, taken from its header block alone.
     fn from_header(header: &raw::RecordHeader) -> Self {
-        let warc_type = value(header, "WARC-Type")
-            .map_or_else(|| "unknown".to_owned(), |value| value.to_ascii_lowercase());
+        let warc_type =
+            RecordType::from(value(header, "WARC-Type").as_deref().unwrap_or("unknown"));
         let id = header
             .get("WARC-Record-ID")
             .map(normalize_id)
@@ -175,7 +176,7 @@ fn source(records: &[Record]) -> (String, usize) {
         write!(
             source,
             "  type_{index}: \"{}\" {{\n    style.fill: \"{color}\"\n    style.font-size: {GRAPH_FONT_SIZE}\n  }}\n",
-            escape(record_type)
+            escape(record_type.as_str())
         )
         .expect("invariant violation: writing to a String");
     }
@@ -264,8 +265,8 @@ fn unique_prefix<'uuid>(uuid: &'uuid str, sorted: &[&str]) -> &'uuid str {
     &uuid[..uuid.len().min((shared + 1).max(8))]
 }
 
-/// A color for every record type present, in key order.
-fn colors(records: &[Record]) -> BTreeMap<String, String> {
+/// A color for every record type present, in canonical order.
+fn colors(records: &[Record]) -> BTreeMap<RecordType, String> {
     let mut result = BTreeMap::new();
     let mut generated: u16 = 0;
 
@@ -408,7 +409,7 @@ mod tests {
 
     fn record(warc_type: &str, id: Option<&str>, references: &[(&'static str, &str)]) -> Record {
         Record {
-            warc_type: warc_type.to_owned(),
+            warc_type: RecordType::from(warc_type),
             id: id.map(|id| id.as_bytes().to_vec()),
             references: references
                 .iter()
@@ -459,6 +460,27 @@ mod tests {
         assert!(source.contains("records.record_0 -> records.record_1: \"concurrent-to\""));
         assert!(!source.contains("warcinfo-id\"\n"));
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn key_uses_canonical_record_order() {
+        let records = [
+            record("x-last", None, &[]),
+            record("revisit", None, &[]),
+            record("metadata", None, &[]),
+            record("response", None, &[]),
+            record("warcinfo", None, &[]),
+            record("request", None, &[]),
+        ];
+        let (source, _) = source(&records);
+        for (index, name) in [
+            "warcinfo", "request", "response", "metadata", "revisit", "x-last",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(source.contains(&format!("type_{index}: \"{name}\"")));
+        }
     }
 
     #[test]

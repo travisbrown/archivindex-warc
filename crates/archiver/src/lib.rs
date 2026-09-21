@@ -40,6 +40,7 @@ pub mod capture;
 mod client;
 pub mod config;
 mod http_date;
+pub mod id;
 pub mod recorder;
 pub mod session;
 
