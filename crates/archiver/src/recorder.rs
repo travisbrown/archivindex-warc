@@ -1,11 +1,12 @@
 //! Byte-exact capture of live HTTP exchanges.
 //!
-//! [`Recorder`] performs an HTTP/1.1 exchange over its own connection and returns the exact request
-//! and response bytes in [`CapturedExchange`]. It serializes the request itself and stores the
-//! response verbatim, parsing only enough to find the message boundary. This preserves chunked
-//! coding, header spelling, and the reason phrase, so block digests cover bytes that crossed the
-//! wire. To archive an exchange performed by another client, use
-//! [`record::http`](archivindex_warc::record::http) to reconstruct blocks from parsed parts.
+//! [`Recorder`] is the capture backend this crate ships. It performs an HTTP/1.1 exchange over its
+//! own connection and returns the exact request and response bytes in [`CapturedExchange`]. It
+//! serializes the request itself and stores the response verbatim, parsing only enough to find the
+//! message boundary. This preserves chunked coding, header spelling, and the reason phrase, so
+//! block digests cover bytes that crossed the wire. To archive an exchange performed by another
+//! client, use [`record::http`](archivindex_warc::record::http) to reconstruct blocks from parsed
+//! parts.
 //!
 //! Each fetch opens one connection for one request and response. It does not follow redirects,
 //! decode content, or reuse the connection. It adds `host` when absent and defaults a missing
@@ -20,82 +21,20 @@
 //! resolution.
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::{IpAddr, TcpStream, ToSocketAddrs};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use archivindex_warc::record::capture::CaptureEvent;
-use archivindex_warc::record::header::truncated_type::TruncatedType;
 use archivindex_warc::record::http::{ResponseMetadata, reconstruct_request};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use fluent_uri::Uri;
 use http::{HeaderMap, HeaderValue, Method, Version, header};
 use rustls::pki_types::ServerName;
 
-/// The connection and I/O timeout of a new recorder.
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// The response-size bound of a new recorder, in bytes.
-pub const DEFAULT_MAX_RESPONSE_LENGTH: u64 = 256 * 1024 * 1024;
-
-pub mod framing;
-
-use framing::read_response;
-
-/// Errors returned while performing a recorded exchange.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// The target is not an absolute HTTP or HTTPS URI.
-    #[error("the target URI must be absolute, with an `http` or `https` scheme")]
-    UnsupportedScheme,
-    /// The target names no host.
-    #[error("the target URI names no host")]
-    MissingHost,
-    /// The target cannot be represented as a `WARC-Target-URI`.
-    #[error("the target URI is not a URI: {0}")]
-    TargetUri(#[from] fluent_uri::ParseError),
-    /// The host cannot name a TLS server.
-    #[error("the host cannot name a TLS server: {0}")]
-    ServerName(#[from] rustls::pki_types::InvalidDnsNameError),
-    /// The TLS session could not be created.
-    #[error(transparent)]
-    Tls(#[from] rustls::Error),
-    /// An I/O operation failed.
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    /// Response framing is malformed.
-    #[error(transparent)]
-    Response(#[from] ResponseError),
-}
-
-/// Malformed responses whose message boundary cannot be determined.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum ResponseError {
-    /// The response does not begin with an HTTP status line.
-    #[error("the response does not begin with an HTTP status line")]
-    MalformedStatusLine,
-    /// The server switched protocols with a `101` the request did not ask for.
-    #[error("the server switched protocols with a `101` the request did not ask for")]
-    UnsolicitedUpgrade,
-    /// The connection ended before a complete header section arrived.
-    #[error("the connection ended before a complete response header section arrived")]
-    IncompleteHeaderSection,
-    /// The header section exceeds the recorder's limit.
-    #[error("the response header section exceeds the recorder's limit")]
-    OversizedHeaderSection,
-    /// The response declares `Content-Length` values that disagree.
-    #[error("the response declares `Content-Length` values that disagree")]
-    ConflictingContentLength,
-    /// A declared `Content-Length` is not a valid decimal length.
-    #[error("the declared `Content-Length` `{0}` is not a valid decimal length")]
-    MalformedContentLength(String),
-    /// A declared chunk size is not a valid hexadecimal length.
-    #[error("the declared chunk size `{0}` is not a hexadecimal length")]
-    MalformedChunkSize(String),
-    /// A chunk's data is not followed by the terminating CRLF.
-    #[error("a chunk's data is not followed by CRLF")]
-    UnterminatedChunk,
-}
+use crate::backend::framing::read_response;
+use crate::backend::{
+    CapturedExchange, DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT, Error, ResponseError,
+};
 
 /// An HTTP/1.1 client that records the exact bytes of one exchange per fetch.
 #[derive(Clone, Debug)]
@@ -342,57 +281,6 @@ impl Recorder {
 impl Default for Recorder {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// A recorded exchange and the fields needed to build its capture records.
-///
-/// [`capture_event`](Self::capture_event) copies the shared fields into a [`CaptureEvent`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CapturedExchange {
-    /// Request bytes exactly as written.
-    pub request: Vec<u8>,
-    /// Response bytes exactly as read, from the final status line through the recorded end.
-    pub response: Vec<u8>,
-    /// Parsed fields and boundaries of the recorded response.
-    pub response_metadata: ResponseMetadata,
-    /// The requested URI.
-    pub target_uri: Uri<String>,
-    /// The peer IP address.
-    pub ip_address: IpAddr,
-    /// When network activity began.
-    pub date: DateTime<Utc>,
-    /// Time from starting network activity to finishing the response.
-    pub fetch_time: Duration,
-    /// Why the response was truncated, if applicable.
-    pub truncated: Option<TruncatedType>,
-}
-
-impl CapturedExchange {
-    /// Create a capture event with this exchange's shared fields.
-    #[must_use]
-    pub fn capture_event(&self) -> CaptureEvent {
-        let event = CaptureEvent::new(self.target_uri.clone(), self.date)
-            .ip_address(self.ip_address)
-            .fetch_time(self.fetch_time);
-
-        match self.truncated.clone() {
-            Some(reason) => event.truncated(reason),
-            None => event,
-        }
-    }
-
-    /// Return the response entity-body with transfer coding removed and content coding preserved.
-    pub fn entity_body(
-        &self,
-    ) -> Result<std::borrow::Cow<'_, [u8]>, archivindex_warc::record::payload::Error> {
-        archivindex_warc::record::payload::entity_body(&self.response)
-    }
-
-    /// Return the recorded bytes after the response header section without transfer decoding.
-    #[must_use]
-    pub fn stored_body(&self) -> &[u8] {
-        &self.response[self.response_metadata.body_offset..]
     }
 }
 

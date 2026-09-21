@@ -6,11 +6,31 @@ use std::time::Duration;
 use archivindex_warc::value::{Algorithm, DigestFormat, Encoding};
 
 use crate::Config;
-use crate::recorder::{DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT};
+use crate::backend::{DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT};
 use crate::session::RetryConfig;
 
 /// The spelling that lifts a limit in a serialized configuration.
 const UNBOUNDED: &str = "unbounded";
+
+/// Select one of the capture backends this crate builds itself.
+///
+/// A backend from another crate is supplied directly with
+/// [`Archiver::with_backend`](crate::Archiver::with_backend) rather than named here, so an
+/// application that offers a choice of backends owns that part of its own configuration. This
+/// type is non-exhaustive because further built-in backends may be added.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+#[non_exhaustive]
+pub enum BuiltinBackend {
+    /// The synchronous Rustls recorder.
+    Recorder {},
+}
+
+impl Default for BuiltinBackend {
+    fn default() -> Self {
+        Self::Recorder {}
+    }
+}
 
 impl Config {
     /// The default `User-Agent` header value, identifying this crate and its version.
@@ -28,6 +48,7 @@ impl Default for Config {
     /// The defaults listed as TOML in the [`Config`] documentation.
     fn default() -> Self {
         Self {
+            backend: BuiltinBackend::default(),
             user_agent: Self::DEFAULT_USER_AGENT.to_owned(),
             timeout: DEFAULT_TIMEOUT,
             max_capture_time: Some(Self::DEFAULT_MAX_CAPTURE_TIME),
@@ -286,7 +307,7 @@ mod tests {
 
     use super::{DigestConfig, DigestFormats, DigestOverride, Operator, Software};
     use crate::Config;
-    use crate::recorder::{DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT};
+    use crate::backend::{DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT};
 
     #[test]
     fn warc_is_uncompressed_by_default() {

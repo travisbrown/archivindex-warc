@@ -14,8 +14,8 @@ use super::outcome::Exchange;
 use super::record_id::assign_record_id;
 use super::warc_fields::{MetadataValues, metadata_record};
 use crate::Error;
+use crate::backend::CapturedExchange;
 use crate::config::DigestFormats;
-use crate::recorder::CapturedExchange;
 
 /// Optional fields added to the metadata record accompanying an exchange.
 #[derive(Clone, Copy)]

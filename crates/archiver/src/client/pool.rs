@@ -7,7 +7,7 @@ use std::thread;
 use super::collection::Collection;
 use super::notify_outcome;
 use super::outcome::CaptureOutcome;
-use crate::capture::{CaptureControl, CaptureEvent, CaptureEventSink, Origin};
+use crate::capture::{Origin, ProgressControl, ProgressEvent, ProgressSink};
 use crate::{Archiver, Error};
 
 type IndexedOutcome = (usize, String, CaptureOutcome);
@@ -33,11 +33,11 @@ struct Dispatcher<I> {
 impl<S: AsRef<str>, I: Iterator<Item = S>> Dispatcher<I> {
     /// Dispatch URLs until every worker is busy, the bound is reached, the input runs out, or the
     /// sink cancels.
-    fn fill(&mut self, recorded: usize, events: &mut impl CaptureEventSink) {
+    fn fill(&mut self, recorded: usize, progress: &mut impl ProgressSink) {
         while !self.cancelled && self.idle > 0 && self.dispatched - recorded < self.limit {
             let Some(url) = self.urls.next() else { return };
             let url = url.as_ref().to_owned();
-            if events.started(&url, 1) {
+            if progress.started(&url, 1) {
                 self.cancelled = true;
                 return;
             }
@@ -57,7 +57,7 @@ impl Archiver {
         urls: I,
         concurrency: usize,
         collection: &mut Collection,
-        events: &mut impl CaptureEventSink,
+        progress: &mut impl ProgressSink,
     ) -> Result<bool, Error> {
         let (task_sender, task_receiver) = mpsc::channel::<(usize, String)>();
         let task_receiver = Mutex::new(task_receiver);
@@ -97,7 +97,7 @@ impl Archiver {
             let mut completed = 0;
             let mut next_to_record = 0;
             let mut pending = BTreeMap::new();
-            dispatcher.fill(next_to_record, events);
+            dispatcher.fill(next_to_record, progress);
 
             while completed < dispatcher.dispatched {
                 let (index, url, outcome) = outcome_receiver
@@ -107,7 +107,7 @@ impl Archiver {
                 dispatcher.idle += 1;
 
                 if result.is_ok() {
-                    dispatcher.cancelled |= notify_outcome(events, &url, &outcome);
+                    dispatcher.cancelled |= notify_outcome(progress, &url, &outcome);
                     pending.insert(index, (url, outcome));
                     while let Some((url, outcome)) = pending.remove(&next_to_record) {
                         if let Err(error) =
@@ -116,12 +116,13 @@ impl Archiver {
                             result = Err(error);
                             break;
                         }
-                        dispatcher.cancelled |= events.event(CaptureEvent::Written { url: &url })
-                            == CaptureControl::Cancel;
+                        dispatcher.cancelled |= progress
+                            .event(ProgressEvent::Written { url: &url })
+                            == ProgressControl::Cancel;
                         next_to_record += 1;
                     }
                     if result.is_ok() {
-                        dispatcher.fill(next_to_record, events);
+                        dispatcher.fill(next_to_record, progress);
                     }
                 }
             }
