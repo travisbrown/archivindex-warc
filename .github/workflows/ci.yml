@@ -28,6 +28,8 @@ jobs:
         run: cargo +nightly fmt --all -- --check
       - name: Check validator formatting
         run: cargo +nightly fmt --manifest-path validator/Cargo.toml --all -- --check
+      - name: Check experimental formatting
+        run: cargo +nightly fmt --manifest-path experimental/Cargo.toml --all -- --check
 
   markdown:
     name: Markdown formatting
@@ -132,7 +134,6 @@ jobs:
           cargo package --locked --workspace --no-verify
           --exclude archivindex-warc-ops
           --exclude archivindex-warc-cli
-          --exclude archivindex-archiver-cli
           --exclude archivindex-archiver
       # The archiver depends on archivindex-publication, currently available only from Git. Until
       # that dependency is published, check package contents without creating a tarball.
@@ -151,6 +152,9 @@ jobs:
       # The validator resolves on its own, so its tree is checked against the same policy.
       - name: Check the validator
         run: cargo deny --manifest-path validator/Cargo.toml --config deny.toml check
+      # So does the experimental workspace, whose tree includes the `wreq` fork.
+      - name: Check the experimental workspace
+        run: cargo deny --manifest-path experimental/Cargo.toml --config deny.toml check
 
   validator:
     name: Build, test, and lint the validator
@@ -185,6 +189,35 @@ jobs:
               --validator archivindex-record --validator warc --validator warcat-rs \
               "$fixture" || exit 1
           done
+
+  experimental:
+    name: Build, test, and lint the experimental workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: experimental -> target
+      # The capture backend builds BoringSSL from source, which bindgen needs libclang for.
+      - name: Install the native toolchain
+        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev
+      - name: Lint the experimental workspace
+        run: >-
+          cargo clippy --locked --manifest-path experimental/Cargo.toml --workspace
+          --all-targets --features archivindex-archiver-cli/wreq -- -D warnings
+      - name: Test the experimental workspace
+        run: >-
+          cargo test --locked --manifest-path experimental/Cargo.toml --workspace
+          --features archivindex-archiver-cli/wreq
+      - name: Document the capture backend
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: >-
+          cargo doc --locked --manifest-path experimental/Cargo.toml
+          -p archivindex-archiver-backend-wreq --no-deps
 
   msrv:
     name: Rust 1.88 compatibility

@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 The `session` module supports driver-steered crawls, retries, and a persistent revisit index for
 deduplication and HTTP revalidation across runs. For a command-line interface, see
-[`archivindex-archiver-cli`](../../tools/archiver-cli/README.md).
+[`archivindex-archiver-cli`](../../experimental/cli/README.md).
 
 ## Record IDs
 
