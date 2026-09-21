@@ -239,15 +239,15 @@ pub fn algorithm(label: &str) -> Option<(Algorithm, bool)> {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use test_strategy::proptest;
+    use proptest::property_test;
 
     use super::{Algorithm, AlgorithmLabel};
     use crate::strategies;
 
     /// A known label names its algorithm in any spelling and case, and renders exactly as read.
-    #[proptest]
+    #[property_test]
     fn round_trips_a_known_label_in_any_case(
-        #[strategy(strategies::known_label())] input: (Algorithm, String),
+        #[strategy = strategies::known_label()] input: (Algorithm, String),
     ) {
         let (algorithm, spelling) = input;
         let label = AlgorithmLabel::new(&spelling);
@@ -257,8 +257,8 @@ mod tests {
     }
 
     /// Every valid algorithm label renders exactly as read, whether known or custom.
-    #[proptest]
-    fn round_trips_any_valid_label(#[strategy(strategies::token())] spelling: String) {
+    #[property_test]
+    fn round_trips_any_valid_label(#[strategy = strategies::token()] spelling: String) {
         let label = AlgorithmLabel::new(&spelling);
 
         prop_assert_eq!(label.as_read(), spelling);
@@ -280,9 +280,9 @@ mod tests {
     }
 
     /// Every spelling of a known label resolves to its algorithm.
-    #[proptest]
+    #[property_test]
     fn resolves_a_known_label_in_any_case(
-        #[strategy(strategies::known_label())] input: (Algorithm, String),
+        #[strategy = strategies::known_label()] input: (Algorithm, String),
     ) {
         let (algorithm, spelling) = input;
 

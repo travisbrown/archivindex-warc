@@ -521,26 +521,26 @@ mod tests {
     use super::*;
     use crate::{Index, strategies};
 
-    #[test_strategy::proptest]
-    fn integer_columns_round_trip(#[strategy(0..=u64::MAX >> 1)] value: u64) {
+    #[proptest::property_test]
+    fn integer_columns_round_trip(#[strategy = 0..=u64::MAX >> 1] value: u64) {
         let round_tripped =
             signed("payload_length", value).and_then(|value| unsigned("payload_length", value));
 
         prop_assert_eq!(round_tripped.ok(), Some(value));
     }
 
-    #[test_strategy::proptest]
+    #[proptest::property_test]
     fn out_of_range_integers_are_rejected(
-        #[strategy((u64::MAX >> 1) + 1..=u64::MAX)] too_large: u64,
-        #[strategy(i64::MIN..0)] negative: i64,
+        #[strategy = (u64::MAX >> 1) + 1..=u64::MAX] too_large: u64,
+        #[strategy = i64::MIN..0] negative: i64,
     ) {
         prop_assert!(signed("payload_length", too_large).is_err());
         prop_assert!(unsigned("payload_length", negative).is_err());
     }
 
-    #[test_strategy::proptest]
+    #[proptest::property_test]
     fn payload_sources_are_inserted_once_and_read_back(
-        #[strategy(proptest::collection::vec(strategies::revisit_target(), 0..=6))] targets: Vec<
+        #[strategy = proptest::collection::vec(strategies::revisit_target(), 0..=6)] targets: Vec<
             RevisitTarget,
         >,
     ) {
@@ -563,12 +563,12 @@ mod tests {
         }
     }
 
-    #[test_strategy::proptest]
+    #[proptest::property_test]
     fn resource_state_follows_the_update_model(
-        #[strategy(proptest::collection::vec(
+        #[strategy = proptest::collection::vec(
             (strategies::resource_key(), strategies::resource_state_update()),
             0..=8,
-        ))]
+        )]
         updates: Vec<(ResourceKey, ResourceStateUpdate)>,
     ) {
         let index = Index::open_in_memory().unwrap();

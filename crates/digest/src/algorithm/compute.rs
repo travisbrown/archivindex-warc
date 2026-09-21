@@ -337,7 +337,7 @@ impl LabelledDigest {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use test_strategy::proptest;
+    use proptest::property_test;
 
     use super::{Algorithm, LabelledDigest};
     use crate::strategies;
@@ -457,9 +457,9 @@ mod tests {
     }
 
     /// A digest is available exactly when its algorithm is enabled.
-    #[proptest]
+    #[property_test]
     fn computes_a_digest_exactly_when_supported(
-        #[strategy(strategies::algorithm())] algorithm: Algorithm,
+        #[strategy = strategies::algorithm()] algorithm: Algorithm,
     ) {
         prop_assert_eq!(
             algorithm.digest(b"content").is_some(),
@@ -468,10 +468,10 @@ mod tests {
     }
 
     /// A computed digest always has the algorithm's reported length.
-    #[proptest]
+    #[property_test]
     fn computes_a_digest_of_the_reported_length(
-        #[strategy(strategies::algorithm())] algorithm: Algorithm,
-        #[strategy(proptest::collection::vec(any::<u8>(), 0..=64))] content: Vec<u8>,
+        #[strategy = strategies::algorithm()] algorithm: Algorithm,
+        #[strategy = proptest::collection::vec(any::<u8>(), 0..=64)] content: Vec<u8>,
     ) {
         if let Some(digest) = algorithm.digest(&content) {
             prop_assert_eq!(digest.len(), algorithm.digest_length());
@@ -479,13 +479,13 @@ mod tests {
     }
 
     /// Incremental hashing agrees with one-shot hashing for any chunking.
-    #[proptest]
+    #[property_test]
     fn hashes_incrementally_in_any_chunking(
-        #[strategy(strategies::algorithm())] algorithm: Algorithm,
-        #[strategy(proptest::collection::vec(
+        #[strategy = strategies::algorithm()] algorithm: Algorithm,
+        #[strategy = proptest::collection::vec(
             proptest::collection::vec(any::<u8>(), 0..=16),
             0..=8,
-        ))]
+        )]
         chunks: Vec<Vec<u8>>,
     ) {
         let Some(mut hasher) = algorithm.hasher() else {
@@ -503,10 +503,10 @@ mod tests {
     }
 
     /// Incremental and one-shot hashing produce the same labelled digest.
-    #[proptest]
+    #[property_test]
     fn finalizes_the_labelled_digest_computing_writes(
-        #[strategy(strategies::algorithm())] algorithm: Algorithm,
-        #[strategy(proptest::collection::vec(any::<u8>(), 0..=64))] content: Vec<u8>,
+        #[strategy = strategies::algorithm()] algorithm: Algorithm,
+        #[strategy = proptest::collection::vec(any::<u8>(), 0..=64)] content: Vec<u8>,
     ) {
         if let Some(mut hasher) = algorithm.hasher() {
             hasher.update(&content);
@@ -541,10 +541,10 @@ mod tests {
     }
 
     /// A computed labelled digest decodes to the computed bytes.
-    #[proptest]
+    #[property_test]
     fn writes_a_computed_digest_that_reads_back(
-        #[strategy(strategies::algorithm())] algorithm: Algorithm,
-        #[strategy(proptest::collection::vec(any::<u8>(), 0..=64))] content: Vec<u8>,
+        #[strategy = strategies::algorithm()] algorithm: Algorithm,
+        #[strategy = proptest::collection::vec(any::<u8>(), 0..=64)] content: Vec<u8>,
     ) {
         if let Some(labelled) = LabelledDigest::compute(algorithm, &content) {
             let decoded = labelled.decoded();

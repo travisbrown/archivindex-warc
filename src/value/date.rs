@@ -347,11 +347,16 @@ fn valid_date_time_layout(value: &str, seconds: bool) -> bool {
 mod tests {
     use chrono::{DateTime, NaiveDate, Utc};
     use proptest::prelude::*;
-    use test_strategy::proptest;
+    use proptest::property_test;
 
     use super::{WarcDate, WarcDatePrecision};
     use crate::strategies;
     use crate::version::WarcVersion;
+
+    fn version_and_date() -> impl Strategy<Value = (WarcVersion, WarcDate)> {
+        strategies::warc_version()
+            .prop_flat_map(|version| (Just(version), strategies::warc_date(version)))
+    }
 
     /// An instant with nonzero values at every supported precision.
     fn instant() -> DateTime<Utc> {
@@ -529,10 +534,9 @@ mod tests {
     }
 
     /// A date reads back at the instant and precision it was written with.
-    #[proptest]
+    #[property_test]
     fn round_trips_a_date_the_version_can_spell(
-        #[strategy(strategies::warc_version())] version: WarcVersion,
-        #[strategy(strategies::warc_date(#version))] date: WarcDate,
+        #[strategy = version_and_date()] (version, date): (WarcVersion, WarcDate),
     ) {
         let written = date.to_string_for_version(version);
 

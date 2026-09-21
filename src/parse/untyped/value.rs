@@ -289,7 +289,7 @@ fn parse_uri(content: &[u8]) -> Result<ValueForm, Error> {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use test_strategy::proptest;
+    use proptest::property_test;
 
     use super::{Error, Field, HeaderValue, TextError, ValueForm};
     use crate::strategies;
@@ -472,9 +472,9 @@ mod tests {
     }
 
     /// A form reads back from the value that spells it.
-    #[proptest]
+    #[property_test]
     fn round_trips_a_form_through_the_value_spelling_it(
-        #[strategy(strategies::field_and_form())] input: (Field, ValueForm),
+        #[strategy = strategies::field_and_form()] input: (Field, ValueForm),
     ) {
         let (field, form) = input;
         let written = HeaderValue::from(form.clone());

@@ -306,7 +306,7 @@ impl Display for LabelledDigest {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use test_strategy::proptest;
+    use proptest::property_test;
 
     use super::{Algorithm, Encoding, Error, Format, LabelledDigest};
     use crate::{parsing, strategies};
@@ -328,10 +328,10 @@ mod tests {
     }
 
     /// Any valid `labelled-digest` renders exactly as read.
-    #[proptest]
+    #[property_test]
     fn round_trips_a_valid_labelled_digest(
-        #[strategy(strategies::token())] algorithm: String,
-        #[strategy(strategies::digest_value())] value: String,
+        #[strategy = strategies::token()] algorithm: String,
+        #[strategy = strategies::digest_value()] value: String,
     ) {
         let written = format!("{algorithm}:{value}");
         let digest = parse(&written);
@@ -342,10 +342,10 @@ mod tests {
     }
 
     /// Every encoding round-trips arbitrary digest bytes.
-    #[proptest]
+    #[property_test]
     fn round_trips_any_digest_through_each_encoding(
-        #[strategy(strategies::encoding())] encoding: Encoding,
-        #[strategy(proptest::collection::vec(any::<u8>(), 0..=64))] digest: Vec<u8>,
+        #[strategy = strategies::encoding()] encoding: Encoding,
+        #[strategy = proptest::collection::vec(any::<u8>(), 0..=64)] digest: Vec<u8>,
     ) {
         let mut encoded = String::new();
         encoding
@@ -358,10 +358,10 @@ mod tests {
     }
 
     /// A digest written in any encoding is read back in that encoding.
-    #[proptest]
+    #[property_test]
     fn round_trips_a_digest_in_any_encoding(
-        #[strategy(strategies::algorithm_and_digest())] input: (Algorithm, Vec<u8>),
-        #[strategy(strategies::encoding())] encoding: Encoding,
+        #[strategy = strategies::algorithm_and_digest()] input: (Algorithm, Vec<u8>),
+        #[strategy = strategies::encoding()] encoding: Encoding,
     ) {
         let (algorithm, digest) = input;
         let format = Format {
@@ -403,9 +403,9 @@ mod tests {
     }
 
     /// Each algorithm's recommended representation round-trips unambiguously.
-    #[proptest]
+    #[property_test]
     fn round_trips_a_digest_of_any_algorithm(
-        #[strategy(strategies::algorithm_and_digest())] input: (Algorithm, Vec<u8>),
+        #[strategy = strategies::algorithm_and_digest()] input: (Algorithm, Vec<u8>),
     ) {
         let (algorithm, digest) = input;
         let labelled = LabelledDigest::from_digest(algorithm, &digest);
@@ -520,10 +520,10 @@ mod tests {
 
     /// A value that decodes has the length its digit count tells, so the count never rules out an
     /// encoding the value is written in.
-    #[proptest]
+    #[property_test]
     fn tells_a_decoded_length_from_the_digit_count(
-        #[strategy(strategies::digest_value())] value: String,
-        #[strategy(strategies::encoding())] encoding: Encoding,
+        #[strategy = strategies::digest_value()] value: String,
+        #[strategy = strategies::encoding()] encoding: Encoding,
     ) {
         if let Some(digest) = parsing::decode(encoding, &value) {
             prop_assert_eq!(
@@ -569,10 +569,10 @@ mod tests {
     }
 
     /// A digest is one value in every encoding it can be written in, and hashes as one.
-    #[proptest]
+    #[property_test]
     fn compares_and_hashes_a_digest_by_value(
-        #[strategy(strategies::algorithm_and_digest())] input: (Algorithm, Vec<u8>),
-        #[strategy(strategies::encoding())] encoding: Encoding,
+        #[strategy = strategies::algorithm_and_digest()] input: (Algorithm, Vec<u8>),
+        #[strategy = strategies::encoding()] encoding: Encoding,
     ) {
         let (algorithm, digest) = input;
         let mut value = String::new();

@@ -254,15 +254,15 @@ impl std::fmt::Debug for Digest {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use test_strategy::proptest;
+    use proptest::property_test;
 
     use super::{Algorithm, UnknownAlgorithm};
     use crate::strategies;
 
     /// Every spelling of a known label parses to its algorithm.
-    #[proptest]
+    #[property_test]
     fn parses_a_known_label_in_any_case(
-        #[strategy(strategies::known_label())] input: (Algorithm, String),
+        #[strategy = strategies::known_label()] input: (Algorithm, String),
     ) {
         let (algorithm, spelling) = input;
 

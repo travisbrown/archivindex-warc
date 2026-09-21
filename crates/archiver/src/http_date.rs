@@ -115,10 +115,10 @@ mod tests {
 
     /// Every instant written in the preferred form is read back unchanged, and the asctime form of
     /// the same instant reads back the same way.
-    #[test_strategy::proptest]
+    #[proptest::property_test]
     fn the_preferred_form_round_trips(
-        #[strategy(0..=253_402_300_799i64)] timestamp: i64,
-        #[strategy(proptest::sample::select(vec![-49, 0, 50]))] year_offset: i32,
+        #[strategy = 0..=253_402_300_799i64] timestamp: i64,
+        #[strategy = proptest::sample::select(vec![-49, 0, 50])] year_offset: i32,
     ) {
         let expected = DateTime::from_timestamp(timestamp, 0).expect("a valid instant");
         let now = expected

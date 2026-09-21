@@ -570,8 +570,8 @@ mod tests {
     use super::*;
     use crate::strategies;
 
-    #[test_strategy::proptest]
-    fn request_targets_are_uris_without_a_fragment(#[strategy(strategies::url())] url: Url) {
+    #[proptest::property_test]
+    fn request_targets_are_uris_without_a_fragment(#[strategy = strategies::url()] url: Url) {
         let target = request_target(&url);
 
         let path_start = url[..Position::BeforePath].len();
@@ -582,8 +582,8 @@ mod tests {
         prop_assert!(!forbidden);
     }
 
-    #[test_strategy::proptest]
-    fn redacted_urls_keep_no_credentials(#[strategy(strategies::url())] url: Url) {
+    #[proptest::property_test]
+    fn redacted_urls_keep_no_credentials(#[strategy = strategies::url()] url: Url) {
         let redacted = redact_credentials(&url);
         let parsed = Url::parse(&redacted).unwrap();
 

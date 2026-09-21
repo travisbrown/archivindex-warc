@@ -1350,7 +1350,7 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use proptest::prelude::*;
-    use test_strategy::proptest;
+    use proptest::property_test;
 
     use super::*;
     use crate::record::extension::{ExtensionFields, ExtensionTruncatedReason, Never, Unclaimed};
@@ -3546,9 +3546,9 @@ mod tests {
     ///
     /// Compare parsed records because rendering fills in the generated record's missing length and
     /// requested digests.
-    #[proptest]
+    #[property_test]
     fn round_trips_a_record_through_its_rendering(
-        #[strategy(strategies::record())] record: Record,
+        #[strategy = strategies::record()] record: Record,
     ) {
         let written = render_bytes(record);
         let lifted = lift_bytes(&written);

@@ -145,7 +145,7 @@ impl Display for Text {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use test_strategy::proptest;
+    use proptest::property_test;
 
     use super::{Error, QuotedStringError, Text};
     use crate::strategies;
@@ -236,8 +236,8 @@ mod tests {
     }
 
     /// Generated `TEXT` values round-trip with their quoting and necessary escapes.
-    #[proptest]
-    fn round_trips_a_text_value(#[strategy(strategies::text())] text: Text) {
+    #[property_test]
+    fn round_trips_a_text_value(#[strategy = strategies::text()] text: Text) {
         let written = text.to_bytes().into_owned();
 
         prop_assert_eq!(Text::parse(&written), Ok(text));

@@ -40,12 +40,11 @@ flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
 fluent-uri = "0.4"
 http = "1"
 log = "0.4"
-proptest = "1"
+proptest = { version = "1.11", features = ["attr-macro"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 tempfile = "3"
-test-strategy = "0.4"
 thiserror = "2"
 url = "2"
 
@@ -132,7 +131,6 @@ proptest.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["blocking"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 tempfile.workspace = true
-test-strategy.workspace = true
 # Only the `read_filtered` example parses URLs.
 url.workspace = true
 # Pin the upstream implementation used by `warc_crate_roundtrip` for reproducible comparisons.

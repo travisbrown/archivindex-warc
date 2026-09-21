@@ -142,7 +142,7 @@ impl TryFrom<raw::Record> for Record {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use test_strategy::proptest;
+    use proptest::property_test;
 
     use super::value::ValueForm;
     use super::{Error, Field, Record};
@@ -271,8 +271,8 @@ mod tests {
     }
 
     /// Reading a record against the grammar keeps every byte it was read from.
-    #[proptest]
-    fn preserves_the_record_it_reads(#[strategy(strategies::raw_record())] record: raw::Record) {
+    #[property_test]
+    fn preserves_the_record_it_reads(#[strategy = strategies::raw_record()] record: raw::Record) {
         let grammatical = Record::try_from(record.clone()).expect("a grammatical record");
 
         prop_assert_eq!(grammatical.into_raw(), record);

@@ -52,4 +52,3 @@ archivindex-test-support.workspace = true
 proptest.workspace = true
 # The recorder's TLS test serves a self-signed certificate.
 rcgen = "0.14"
-test-strategy.workspace = true
