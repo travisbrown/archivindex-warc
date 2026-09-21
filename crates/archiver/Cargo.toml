@@ -38,7 +38,7 @@ fluent-uri.workspace = true
 http.workspace = true
 # Durations in configuration files are written as `humantime` strings, such as `30s`.
 humantime-serde = "1"
-rustls = "0.23"
+rustls = "0.23.45"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -53,6 +53,7 @@ criterion.workspace = true
 proptest.workspace = true
 # The recorder's TLS test serves a self-signed certificate.
 rcgen = "0.14"
+wiremock.workspace = true
 
 [[bench]]
 name = "response_capture"

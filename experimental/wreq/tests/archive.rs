@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use archivindex_archiver::{Archiver, Config};
 use archivindex_archiver_backend_wreq::{Profile, WreqBackend};
-use archivindex_test_support::http::{response, serve_with};
+use archivindex_test_support::http::proxy::RecordingProxy;
+use archivindex_test_support::http::{RequestExt as _, response, serve_with};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::extension::NoExtension;
 use data_encoding::BASE64;
@@ -15,11 +16,11 @@ fn redirects_and_challenge_answers_are_archived_exactly_once() {
     let challenge =
         format!("<html><script>var sucuri_cloudproxy_js='',S='{encoded}';</script></html>");
     let attempt = AtomicUsize::new(0);
-    let (port, server) = serve_with(3, move |request| {
+    let server = serve_with(3, move |request| {
         let reply = match attempt.fetch_add(1, Ordering::Relaxed) {
-            0 => response("302 Follow Me", &[("location", "/challenge")], ""),
+            0 => response(302, &[("location", "/challenge")], ""),
             1 => response(
-                "307 Challenge",
+                307,
                 &[("content-type", "text/html"), ("x-sucuri-id", "12005")],
                 &challenge,
             ),
@@ -28,13 +29,24 @@ fn redirects_and_challenge_answers_are_archived_exactly_once() {
                     request.header("cookie"),
                     Some("sucuri_cloudproxy_uuid_test=clearance")
                 );
-                response("200 Accepted", &[("X-MiXeD", "yes")], "accepted")
+                response(200, &[("X-MiXeD", "yes")], "accepted")
             }
         };
-        let observed = (request.bytes().to_vec(), reply.clone());
-        (reply, observed)
+        (reply, ())
     })
     .unwrap();
+    let port = server.port();
+    let proxy = RecordingProxy::start(port, |_, bytes| {
+        let text = String::from_utf8(std::mem::take(bytes)).unwrap();
+        *bytes = text
+            .replace("302 Found", "302 Follow Me")
+            .replace("307 Temporary Redirect", "307 Challenge")
+            .replace("200 OK", "200 Accepted")
+            .replace("x-mixed: yes", "X-MiXeD: yes")
+            .into_bytes();
+    })
+    .unwrap();
+    let port = proxy.port();
     let archiver = Archiver::with_backend(
         Config::default(),
         std::sync::Arc::new(WreqBackend::new(Profile::Chrome136)),
@@ -45,7 +57,8 @@ fn redirects_and_challenge_answers_are_archived_exactly_once() {
         .archive([format!("http://127.0.0.1:{port}/start")], &mut output)
         .unwrap();
     assert!(summary.is_complete(), "{summary:?}");
-    let observed = server.join().unwrap();
+    let observed = proxy.finish().unwrap();
+    let _ = server.finish();
     let records = WarcReader::new(output.as_slice())
         .iter_records::<NoExtension>()
         .records()
@@ -61,9 +74,9 @@ fn redirects_and_challenge_answers_are_archived_exactly_once() {
         .collect();
     assert_eq!(requests.len(), 3);
     assert_eq!(responses.len(), 3);
-    for ((request, response), (sent, received)) in requests.iter().zip(responses).zip(observed) {
-        assert_eq!(request.body_bytes().as_ref(), sent);
-        assert_eq!(response.body_bytes().as_ref(), received);
+    for ((request, response), exchange) in requests.iter().zip(responses).zip(observed) {
+        assert_eq!(request.body_bytes().as_ref(), exchange.request);
+        assert_eq!(response.body_bytes().as_ref(), exchange.response);
     }
 }
 

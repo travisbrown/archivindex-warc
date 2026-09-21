@@ -257,12 +257,12 @@ mod tests {
     use proptest::property_test;
 
     use super::{Algorithm, UnknownAlgorithm};
-    use crate::strategies;
+    use crate::prop;
 
     /// Every spelling of a known label parses to its algorithm.
     #[property_test]
     fn parses_a_known_label_in_any_case(
-        #[strategy = strategies::known_label()] input: (Algorithm, String),
+        #[strategy = prop::known_label()] input: (Algorithm, String),
     ) {
         let (algorithm, spelling) = input;
 

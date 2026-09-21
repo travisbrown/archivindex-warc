@@ -2,7 +2,6 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use archivindex_archiver::capture::{CaptureSummary, Origin, ProgressControl, ProgressEvent};
@@ -11,9 +10,8 @@ use archivindex_archiver::session::{
     self, Capture, CaptureProcessor, Crawl, Discovery, RetryConfig, Session,
 };
 use archivindex_archiver::{Archiver, Config, Error};
-use archivindex_test_support::http::{
-    Request, dead_port, response, serve_concurrently_with, serve_with,
-};
+use archivindex_test_support::http::proxy::RecordingProxy;
+use archivindex_test_support::http::{RequestExt, Server, dead_port, response, serve_with};
 use archivindex_warc::record::fields::Field;
 use archivindex_warc::record::fields::dcmi::DcmiTerm;
 use archivindex_warc::record::fields::metadata::MetadataField;
@@ -28,6 +26,7 @@ use archivindex_warc_revisit_index::payload::RevisitTarget;
 use archivindex_warc_revisit_index::resource::{ResourceKey, ResourceStateUpdate, Variance};
 use data_encoding::BASE64;
 use fluent_uri::Uri;
+use wiremock::{Request, ResponseTemplate};
 
 mod support;
 
@@ -65,30 +64,30 @@ fn archiver(config: Config) -> Archiver {
 
 /// A canned HTTP/1.1 response for a request path: a small site whose home page links to two other
 /// pages, one of which links back to the home page.
-fn respond(path: &str) -> Vec<u8> {
+fn respond(path: &str) -> ResponseTemplate {
     match path {
         "/" => response(
-            "200 OK",
+            200,
             &[("content-type", "text/html")],
             "<html>home links: /about /missing</html>",
         ),
         "/about" => response(
-            "200 OK",
+            200,
             &[("content-type", "text/html")],
             "<html>about links: /</html>",
         ),
         "/redirect" => response(
-            "302 Found",
+            302,
             &[("content-type", "text/plain"), ("location", "/about")],
             "",
         ),
-        _ => response("404 Not Found", &[("content-type", "text/plain")], "gone"),
+        _ => response(404, &[("content-type", "text/plain")], "gone"),
     }
 }
 
 /// Serve the given number of connections on an ephemeral local port, returning the request paths in
 /// the order they arrived.
-fn serve(connections: usize) -> std::io::Result<(u16, thread::JoinHandle<Vec<String>>)> {
+fn serve(connections: usize) -> std::io::Result<Server<String>> {
     serve_with(connections, |request| {
         let path = request.path();
         (respond(path), path.to_owned())
@@ -109,27 +108,30 @@ fn warc_date(value: &str) -> WarcDate {
 /// Answer a request for a versioned page, whose `ETag` advances once: an unconditional request or
 /// one for a stale version gets the current page in full, while one for the current version gets
 /// `304 Not Modified`, carrying the page's validators without a body.
-fn respond_versioned(request: &Request, versions: usize) -> Vec<u8> {
+fn respond_versioned(request: &Request, versions: usize) -> ResponseTemplate {
     let requested = request
         .header("if-none-match")
         .and_then(|etag| etag.trim_matches('"').parse::<usize>().ok());
     let current = requested.map_or(1, |etag| versions.min(etag + 1));
 
     if requested == Some(current) {
-        format!(
-            "HTTP/1.1 304 Not Modified\r\netag: \"{current}\"\r\nlast-modified: {LAST_MODIFIED}\r\n\
-             connection: close\r\n\r\n"
+        response(
+            304,
+            &[
+                ("etag", &format!("\"{current}\"")),
+                ("last-modified", LAST_MODIFIED),
+            ],
+            "",
         )
-        .into_bytes()
     } else {
         response(
-            "200 OK",
+            200,
             &[
                 ("content-type", "text/html"),
                 ("etag", &format!("\"{current}\"")),
                 ("last-modified", LAST_MODIFIED),
             ],
-            &format!("<html>version {current}</html>"),
+            format!("<html>version {current}</html>"),
         )
     }
 }
@@ -282,7 +284,7 @@ fn persistent_index_is_read_only_and_supplies_historical_and_same_session_revisi
         warc_date: warc_date("2025-01-01T00:00:00Z"),
     };
     Index::open(&database)?.insert_payload(&historical_target)?;
-    let (port, server) = serve_with(3, move |request| {
+    let server = serve_with(3, move |request| {
         let path = request.path();
         let body = if path == "/historical" {
             HISTORICAL
@@ -295,10 +297,11 @@ fn persistent_index_is_read_only_and_supplies_historical_and_same_session_revisi
             .expect("inspect durable revisit index")
             .is_some();
         (
-            response("200 OK", &[("content-type", "text/plain")], body),
+            response(200, &[("content-type", "text/plain")], body),
             format!("{path}:{new_payload_is_durable}"),
         )
     })?;
+    let port = server.port();
     let historical_url = format!("http://127.0.0.1:{port}/historical");
     let first_new_url = format!("http://127.0.0.1:{port}/new-a");
     let second_new_url = format!("http://127.0.0.1:{port}/new-b");
@@ -314,7 +317,7 @@ fn persistent_index_is_read_only_and_supplies_historical_and_same_session_revisi
     .run()?;
 
     assert_eq!(
-        server.join().expect("server thread"),
+        server.finish(),
         ["/historical:false", "/new-a:false", "/new-b:false"]
     );
     assert!(summary.is_complete());
@@ -388,9 +391,10 @@ fn persistent_index_is_read_only_and_supplies_historical_and_same_session_revisi
 #[test]
 fn persistent_resource_state_drives_conditional_requests_and_not_modified_revisits()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(1, |request| {
+    let server = serve_with(1, |request| {
         (respond_versioned(request, 1), request.clone())
     })?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/page");
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("resource-state.sqlite3");
@@ -429,7 +433,7 @@ fn persistent_resource_state_drives_conditional_requests_and_not_modified_revisi
     .revisit_index(&database)
     .run()?;
 
-    let requests = server.join().expect("server thread");
+    let requests = server.finish();
     assert_eq!(requests[0].header("if-none-match"), Some("\"1\""));
     assert_eq!(requests[0].header("if-modified-since"), Some(LAST_MODIFIED));
     assert_eq!(summary.seed_captures[0].status, 304);
@@ -464,9 +468,9 @@ fn resource_state_for_another_variant_does_not_drive_revalidation()
     const MOBILE_AGENT: &str = "MobileBot/1.0";
     const MOBILE: &str = "<html>mobile</html>";
 
-    let (port, server) = serve_with(1, |request| {
+    let server = serve_with(1, |request| {
         let reply = response(
-            "200 OK",
+            200,
             &[
                 ("content-type", "text/html"),
                 ("etag", "\"mobile\""),
@@ -477,6 +481,7 @@ fn resource_state_for_another_variant_does_not_drive_revalidation()
         );
         (reply, request.clone())
     })?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/page");
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("resource-state.sqlite3");
@@ -519,7 +524,7 @@ fn resource_state_for_another_variant_does_not_drive_revalidation()
         .revisit_index(&database)
         .run()?;
 
-    let requests = server.join().expect("server thread");
+    let requests = server.finish();
     assert_eq!(requests[0].header("if-none-match"), None);
     assert_eq!(requests[0].header("if-modified-since"), None);
     assert_eq!(summary.seed_captures[0].status, 200);
@@ -579,18 +584,19 @@ fn assert_validators_follow_the_cookie(
     .chain(vary.iter().map(|value| ("vary", *value)))
     .collect::<Vec<_>>();
     let attempt = AtomicUsize::new(0);
-    let (port, server) = serve_with(3, move |request| {
+    let server = serve_with(3, move |request| {
         let reply = if attempt.fetch_add(1, Ordering::Relaxed) == 1 {
             response(
-                "307 Temporary Redirect",
+                307,
                 &[("content-type", "text/html"), ("x-sucuri-id", "12005")],
                 &challenge,
             )
         } else {
-            response("200 OK", &headers, BODY)
+            response(200, &headers, BODY)
         };
         (reply, request.clone())
     })?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/page");
     let directory = tempfile::tempdir()?;
     let output = directory.path().join(output);
@@ -608,7 +614,7 @@ fn assert_validators_follow_the_cookie(
     )?
     .run()?;
 
-    let requests = server.join().expect("server thread");
+    let requests = server.finish();
     assert_eq!(summary.seed_captures.len(), 1);
     assert_eq!(summary.extra_captures.len(), 1);
     assert_eq!(requests[1].header("cookie"), Some(COOKIE));
@@ -644,7 +650,8 @@ fn vary_cookie_records_the_cookie_the_request_carried() -> Result<(), Box<dyn st
 #[test]
 fn a_repeated_discovery_is_an_identical_payload_revisit() -> Result<(), Box<dyn std::error::Error>>
 {
-    let (port, server) = serve(2)?;
+    let server = serve(2)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/about");
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("repeat.warc.gz");
@@ -662,7 +669,7 @@ fn a_repeated_discovery_is_an_identical_payload_revisit() -> Result<(), Box<dyn 
     )?
     .run()?;
 
-    assert_eq!(server.join().expect("server thread"), ["/about", "/about"]);
+    assert_eq!(server.finish(), ["/about", "/about"]);
     assert!(summary.is_complete());
     assert_eq!(summary.seed_captures.len(), 1);
     assert_eq!(summary.seed_captures[0].origin, Origin::Seed);
@@ -729,9 +736,10 @@ fn a_repeated_discovery_is_an_identical_payload_revisit() -> Result<(), Box<dyn 
 #[test]
 fn a_repeat_of_a_validated_response_is_a_server_not_modified_revisit()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(2, |request| {
+    let server = serve_with(2, |request| {
         (respond_versioned(request, 1), request.clone())
     })?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/page");
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("revalidate.warc.gz");
@@ -751,7 +759,7 @@ fn a_repeat_of_a_validated_response_is_a_server_not_modified_revisit()
     .run()?;
 
     // The first request is unconditional; the repeat carries the stored response's validators.
-    let requests = server.join().expect("server thread");
+    let requests = server.finish();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].header("if-none-match"), None);
     assert_eq!(requests[0].header("if-modified-since"), None);
@@ -829,9 +837,10 @@ fn a_repeat_of_a_validated_response_is_a_server_not_modified_revisit()
 #[test]
 fn changed_content_is_repeated_in_full_and_revalidated_by_its_new_validators()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(3, |request| {
+    let server = serve_with(3, |request| {
         (respond_versioned(request, 2), request.clone())
     })?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/page");
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("changed.warc.gz");
@@ -851,7 +860,7 @@ fn changed_content_is_repeated_in_full_and_revalidated_by_its_new_validators()
 
     // Each repeat is conditional on the latest stored version: the first finds the page changed and
     // is answered in full, and the second confirms the new version unchanged.
-    let requests = server.join().expect("server thread");
+    let requests = server.finish();
     assert_eq!(
         requests
             .iter()
@@ -905,12 +914,13 @@ fn changed_content_is_repeated_in_full_and_revalidated_by_its_new_validators()
 
 #[test]
 fn session_waits_between_queued_requests() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(2, |_| {
+    let server = serve_with(2, |_| {
         (
-            response("200 OK", &[("content-type", "text/plain")], "ok"),
+            response(200, &[("content-type", "text/plain")], "ok"),
             Instant::now(),
         )
     })?;
+    let port = server.port();
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("delayed.warc.gz");
     let delay = Duration::from_millis(50);
@@ -926,7 +936,7 @@ fn session_waits_between_queued_requests() -> Result<(), Box<dyn std::error::Err
     )?
     .request_delay(delay)
     .run()?;
-    let requests = server.join().expect("server thread should not panic");
+    let requests = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(requests.len(), 2);
@@ -943,7 +953,8 @@ fn session_waits_between_queued_requests() -> Result<(), Box<dyn std::error::Err
 fn session_crawls_discovered_urls_depth_first() -> Result<(), Box<dyn std::error::Error>> {
     // The seeds are the home page and a redirect whose final URL is /about. The home page links
     // directly to /about and /missing, which are requested before the second seed.
-    let (port, server) = serve(5)?;
+    let server = serve(5)?;
+    let port = server.port();
     let seeds = [
         format!("http://127.0.0.1:{port}/"),
         format!("http://127.0.0.1:{port}/redirect"),
@@ -963,7 +974,7 @@ fn session_crawls_discovered_urls_depth_first() -> Result<(), Box<dyn std::error
     )?
     .software("session-test-crawler", "9.9")
     .run()?;
-    let request_paths = server.join().expect("server thread should not panic");
+    let request_paths = server.finish();
 
     // The home page's discoveries are requested in processor order before the redirect seed, and
     // the link back to the home page from /about repeats a seed, so it is skipped.
@@ -1087,7 +1098,8 @@ fn session_crawls_discovered_urls_depth_first() -> Result<(), Box<dyn std::error
 #[test]
 fn extras_are_captured_before_the_seeds_with_their_via() -> Result<(), Box<dyn std::error::Error>> {
     // The extra repeating the seed is captured as given, so the seed is requested twice.
-    let (port, server) = serve(3)?;
+    let server = serve(3)?;
+    let port = server.port();
     let home = format!("http://127.0.0.1:{port}/");
     let about = format!("http://127.0.0.1:{port}/about");
     let directory = tempfile::tempdir()?;
@@ -1100,7 +1112,7 @@ fn extras_are_captured_before_the_seeds_with_their_via() -> Result<(), Box<dyn s
     ]);
     let summary = Session::new(archiver(gzip_config()), "extras", crawl, &output)?.run()?;
 
-    assert_eq!(server.join().expect("server thread"), ["/about", "/", "/"]);
+    assert_eq!(server.finish(), ["/about", "/", "/"]);
     assert!(summary.is_complete());
     assert_eq!(
         summary
@@ -1153,16 +1165,17 @@ fn extras_are_captured_before_the_seeds_with_their_via() -> Result<(), Box<dyn s
 #[test]
 fn session_captures_post_requests_with_headers_and_bodies() -> Result<(), Box<dyn std::error::Error>>
 {
-    let (port, server) = serve_with(1, |request| {
+    let server = serve_with(1, |request| {
         (
             response(
-                "200 OK",
+                200,
                 &[("content-type", "application/json")],
                 r#"{"ok":true}"#,
             ),
             request.clone(),
         )
     })?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/lookup");
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("post.warc");
@@ -1189,14 +1202,14 @@ fn session_captures_post_requests_with_headers_and_bodies() -> Result<(), Box<dy
         ..RetryConfig::default()
     })
     .run()?;
-    let requests = server.join().expect("server thread should not panic");
+    let requests = server.finish();
 
     assert!(summary.is_complete());
-    assert_eq!(requests[0].method(), "POST");
+    assert_eq!(requests[0].method, "POST");
     assert_eq!(requests[0].path(), "/lookup");
     assert_eq!(requests[0].header("content-type"), Some("application/json"));
     assert_eq!(requests[0].header("x-api-key"), Some("test-credential"));
-    assert_eq!(requests[0].body(), body);
+    assert_eq!(requests[0].body, body);
 
     let archive = records(&std::fs::read(output)?)?;
     let recorded_request = archive.iter().find_map(|record| match record {
@@ -1213,10 +1226,10 @@ fn session_captures_post_requests_with_headers_and_bodies() -> Result<(), Box<dy
 #[test]
 fn a_post_response_is_not_stored_as_the_urls_representation()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(2, |request| {
+    let server = serve_with(2, |request| {
         (
             response(
-                "200 OK",
+                200,
                 &[
                     ("content-type", "text/html"),
                     ("etag", "\"v1\""),
@@ -1227,6 +1240,7 @@ fn a_post_response_is_not_stored_as_the_urls_representation()
             request.clone(),
         )
     })?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/lookup");
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("post-state.warc.gz");
@@ -1241,11 +1255,11 @@ fn a_post_response_is_not_stored_as_the_urls_representation()
         &output,
     )?
     .run()?;
-    let requests = server.join().expect("server thread");
+    let requests = server.finish();
 
     assert!(summary.is_complete());
-    assert_eq!(requests[0].method(), "POST");
-    assert_eq!(requests[1].method(), "GET");
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[1].method, "GET");
 
     // The `GET` is unconditional: the `POST` left no representation state to revalidate against.
     assert_eq!(requests[1].header("if-none-match"), None);
@@ -1267,7 +1281,8 @@ fn a_post_response_is_not_stored_as_the_urls_representation()
 /// pairs are sent as one field for consistent `Vary: Cookie` matching.
 #[test]
 fn a_supplied_cookie_joins_the_pairs_held_for_the_host() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(1, |request| (respond(request.path()), request.clone()))?;
+    let server = serve_with(1, |request| (respond(request.path()), request.clone()))?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/");
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("supplied-cookie.warc.gz");
@@ -1288,19 +1303,12 @@ fn a_supplied_cookie_joins_the_pairs_held_for_the_host() -> Result<(), Box<dyn s
         &output,
     )?
     .run()?;
-    let requests = server.join().expect("server thread");
+    let requests = server.finish();
 
     assert!(summary.is_complete());
     // The supplied lines and the held pairs are sent as one `Cookie` line, which is the value a
     // declared `Vary: Cookie` is resolved against on both the request and the record side.
-    assert_eq!(
-        requests[0]
-            .head()
-            .to_ascii_lowercase()
-            .matches("\r\ncookie:")
-            .count(),
-        1
-    );
+    assert_eq!(requests[0].headers.get_all("cookie").iter().count(), 1);
     assert_eq!(
         requests[0].header("cookie"),
         Some("session=supplied; theme=dark; clearance=2")
@@ -1351,7 +1359,8 @@ fn a_post_that_fails_is_not_retried() -> Result<(), Box<dyn std::error::Error>> 
 fn session_skips_discoveries_that_repeat_a_given_url() -> Result<(), Box<dyn std::error::Error>> {
     // Every page links to both seeds and itself, and one seed repeats: the seeds are requested as
     // given, and no discovery is requested.
-    let (port, server) = serve(3)?;
+    let server = serve(3)?;
+    let port = server.port();
     let seeds = [
         format!("http://127.0.0.1:{port}/"),
         format!("http://127.0.0.1:{port}/"),
@@ -1369,7 +1378,7 @@ fn session_skips_discoveries_that_repeat_a_given_url() -> Result<(), Box<dyn std
     )?
     .operator("Solo", None)
     .run()?;
-    let request_paths = server.join().expect("server thread should not panic");
+    let request_paths = server.finish();
 
     assert_eq!(request_paths, ["/", "/", "/about"]);
     assert!(summary.is_complete());
@@ -1400,7 +1409,8 @@ fn session_skips_discoveries_that_repeat_a_given_url() -> Result<(), Box<dyn std
 fn session_starts_from_the_configured_settings() -> Result<(), Box<dyn std::error::Error>> {
     const BODY: &str = "<html>home links: /about /missing</html>";
 
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/");
 
     let directory = tempfile::tempdir()?;
@@ -1429,7 +1439,7 @@ fn session_starts_from_the_configured_settings() -> Result<(), Box<dyn std::erro
     };
     let summary =
         Session::new(archiver(config), "configured", Crawl::seeds([&url]), &path)?.run()?;
-    let request_paths = server.join().expect("server thread should not panic");
+    let request_paths = server.finish();
 
     assert_eq!(request_paths, ["/"]);
     assert!(summary.is_complete());
@@ -1461,7 +1471,8 @@ fn session_starts_from_the_configured_settings() -> Result<(), Box<dyn std::erro
 
 #[test]
 fn session_without_a_configured_operator_names_none() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/");
 
     let directory = tempfile::tempdir()?;
@@ -1474,7 +1485,7 @@ fn session_without_a_configured_operator_names_none() -> Result<(), Box<dyn std:
     let summary = Session::new(archiver(config), "anonymous", Crawl::seeds([&url]), &path)?
         .limit(1)
         .run()?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
 
@@ -1498,7 +1509,8 @@ fn session_without_a_configured_operator_names_none() -> Result<(), Box<dyn std:
 
 #[test]
 fn session_limit_stops_with_discoveries_still_queued() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/");
 
     let directory = tempfile::tempdir()?;
@@ -1508,7 +1520,7 @@ fn session_limit_stops_with_discoveries_still_queued() -> Result<(), Box<dyn std
     let summary = Session::new(archiver(gzip_config()), "limited", &mut crawl, &path)?
         .limit(1)
         .run()?;
-    let request_paths = server.join().expect("server thread should not panic");
+    let request_paths = server.finish();
 
     assert_eq!(request_paths, ["/"]);
     assert!(summary.is_complete());
@@ -1556,12 +1568,18 @@ fn session_rejects_an_unwritable_operator_before_writing() -> Result<(), Box<dyn
 fn session_retries_transient_failures_with_backoff() -> Result<(), Box<dyn std::error::Error>> {
     // The first connection stalls past the client timeout before responding; the retry is then
     // served promptly.
-    let (port, server) = serve_concurrently_with(2, |attempt, request| {
-        if attempt == 0 {
-            thread::sleep(Duration::from_millis(300));
-        }
-        (respond(request.path()), ())
+    let mut attempt = 0;
+    let server = serve_with(2, move |request| {
+        let response = respond(request.path());
+        let response = if attempt == 0 {
+            response.set_delay(Duration::from_millis(300))
+        } else {
+            response
+        };
+        attempt += 1;
+        (response, ())
     })?;
+    let port = server.port();
 
     let url = format!("http://127.0.0.1:{port}/");
     let directory = tempfile::tempdir()?;
@@ -1582,7 +1600,7 @@ fn session_retries_transient_failures_with_backoff() -> Result<(), Box<dyn std::
         max_backoff: Duration::from_millis(50),
     })
     .run()?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(summary.seed_captures.len(), 1);
@@ -1598,19 +1616,20 @@ fn session_retries_transient_failures_with_backoff() -> Result<(), Box<dyn std::
 fn session_retries_retryable_http_statuses() -> Result<(), Box<dyn std::error::Error>> {
     let attempts = Arc::new(AtomicUsize::new(0));
     let server_attempts = Arc::clone(&attempts);
-    let (port, server) = serve_with(2, move |request| {
+    let server = serve_with(2, move |request| {
         let attempt = server_attempts.fetch_add(1, Ordering::Relaxed);
         let reply = if attempt == 0 {
             response(
-                "503 Service Unavailable",
+                503,
                 &[("content-type", "text/plain"), ("retry-after", "0")],
                 "try later",
             )
         } else {
-            response("200 OK", &[("content-type", "text/plain")], "complete")
+            response(200, &[("content-type", "text/plain")], "complete")
         };
         (reply, request.path().to_owned())
     })?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/");
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("status-retry.warc.gz");
@@ -1642,7 +1661,7 @@ fn session_retries_retryable_http_statuses() -> Result<(), Box<dyn std::error::E
         max_backoff: Duration::from_secs(30),
     })
     .run()?;
-    let requests = server.join().expect("server thread should not panic");
+    let requests = server.finish();
 
     assert_eq!(attempts.load(Ordering::Relaxed), 2);
     assert_eq!(requests, ["/", "/"]);
@@ -1682,14 +1701,14 @@ fn session_retries_retryable_http_statuses() -> Result<(), Box<dyn std::error::E
 fn session_honours_an_http_date_retry_after() -> Result<(), Box<dyn std::error::Error>> {
     let attempts = Arc::new(AtomicUsize::new(0));
     let server_attempts = Arc::clone(&attempts);
-    let (port, server) = serve_with(2, move |request| {
+    let server = serve_with(2, move |request| {
         let attempt = server_attempts.fetch_add(1, Ordering::Relaxed);
         let reply = if attempt == 0 {
             // A real `Retry-After` date is an IMF-fixdate in GMT, not RFC 2822's `+0000` form.
             let retry_at = (chrono::Utc::now() + chrono::Duration::seconds(2))
                 .format("%a, %d %b %Y %H:%M:%S GMT");
             response(
-                "503 Service Unavailable",
+                503,
                 &[
                     ("content-type", "text/plain"),
                     ("retry-after", &retry_at.to_string()),
@@ -1697,10 +1716,11 @@ fn session_honours_an_http_date_retry_after() -> Result<(), Box<dyn std::error::
                 "try later",
             )
         } else {
-            response("200 OK", &[("content-type", "text/plain")], "complete")
+            response(200, &[("content-type", "text/plain")], "complete")
         };
         (reply, request.path().to_owned())
     })?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/");
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("date-retry.warc.gz");
@@ -1725,7 +1745,7 @@ fn session_honours_an_http_date_retry_after() -> Result<(), Box<dyn std::error::
         max_backoff: Duration::from_secs(30),
     })
     .run()?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert_eq!(attempts.load(Ordering::Relaxed), 2);
     assert!(summary.is_complete());
@@ -1739,16 +1759,13 @@ fn session_honours_an_http_date_retry_after() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn session_reports_exhausted_http_status_retries() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(2, |request| {
+    let server = serve_with(2, |request| {
         (
-            response(
-                "503 Service Unavailable",
-                &[("content-type", "text/plain")],
-                "busy",
-            ),
+            response(503, &[("content-type", "text/plain")], "busy"),
             request.path().to_owned(),
         )
     })?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/");
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("status-exhausted.warc.gz");
@@ -1765,7 +1782,7 @@ fn session_reports_exhausted_http_status_retries() -> Result<(), Box<dyn std::er
         max_backoff: Duration::ZERO,
     })
     .run()?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(!summary.is_complete());
     assert!(matches!(
@@ -1789,16 +1806,13 @@ fn session_reports_exhausted_http_status_retries() -> Result<(), Box<dyn std::er
 #[test]
 fn session_cancelled_during_a_retry_keeps_the_completed_attempt()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(1, |request| {
+    let server = serve_with(1, |request| {
         (
-            response(
-                "503 Service Unavailable",
-                &[("content-type", "text/plain")],
-                "busy",
-            ),
+            response(503, &[("content-type", "text/plain")], "busy"),
             request.path().to_owned(),
         )
     })?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/");
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("status-cancelled.warc.gz");
@@ -1823,7 +1837,7 @@ fn session_cancelled_during_a_retry_keeps_the_completed_attempt()
         max_backoff: Duration::from_secs(30),
     })
     .run()?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     // The cancelled capture is neither a capture nor a failure, but its 503 exchange is archived,
     // and the URL is left to request again.
@@ -1847,7 +1861,8 @@ fn session_cancelled_during_a_retry_keeps_the_completed_attempt()
 
 #[test]
 fn processor_failure_stops_with_an_incomplete_summary() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/");
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("processor-failure.warc.gz");
@@ -1859,7 +1874,7 @@ fn processor_failure_stops_with_an_incomplete_summary() -> Result<(), Box<dyn st
         &path,
     )?
     .run()?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(!summary.is_complete());
     assert!(matches!(summary.failures[0].error, Error::Driver { .. }));
@@ -1996,7 +2011,8 @@ fn session_with_no_seeds_writes_an_empty_collection() -> Result<(), Box<dyn std:
 
 #[test]
 fn session_writes_to_named_partial_before_publishing() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("session.warc.gz");
     let partial_path = directory.path().join("session.warc.gz.partial");
@@ -2019,7 +2035,7 @@ fn session_writes_to_named_partial_before_publishing() -> Result<(), Box<dyn std
         ProgressControl::Continue
     })
     .run()?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
     assert!(saw_partial);
@@ -2034,7 +2050,8 @@ fn session_processor_sees_the_final_response_of_a_chain() -> Result<(), Box<dyn 
 {
     // The redirect seed's processor runs on /about's payload (the final hop), and the reported
     // final URL names the hop rather than the seed.
-    let (port, server) = serve(2)?;
+    let server = serve(2)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/redirect");
 
     let directory = tempfile::tempdir()?;
@@ -2050,7 +2067,7 @@ fn session_processor_sees_the_final_response_of_a_chain() -> Result<(), Box<dyn 
         &path,
     )?
     .run()?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(observed.len(), 1);
@@ -2066,7 +2083,8 @@ fn session_processor_sees_the_final_response_of_a_chain() -> Result<(), Box<dyn 
 fn session_skips_a_discovery_that_repeats_a_later_seed() -> Result<(), Box<dyn std::error::Error>> {
     // A discovered URL that repeats a seed is skipped even when found before the seed itself is
     // requested, and the seed is still requested in its turn.
-    let (port, server) = serve(3)?;
+    let server = serve(3)?;
+    let port = server.port();
     let seeds = [
         format!("http://127.0.0.1:{port}/"),
         format!("http://127.0.0.1:{port}/about"),
@@ -2086,10 +2104,7 @@ fn session_skips_a_discovery_that_repeats_a_later_seed() -> Result<(), Box<dyn s
     )?
     .run()?;
 
-    assert_eq!(
-        server.join().expect("server thread should not panic"),
-        ["/", "/missing", "/about"]
-    );
+    assert_eq!(server.finish(), ["/", "/missing", "/about"]);
 
     assert!(
         summary.is_complete(),
@@ -2156,7 +2171,8 @@ fn recording_acknowledgment_respects_cancellation_and_failures()
         "record-error",
         "publish-error",
     ] {
-        let (port, server) = serve(usize::from(mode != "started"))?;
+        let server = serve(usize::from(mode != "started"))?;
+        let port = server.port();
         let directory = tempfile::tempdir()?;
         let output = directory.path().join("acknowledged.warc.gz");
         let mut driver = RecordingDriver {
@@ -2189,7 +2205,7 @@ fn recording_acknowledgment_respects_cancellation_and_failures()
             }
         })
         .run();
-        server.join().expect("server thread");
+        let _ = server.finish();
         assert_eq!(driver.inspected, usize::from(mode != "started"), "{mode}");
         match mode {
             "record-error" => {
@@ -2230,15 +2246,16 @@ fn recording_acknowledgment_respects_cancellation_and_failures()
 #[test]
 fn recording_acknowledgment_identifies_partial_occurrences_of_a_repeated_url()
 -> Result<(), Box<dyn std::error::Error>> {
+    let server = serve_with(3, |_| (response(200, &[], "complete"), ()))?;
+    let port = server.port();
     let count = AtomicUsize::new(0);
-    let (port, server) = serve_with(3, move |_| {
-        let bytes = if count.fetch_add(1, Ordering::Relaxed) == 1 {
-            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nshort".to_vec()
-        } else {
-            response("200 OK", &[], "complete")
-        };
-        (bytes, ())
+    let proxy = RecordingProxy::start(port, move |_, bytes| {
+        if count.fetch_add(1, Ordering::Relaxed) == 1 {
+            // Keep the declared eight-byte length but close after only five payload bytes.
+            bytes.truncate(bytes.len() - 3);
+        }
     })?;
+    let port = proxy.port();
     let directory = tempfile::tempdir()?;
     let mut driver = RecordingDriver {
         requests: vec![session::Request::seed(format!("http://127.0.0.1:{port}/")); 3].into(),
@@ -2255,7 +2272,8 @@ fn recording_acknowledgment_identifies_partial_occurrences_of_a_repeated_url()
         ..RetryConfig::default()
     })
     .run()?;
-    server.join().expect("server thread");
+    proxy.finish()?;
+    let _ = server.finish();
     assert_eq!(
         driver.acknowledgments,
         summary

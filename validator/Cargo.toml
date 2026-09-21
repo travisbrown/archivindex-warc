@@ -1,28 +1,41 @@
 # This package builds on its own, outside the repository's workspace, so that its dependency tree
 # cannot constrain the other packages.
 [workspace]
+resolver = "3"
 
-[package]
-name = "archivindex-warc-validator"
+[workspace.package]
 version = "0.1.0"
-description = "Validate WARC files with several independent validators"
 authors = ["Travis Brown <travisrobertbrown@gmail.com>"]
 edition = "2024"
 rust-version = "1.88"
+readme = "README.md"
 license = "GPL-3.0-only"
 repository = "https://github.com/travisbrown/archivindex-warc"
-publish = false
 
-[lints.rust]
+[workspace.lints.rust]
 missing_docs = "deny"
 rust_2018_idioms = { level = "warn", priority = -1 }
 unsafe_code = "forbid"
 
-[lints.clippy]
+[workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 missing_errors_doc = "allow"
+
+[package]
+name = "archivindex-warc-validator"
+version.workspace = true
+description = "Validate WARC files with several independent validators"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
 
 [dependencies]
 anyhow = "1"

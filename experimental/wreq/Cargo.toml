@@ -16,11 +16,11 @@ workspace = true
 archivindex-archiver.workspace = true
 archivindex-warc.workspace = true
 chrono = "0.4"
-fluent-uri = "0.4"
+fluent-uri.workspace = true
 http.workspace = true
 http-body-util = "0.1"
 serde = "1"
-thiserror = "2"
+thiserror.workspace = true
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
 # Redirected to the observer-enabled fork by the workspace patch; see README.md.
 wreq = { version = "=0.16.1", default-features = false, features = ["tokio-rt", "webpki-roots"] }
@@ -33,5 +33,5 @@ wreq-util = { version = "=0.2.0", default-features = false, features = [
 archivindex-test-support.workspace = true
 data-encoding = "2"
 rcgen = "0.14"
-rustls = "0.23"
+rustls = "0.23.45"
 serde_json = "1"

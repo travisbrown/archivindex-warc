@@ -519,7 +519,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::{Index, strategies};
+    use crate::{Index, prop};
 
     #[proptest::property_test]
     fn integer_columns_round_trip(#[strategy = 0..=u64::MAX >> 1] value: u64) {
@@ -540,7 +540,7 @@ mod tests {
 
     #[proptest::property_test]
     fn payload_sources_are_inserted_once_and_read_back(
-        #[strategy = proptest::collection::vec(strategies::revisit_target(), 0..=6)] targets: Vec<
+        #[strategy = proptest::collection::vec(prop::revisit_target(), 0..=6)] targets: Vec<
             RevisitTarget,
         >,
     ) {
@@ -566,7 +566,7 @@ mod tests {
     #[proptest::property_test]
     fn resource_state_follows_the_update_model(
         #[strategy = proptest::collection::vec(
-            (strategies::resource_key(), strategies::resource_state_update()),
+            (prop::resource_key(), prop::resource_state_update()),
             0..=8,
         )]
         updates: Vec<(ResourceKey, ResourceStateUpdate)>,

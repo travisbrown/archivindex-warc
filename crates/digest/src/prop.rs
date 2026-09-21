@@ -1,6 +1,8 @@
 //! Proptest strategies derived from the crate's grammars and type tables.
 
-use archivindex_test_support::strategies::string_of;
+use std::sync::LazyLock;
+
+use archivindex_test_support::prop::string_of;
 use proptest::prelude::*;
 use proptest::sample::select;
 
@@ -18,15 +20,20 @@ fn token_chars() -> Vec<char> {
 
 /// A `token`, the grammar of an algorithm label.
 pub fn token() -> impl Strategy<Value = String> {
-    string_of(token_chars(), 32)
+    static CHARS: LazyLock<Vec<char>> = LazyLock::new(token_chars);
+
+    string_of(&CHARS, 32)
 }
 
 /// A `digest-value` as annotation #48 relaxes it: `token` characters plus `=` and `/`.
 pub fn digest_value() -> impl Strategy<Value = String> {
-    let mut chars = token_chars();
-    chars.extend(['=', '/']);
+    static CHARS: LazyLock<Vec<char>> = LazyLock::new(|| {
+        let mut chars = token_chars();
+        chars.extend(['=', '/']);
+        chars
+    });
 
-    string_of(chars, 64)
+    string_of(&CHARS, 64)
 }
 
 /// Any algorithm annotation #80 names.

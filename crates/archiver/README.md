@@ -40,7 +40,7 @@ precision is truncated toward the earlier microsecond. Date spelling and declare
 affect identity: `.123Z` and `.123000Z` identify the same instant, and a reduced-precision date uses
 the beginning of its period. The same rule applies to `WARC-Refers-To-Date`.
 
-References use the final IDs of the records they name. The archiver assigns the warcinfo ID first,
+References use the final IDs of the records they name. The archiver assigns the `warcinfo` ID first,
 then each request, response or revisit, and associated metadata in dependency order.
 `WARC-Warcinfo-ID` is part of identity, so changing a capture's collection context changes its ID.
 External references are taken as supplied. Renaming the old IDs within a file does not change the
@@ -66,8 +66,8 @@ big-endian byte order, without padding between fields.
 | Capture date     | `i64`, Unix microseconds from `WARC-Date` |
 | Block hash       | 32 bytes, SHA-256 of the stored block     |
 
-Record type bytes are warcinfo = 1, request = 2, response = 3, metadata = 4, revisit = 5, resource =
-6, conversion = 7, continuation = 8. Extension record types are refused.
+Record type bytes are `warcinfo` = 1, `request` = 2, `response` = 3, `metadata` = 4, `revisit` = 5,
+`resource` = 6, `conversion` = 7, `continuation` = 8. Extension record types are refused.
 
 Each present field is encoded as its `u8` tag, a `u64` byte length, and that many value bytes.
 Absent fields contribute no bytes. Fields appear in ascending tag order. References under tag 8 are

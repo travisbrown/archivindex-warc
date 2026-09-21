@@ -8,9 +8,10 @@ use std::sync::atomic::Ordering;
 use anyhow::{Context, Result};
 use archivindex_archiver::Archiver;
 use archivindex_archiver::capture::{ProgressControl, ProgressEvent};
-use archivindex_cli_support::config::load_config;
 use archivindex_cli_support::progress::spinner;
-use archivindex_cli_support::{CommandOutcome, Verbosity, exit_code, interrupt_flag, plural};
+use archivindex_cli_support::{
+    CommandOutcome, Verbosity, config, exit_code, interrupt_flag, plural,
+};
 use clap::Parser;
 
 mod id;
@@ -101,7 +102,7 @@ enum Backend {
 
 /// Archive a list of URLs read from standard input.
 fn archive(options: &ArchiveOptions, quiet: bool) -> Result<CommandOutcome> {
-    let config = load_config(options.config.as_deref())?;
+    let config = config::load(options.config.as_deref())?;
     let archiver = build_archiver(config, options).context("cannot configure the archiver")?;
     let mut input_error = None;
     let urls = read_urls(std::io::stdin().lock(), &mut input_error);
@@ -253,7 +254,7 @@ mod tests {
     use std::path::Path;
 
     use archivindex_archiver::Config;
-    use archivindex_cli_support::config::ConfigFormat;
+    use archivindex_cli_support::config::Format;
     use clap::{CommandFactory, Parser};
 
     use super::{Cli, Command};
@@ -306,7 +307,7 @@ mod tests {
 
     #[test]
     fn the_default_configuration_file_is_the_default_configuration() {
-        let config = ConfigFormat::Toml
+        let config = Format::Toml
             .parse::<Config>(include_str!("../default-config.toml"))
             .expect("a configuration");
 
@@ -315,13 +316,13 @@ mod tests {
 
     #[test]
     fn a_configuration_file_sets_paths_bounds_and_flags() {
-        let toml = ConfigFormat::Toml
+        let toml = Format::Toml
             .parse::<Config>(
                 "max-capture-time = \"unbounded\"\ngzip-warc = true\n\
                  [session]\nrevisit-index = \"revisits.sqlite3\"\n",
             )
             .expect("a configuration");
-        let json = ConfigFormat::Json
+        let json = Format::Json
             .parse::<Config>(r#"{"max-response-length": "unbounded", "concurrency": 4}"#)
             .expect("a configuration");
 
@@ -337,7 +338,7 @@ mod tests {
 
     #[test]
     fn a_configuration_file_names_the_software_and_operator() {
-        let config = ConfigFormat::Toml
+        let config = Format::Toml
             .parse::<Config>(
                 "[software]\nname = \"example-crawler\"\nversion = \"2.0\"\n\n\
                  [operator]\nname = \"Example Operator\"\nemail = \"operator@example.com\"\n",
@@ -353,6 +354,6 @@ mod tests {
 
     #[test]
     fn a_configuration_file_cannot_hold_an_unknown_key() {
-        assert!(ConfigFormat::Toml.parse::<Config>("gzip = true\n").is_err());
+        assert!(Format::Toml.parse::<Config>("gzip = true\n").is_err());
     }
 }

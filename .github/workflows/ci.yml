@@ -57,6 +57,24 @@ jobs:
       - name: Lint
         run: taplo lint
 
+  policy:
+    name: Check the manifest policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install the policy checker
+        run: >-
+          cargo install --locked --git https://github.com/travisbrown/archivindex
+          --rev cca1c5b05d954ccedfc4321099322caf4f526cee cargo-archivindex-build
+      - name: Check the workspace
+        run: cargo archivindex-build check
+      - name: Check the validator
+        run: cargo archivindex-build check --manifest-path validator/Cargo.toml
+      - name: Check the experimental workspace
+        run: cargo archivindex-build check --manifest-path experimental/Cargo.toml
+
   build:
     name: Build, test, lint, and document
     runs-on: ubuntu-latest

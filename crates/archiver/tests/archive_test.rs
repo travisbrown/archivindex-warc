@@ -3,7 +3,6 @@
 use std::io::Cursor;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
 use std::time::Duration;
 
 mod support;
@@ -11,7 +10,10 @@ mod support;
 use archivindex_archiver::capture::{ProgressControl, ProgressEvent};
 use archivindex_archiver::config::{DigestConfig, DigestOverride, Operator, Software};
 use archivindex_archiver::{Archiver, Config, ConfigError, CookieError, Error};
-use archivindex_test_support::http::{dead_port, response, serve_concurrently_with, serve_with};
+use archivindex_test_support::http::proxy::RecordingProxy;
+use archivindex_test_support::http::{
+    RequestExt, Server, dead_port, response, response_bytes, serve_with,
+};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::header::RevisitProfile;
 use archivindex_warc::record::header::truncated_type::TruncatedType;
@@ -21,6 +23,7 @@ use archivindex_warc::version::WarcVersion;
 use data_encoding::BASE64;
 use fluent_uri::Uri;
 use support::{records, sha256};
+use wiremock::{Request, ResponseTemplate};
 
 fn gzip_config() -> Config {
     Config {
@@ -33,11 +36,11 @@ fn gzip_config() -> Config {
 const PNG_PAYLOAD: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01";
 
 /// A canned HTTP/1.1 response for a request path.
-fn respond(path: &str) -> Vec<u8> {
+fn respond(path: &str) -> ResponseTemplate {
     // Redirects to an address that refuses connections carry the target port in the path.
     if let Some(port) = path.strip_prefix("/dead/") {
         return response(
-            "302 Found",
+            302,
             &[("location", &format!("http://127.0.0.1:{port}/"))],
             "",
         );
@@ -45,28 +48,24 @@ fn respond(path: &str) -> Vec<u8> {
 
     // Canned responses are chosen by path alone, so a query string never changes them.
     match path.split('?').next().unwrap_or(path) {
-        "/" => response(
-            "200 OK",
-            &[("content-type", "text/html")],
-            "<html>home</html>",
-        ),
+        "/" => response(200, &[("content-type", "text/html")], "<html>home</html>"),
         "/redirect" => response(
-            "302 Found",
+            302,
             &[("content-type", "text/plain"), ("location", "/target")],
             "",
         ),
         "/target" => response(
-            "200 OK",
+            200,
             &[("content-type", "text/plain; charset=utf-8")],
             "arrived",
         ),
         "/loop" => response(
-            "302 Found",
+            302,
             &[("content-type", "text/plain"), ("location", "/loop")],
             "",
         ),
         "/bad-target" => response(
-            "302 Found",
+            302,
             &[
                 ("content-type", "text/plain"),
                 ("location", "ftp://127.0.0.1/file"),
@@ -74,13 +73,13 @@ fn respond(path: &str) -> Vec<u8> {
             "",
         ),
         "/multiple-choices" => response(
-            "300 Multiple Choices",
+            300,
             &[("content-type", "text/plain"), ("location", "/target")],
             "list",
         ),
-        "/nonstandard" => response("520 Origin Error", &[("content-type", "text/plain")], "err"),
+        "/nonstandard" => response(520, &[("content-type", "text/plain")], "err"),
         "/cookies" => response(
-            "200 OK",
+            200,
             &[
                 ("content-type", "text/plain"),
                 ("set-cookie", "a=1"),
@@ -88,50 +87,24 @@ fn respond(path: &str) -> Vec<u8> {
             ],
             "ok",
         ),
-        "/slow" => {
-            thread::sleep(Duration::from_millis(500));
-            response("200 OK", &[("content-type", "text/plain")], "late")
-        }
-        // A chunked body, so that de-chunking is exercised against a real wire exchange.
-        "/chunked" => b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\n\
-                        transfer-encoding: chunked\r\nconnection: close\r\n\r\n\
-                        6\r\nhello \r\n5\r\nworld\r\n0\r\n\r\n"
-            .to_vec(),
-        // A bodiless response whose headers describe the entity that was not sent.
-        "/not-modified" => b"HTTP/1.1 304 Not Modified\r\netag: \"abc\"\r\n\
-                             content-length: 42\r\nlocation: /target\r\n\
-                             connection: close\r\n\r\n"
-            .to_vec(),
-        "/binary" => {
-            let body = (0u8..=255).collect::<Vec<_>>();
-            let mut response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\n\
-                 content-length: {}\r\nconnection: close\r\n\r\n",
-                body.len()
-            )
-            .into_bytes();
-            response.extend_from_slice(&body);
-            response
-        }
-        "/mislabelled" => {
-            let mut response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\n\
-                 content-length: {}\r\nconnection: close\r\n\r\n",
-                PNG_PAYLOAD.len()
-            )
-            .into_bytes();
-            response.extend_from_slice(PNG_PAYLOAD);
-            response
-        }
-        _ => response("404 Not Found", &[("content-type", "text/plain")], "gone"),
+        "/slow" => response(200, &[("content-type", "text/plain")], "late")
+            .set_delay(Duration::from_millis(500)),
+        "/chunked" => response(200, &[("content-type", "text/plain")], "hello world"),
+        "/not-modified" => response(304, &[("etag", "\"abc\""), ("location", "/target")], ""),
+        "/binary" => response(
+            200,
+            &[("content-type", "application/octet-stream")],
+            (0u8..=255).collect::<Vec<_>>(),
+        ),
+        "/mislabelled" => response(200, &[("content-type", "text/plain")], PNG_PAYLOAD),
+        _ => response(404, &[("content-type", "text/plain")], "gone"),
     }
 }
 
-/// Serve the given number of connections on an ephemeral local port, returning the raw bytes of
-/// each request as received.
-fn serve(connections: usize) -> std::io::Result<(u16, thread::JoinHandle<Vec<Vec<u8>>>)> {
+/// Serve the canned site, retaining wiremock requests for inspection.
+fn serve(connections: usize) -> std::io::Result<Server<Request>> {
     serve_with(connections, |request| {
-        (respond(request.path()), request.bytes().to_vec())
+        (respond(request.path()), request.clone())
     })
 }
 
@@ -174,7 +147,8 @@ fn archive_to_path_rejects_a_file_name_that_is_not_utf8() -> Result<(), Box<dyn 
     reason = "one scripted exchange, read in order"
 )]
 fn archive_and_read_back() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(4)?;
+    let server = serve(4)?;
+    let port = server.port();
     let urls = [
         format!("http://127.0.0.1:{port}/"),
         format!("http://127.0.0.1:{port}/redirect"),
@@ -184,7 +158,7 @@ fn archive_and_read_back() -> Result<(), Box<dyn std::error::Error>> {
     let archiver = Archiver::new(gzip_config())?;
     let mut bytes = Vec::new();
     let summary = archiver.archive(&urls, Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(
@@ -378,15 +352,15 @@ fn archive_solves_and_retains_sucuri_cookie_challenges() -> Result<(), Box<dyn s
     let challenge =
         format!("<html><script>var sucuri_cloudproxy_js='',S='{encoded}';</script></html>");
     let attempt = AtomicUsize::new(0);
-    let (port, server) = serve_with(3, move |request| {
+    let server = serve_with(3, move |request| {
         let reply = if attempt.fetch_add(1, Ordering::Relaxed) == 0 {
             response(
-                "307 Temporary Redirect",
+                307,
                 &[("content-type", "text/html"), ("x-sucuri-id", "12005")],
                 &challenge,
             )
         } else {
-            response("200 OK", &[("content-type", "text/plain")], "accepted")
+            response(200, &[("content-type", "text/plain")], "accepted")
         };
         (
             reply,
@@ -396,6 +370,7 @@ fn archive_solves_and_retains_sucuri_cookie_challenges() -> Result<(), Box<dyn s
             ),
         )
     })?;
+    let port = server.port();
     let urls = [
         format!("http://127.0.0.1:{port}/first"),
         format!("http://127.0.0.1:{port}/second"),
@@ -403,7 +378,7 @@ fn archive_solves_and_retains_sucuri_cookie_challenges() -> Result<(), Box<dyn s
     let mut output = Vec::new();
 
     let summary = Archiver::new(gzip_config())?.archive(&urls, Cursor::new(&mut output))?;
-    let requests = server.join().expect("server thread should not panic");
+    let requests = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(summary.captures.len(), 2);
@@ -438,28 +413,23 @@ fn archive_solves_simply_clearance_challenges_behind_a_proxy()
          x.open(\"POST\",\"/.sc-verify/\");</script></html>"
     );
     let attempt = AtomicUsize::new(0);
-    let (port, server) = serve_with(4, move |request| {
+    let server = serve_with(4, move |request| {
         let reply = match attempt.fetch_add(1, Ordering::Relaxed) {
             0 => response(
-                "454 Request blocked",
+                454,
                 &[("content-type", "text/html"), ("server", "cloudflare")],
                 &challenge,
             ),
             1 => response(
-                "200 OK",
+                200,
                 &[("content-type", "application/json")],
                 r#"{"ok":true,"cookie":"clearance-value"}"#,
             ),
-            _ => response("200 OK", &[("content-type", "text/plain")], "accepted"),
+            _ => response(200, &[("content-type", "text/plain")], "accepted"),
         };
-        (
-            reply,
-            (
-                request.head().lines().next().unwrap_or_default().to_owned(),
-                request.header("cookie").map(str::to_owned),
-            ),
-        )
+        (reply, request.clone())
     })?;
+    let port = server.port();
     let urls = [
         format!("http://127.0.0.1:{port}/first"),
         format!("http://127.0.0.1:{port}/second"),
@@ -467,7 +437,7 @@ fn archive_solves_simply_clearance_challenges_behind_a_proxy()
     let mut output = Vec::new();
 
     let summary = Archiver::new(gzip_config())?.archive(&urls, Cursor::new(&mut output))?;
-    let requests = server.join().expect("server thread should not panic");
+    let requests = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(summary.captures.len(), 2);
@@ -475,14 +445,16 @@ fn archive_solves_simply_clearance_challenges_behind_a_proxy()
     // of them is a redirect.
     assert_eq!(summary.captures[0].redirects, 0);
     assert_eq!(summary.captures[1].redirects, 0);
-    assert!(requests[0].0.starts_with("GET /first HTTP/1.1"));
-    assert!(requests[1].0.starts_with("POST /.sc-verify/ HTTP/1.1"));
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].path(), "/first");
+    assert_eq!(requests[1].method, "POST");
+    assert_eq!(requests[1].path(), "/.sc-verify/");
     assert_eq!(
-        requests[2].1.as_deref(),
+        requests[2].header("cookie"),
         Some("sc_clearance=clearance-value")
     );
     assert_eq!(
-        requests[3].1.as_deref(),
+        requests[3].header("cookie"),
         Some("sc_clearance=clearance-value")
     );
 
@@ -518,10 +490,10 @@ fn archive_solves_and_retains_varnish_proof_of_work_challenges()
          cookie_duration:'3600',cookie_domain:'127.0.0.1'}};</script>"
     );
     let attempt = AtomicUsize::new(0);
-    let (port, server) = serve_with(3, move |request| {
+    let server = serve_with(3, move |request| {
         let reply = if attempt.fetch_add(1, Ordering::Relaxed) == 0 {
             response(
-                "202 Verifying",
+                202,
                 &[
                     ("content-type", "text/html"),
                     ("server", "Varnish"),
@@ -533,7 +505,7 @@ fn archive_solves_and_retains_varnish_proof_of_work_challenges()
                 &challenge,
             )
         } else {
-            response("200 OK", &[("content-type", "text/plain")], "accepted")
+            response(200, &[("content-type", "text/plain")], "accepted")
         };
         (
             reply,
@@ -543,6 +515,7 @@ fn archive_solves_and_retains_varnish_proof_of_work_challenges()
             ),
         )
     })?;
+    let port = server.port();
     let urls = [
         format!("http://127.0.0.1:{port}/first"),
         format!("http://127.0.0.1:{port}/second"),
@@ -550,7 +523,7 @@ fn archive_solves_and_retains_varnish_proof_of_work_challenges()
     let mut output = Vec::new();
 
     let summary = Archiver::new(gzip_config())?.archive(&urls, Cursor::new(&mut output))?;
-    let requests = server.join().expect("server thread should not panic");
+    let requests = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(summary.captures.len(), 2);
@@ -581,14 +554,15 @@ fn archive_stops_answering_a_challenge_the_host_repeats() -> Result<(), Box<dyn 
     let challenge =
         format!("<html><script>var sucuri_cloudproxy_js='',S='{encoded}';</script></html>");
     // The first request and three answers, each met by the challenge again.
-    let (port, server) = serve_with(4, move |request| {
+    let server = serve_with(4, move |request| {
         let reply = response(
-            "307 Temporary Redirect",
+            307,
             &[("content-type", "text/html"), ("x-sucuri-id", "12005")],
             &challenge,
         );
         (reply, request.header("cookie").map(str::to_owned))
     })?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/first");
     let mut output = Vec::new();
 
@@ -597,7 +571,7 @@ fn archive_stops_answering_a_challenge_the_host_repeats() -> Result<(), Box<dyn 
         ..gzip_config()
     })?
     .archive([&url], Cursor::new(&mut output))?;
-    let requests = server.join().expect("server thread should not panic");
+    let requests = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(summary.captures.len(), 1);
@@ -623,23 +597,24 @@ fn archive_captures_an_unrecognized_challenge_as_the_response_it_is()
     let script = "document.cookie='other=value;path=/'; location.reload();";
     let encoded = BASE64.encode(script.as_bytes());
     let challenge = format!("<html><script>var sucuri_cloudproxy_js='{encoded}';</script></html>");
-    let (port, server) = serve_with(1, move |request| {
+    let server = serve_with(1, move |request| {
         (
             response(
-                "307 Temporary Redirect",
+                307,
                 &[("content-type", "text/html"), ("x-sucuri-id", "12005")],
                 &challenge,
             ),
             request.header("cookie").map(str::to_owned),
         )
     })?;
+    let port = server.port();
     let mut output = Vec::new();
 
     let summary = Archiver::new(gzip_config())?.archive(
         [format!("http://127.0.0.1:{port}/first")],
         Cursor::new(&mut output),
     )?;
-    let requests = server.join().expect("server thread should not panic");
+    let requests = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(summary.captures[0].status, 307);
@@ -652,7 +627,8 @@ fn archive_captures_an_unrecognized_challenge_as_the_response_it_is()
 #[test]
 fn event_sink_can_cancel_and_finalize_a_partial_archive() -> Result<(), Box<dyn std::error::Error>>
 {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let urls = [
         format!("http://127.0.0.1:{port}/"),
         format!("http://127.0.0.1:{port}/missing"),
@@ -680,7 +656,7 @@ fn event_sink_can_cancel_and_finalize_a_partial_archive() -> Result<(), Box<dyn 
         };
         archiver.archive_with_progress(&urls, Cursor::new(&mut bytes), &mut sink)?
     };
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.cancelled);
     assert!(!summary.is_complete());
@@ -694,7 +670,8 @@ fn event_sink_can_cancel_and_finalize_a_partial_archive() -> Result<(), Box<dyn 
 
 #[test]
 fn event_sink_can_cancel_before_the_first_dispatch() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(0)?;
+    let server = serve(0)?;
+    let port = server.port();
     let urls = [
         format!("http://127.0.0.1:{port}/"),
         format!("http://127.0.0.1:{port}/missing"),
@@ -719,7 +696,7 @@ fn event_sink_can_cancel_before_the_first_dispatch() -> Result<(), Box<dyn std::
         };
         archiver.archive_with_progress(&urls, Cursor::new(&mut bytes), &mut sink)?
     };
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.cancelled);
     assert!(summary.captures.is_empty());
@@ -730,7 +707,8 @@ fn event_sink_can_cancel_before_the_first_dispatch() -> Result<(), Box<dyn std::
 
 #[test]
 fn archive_writes_a_plain_warc_when_gzip_is_off() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/");
 
     let archiver = Archiver::new(Config {
@@ -739,7 +717,7 @@ fn archive_writes_a_plain_warc_when_gzip_is_off() -> Result<(), Box<dyn std::err
     })?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
 
@@ -772,7 +750,8 @@ fn archive_records_unreachable_urls_as_failures() -> Result<(), Box<dyn std::err
 
 #[test]
 fn archive_stops_following_at_the_redirect_limit() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/redirect");
 
     let archiver = Archiver::new(Config {
@@ -781,7 +760,7 @@ fn archive_stops_following_at_the_redirect_limit() -> Result<(), Box<dyn std::er
     })?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(summary.captures[0].status, 302);
@@ -823,7 +802,8 @@ fn archive_to_path_refuses_an_existing_partial() -> Result<(), Box<dyn std::erro
 
 #[test]
 fn archive_to_path_writes_a_collection() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("test.warc.gz");
     let partial_path = directory.path().join("test.warc.gz.partial");
@@ -844,7 +824,7 @@ fn archive_to_path_writes_a_collection() -> Result<(), Box<dyn std::error::Error
         &path,
         &mut events,
     )?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
     assert!(saw_partial);
@@ -856,8 +836,11 @@ fn archive_to_path_writes_a_collection() -> Result<(), Box<dyn std::error::Error
 }
 
 #[test]
-fn recorded_request_matches_the_wire_bytes() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+fn recorded_messages_match_the_wire_bytes() -> Result<(), Box<dyn std::error::Error>> {
+    let server = serve(1)?;
+    let port = server.port();
+    let proxy = RecordingProxy::start(port, |_, _| {})?;
+    let port = proxy.port();
     let url = format!("http://127.0.0.1:{port}/");
 
     let archiver = Archiver::new(Config {
@@ -867,22 +850,43 @@ fn recorded_request_matches_the_wire_bytes() -> Result<(), Box<dyn std::error::E
     })?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    let requests = server.join().expect("server thread should not panic");
+    let exchanges = proxy.finish()?;
+    let _ = server.finish();
 
     assert!(summary.is_complete());
 
     let records = records(&bytes)?;
 
-    // The request record replays the received request byte for byte.
+    // Both records retain the bytes observed by the independent TCP relay.
     assert_eq!(records[1].type_name(), "request");
-    assert_eq!(records[1].body_bytes().as_ref(), requests[0].as_slice());
+    assert_eq!(
+        records[1].body_bytes().as_ref(),
+        exchanges[0].request.as_slice()
+    );
+
+    assert_eq!(
+        records[2].body_bytes().as_ref(),
+        exchanges[0].response.as_slice()
+    );
 
     Ok(())
 }
 
 #[test]
 fn archive_records_chunked_responses_verbatim() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
+    let proxy = RecordingProxy::start(port, |_, bytes| {
+        let text = String::from_utf8(std::mem::take(bytes)).unwrap();
+        *bytes = text
+            .replace("content-length: 11\r\n", "transfer-encoding: chunked\r\n")
+            .replace(
+                "\r\n\r\nhello world",
+                "\r\n\r\n6\r\nhello \r\n5\r\nworld\r\n0\r\n\r\n",
+            )
+            .into_bytes();
+    })?;
+    let port = proxy.port();
     let url = format!("http://127.0.0.1:{port}/chunked");
 
     let archiver = Archiver::new(Config {
@@ -891,7 +895,8 @@ fn archive_records_chunked_responses_verbatim() -> Result<(), Box<dyn std::error
     })?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    proxy.finish()?;
+    let _ = server.finish();
 
     // The reported size describes the payload (the de-chunked entity body), even though the record
     // stores the chunk framing as it crossed the wire.
@@ -940,13 +945,14 @@ fn archive_rejects_credentialed_urls_without_leaking_the_secret()
 #[test]
 fn archive_records_hops_captured_before_a_failure() -> Result<(), Box<dyn std::error::Error>> {
     let dead_port = dead_port()?;
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/dead/{dead_port}");
 
     let archiver = Archiver::new(gzip_config())?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(!summary.is_complete());
     assert!(summary.captures.is_empty());
@@ -970,7 +976,17 @@ fn archive_records_hops_captured_before_a_failure() -> Result<(), Box<dyn std::e
 #[test]
 fn archive_treats_multiple_choices_and_not_modified_as_final()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(2)?;
+    let server = serve(2)?;
+    let port = server.port();
+    let proxy = RecordingProxy::start(port, |_, bytes| {
+        if bytes.starts_with(b"HTTP/1.1 304 ") {
+            let text = String::from_utf8(std::mem::take(bytes)).unwrap();
+            *bytes = text
+                .replace("\r\n\r\n", "\r\ncontent-length: 42\r\n\r\n")
+                .into_bytes();
+        }
+    })?;
+    let port = proxy.port();
     let urls = [
         format!("http://127.0.0.1:{port}/multiple-choices"),
         format!("http://127.0.0.1:{port}/not-modified"),
@@ -979,7 +995,8 @@ fn archive_treats_multiple_choices_and_not_modified_as_final()
     let archiver = Archiver::new(gzip_config())?;
     let mut bytes = Vec::new();
     let summary = archiver.archive(&urls, Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    proxy.finish()?;
+    let _ = server.finish();
 
     // Neither response is followed, despite the redirection-class status and location header.
     assert!(summary.is_complete());
@@ -1008,13 +1025,20 @@ fn archive_treats_multiple_choices_and_not_modified_as_final()
 
 #[test]
 fn archive_preserves_a_nonstandard_reason_phrase() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
+    let proxy = RecordingProxy::start(port, |_, bytes| {
+        let end = bytes.windows(2).position(|part| part == b"\r\n").unwrap();
+        bytes.splice(..end, b"HTTP/1.1 520 Origin Error".iter().copied());
+    })?;
+    let port = proxy.port();
     let url = format!("http://127.0.0.1:{port}/nonstandard");
 
     let archiver = Archiver::new(gzip_config())?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    proxy.finish()?;
+    let _ = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(summary.captures[0].status, 520);
@@ -1031,13 +1055,14 @@ fn archive_preserves_a_nonstandard_reason_phrase() -> Result<(), Box<dyn std::er
 
 #[test]
 fn archive_preserves_repeated_set_cookie_headers() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/cookies");
 
     let archiver = Archiver::new(gzip_config())?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
 
@@ -1053,13 +1078,14 @@ fn archive_preserves_repeated_set_cookie_headers() -> Result<(), Box<dyn std::er
 
 #[test]
 fn archive_records_binary_bodies() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/binary");
 
     let archiver = Archiver::new(gzip_config())?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(summary.captures[0].size, 256);
@@ -1081,13 +1107,14 @@ fn archive_records_binary_bodies() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn archive_identifies_payload_types_from_content() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/mislabelled");
 
     let archiver = Archiver::new(gzip_config())?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
 
@@ -1098,7 +1125,8 @@ fn archive_identifies_payload_types_from_content() -> Result<(), Box<dyn std::er
     assert!(
         response
             .body_bytes()
-            .starts_with(b"HTTP/1.1 200 OK\r\ncontent-type: text/plain")
+            .windows(b"\r\ncontent-type: text/plain\r\n".len())
+            .any(|part| part == b"\r\ncontent-type: text/plain\r\n")
     );
     assert!(
         response
@@ -1114,7 +1142,8 @@ fn archive_identifies_payload_types_from_content() -> Result<(), Box<dyn std::er
 fn archive_records_timeouts_as_failures() -> Result<(), Box<dyn std::error::Error>> {
     // The slow endpoint stalls before sending anything, so the timeout occurs while the response
     // head is awaited and fails the capture (a timeout mid-body would truncate it instead).
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/slow");
 
     let archiver = Archiver::new(Config {
@@ -1123,7 +1152,7 @@ fn archive_records_timeouts_as_failures() -> Result<(), Box<dyn std::error::Erro
     })?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(!summary.is_complete());
     assert!(matches!(summary.failures[0].error, Error::Fetch(_)));
@@ -1134,7 +1163,8 @@ fn archive_records_timeouts_as_failures() -> Result<(), Box<dyn std::error::Erro
 #[test]
 fn archive_fails_captures_past_their_time_limit() -> Result<(), Box<dyn std::error::Error>> {
     // The slow endpoint stalls for longer than the capture time but not the idle timeout.
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/slow");
 
     let archiver = Archiver::new(Config {
@@ -1144,7 +1174,7 @@ fn archive_fails_captures_past_their_time_limit() -> Result<(), Box<dyn std::err
     })?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(!summary.is_complete());
     assert!(matches!(summary.failures[0].error, Error::Fetch(_)));
@@ -1154,11 +1184,12 @@ fn archive_fails_captures_past_their_time_limit() -> Result<(), Box<dyn std::err
 
 #[test]
 fn archive_truncates_responses_at_the_configured_limit() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/");
 
     // The limit cuts five bytes off the canned response, partway into its body.
-    let full = respond("/");
+    let full = response_bytes(respond("/"))?;
     let limit = full.len() as u64 - 5;
 
     let archiver = Archiver::new(Config {
@@ -1168,7 +1199,7 @@ fn archive_truncates_responses_at_the_configured_limit() -> Result<(), Box<dyn s
     })?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     // A response cut short by the limit is a capture, not a failure, and the reported size
     // describes the payload bytes actually stored.
@@ -1196,7 +1227,8 @@ fn archive_truncates_responses_at_the_configured_limit() -> Result<(), Box<dyn s
 
 #[test]
 fn archive_stops_following_a_redirect_cycle() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(3)?;
+    let server = serve(3)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/loop");
 
     let archiver = Archiver::new(Config {
@@ -1205,7 +1237,7 @@ fn archive_stops_following_a_redirect_cycle() -> Result<(), Box<dyn std::error::
     })?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(summary.captures[0].status, 302);
@@ -1220,13 +1252,14 @@ fn archive_stops_following_a_redirect_cycle() -> Result<(), Box<dyn std::error::
 #[test]
 fn archive_records_an_unusable_redirect_target_as_final() -> Result<(), Box<dyn std::error::Error>>
 {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/bad-target");
 
     let archiver = Archiver::new(gzip_config())?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(summary.captures[0].status, 302);
@@ -1249,12 +1282,13 @@ fn archive_records_urls_without_a_host_as_failures() -> Result<(), Box<dyn std::
 
 #[test]
 fn supplied_cookie_is_scoped_to_its_host_and_recorded() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(1, |request| {
+    let server = serve_with(1, |request| {
         (
-            response("200 OK", &[("content-type", "text/plain")], "accepted"),
+            response(200, &[("content-type", "text/plain")], "accepted"),
             request.header("cookie").map(str::to_owned),
         )
     })?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/");
     let archiver = Archiver::new(Config {
         gzip_warc: false,
@@ -1264,7 +1298,7 @@ fn supplied_cookie_is_scoped_to_its_host_and_recorded() -> Result<(), Box<dyn st
     let mut output = Vec::new();
 
     let summary = archiver.archive([&url], Cursor::new(&mut output))?;
-    let requests = server.join().expect("server thread should not panic");
+    let requests = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(requests, [Some("session=clearance".to_owned())]);
@@ -1275,12 +1309,13 @@ fn supplied_cookie_is_scoped_to_its_host_and_recorded() -> Result<(), Box<dyn st
 
 #[test]
 fn supplied_cookie_is_withheld_from_other_hosts() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve_with(1, |request| {
+    let server = serve_with(1, |request| {
         (
-            response("200 OK", &[("content-type", "text/plain")], "accepted"),
+            response(200, &[("content-type", "text/plain")], "accepted"),
             request.header("cookie").map(str::to_owned),
         )
     })?;
+    let port = server.port();
     let archiver = Archiver::new(gzip_config())?
         .cookie_for("http://elsewhere.example/", "session=clearance")?;
     let mut output = Vec::new();
@@ -1289,7 +1324,7 @@ fn supplied_cookie_is_withheld_from_other_hosts() -> Result<(), Box<dyn std::err
         [format!("http://127.0.0.1:{port}/")],
         Cursor::new(&mut output),
     )?;
-    let requests = server.join().expect("server thread should not panic");
+    let requests = server.finish();
 
     assert_eq!(requests, [None]);
 
@@ -1324,7 +1359,8 @@ fn new_rejects_an_invalid_user_agent() {
 
 #[test]
 fn archive_writes_digests_in_the_configured_formats() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let url = format!("http://127.0.0.1:{port}/");
 
     let archiver = Archiver::new(Config {
@@ -1340,7 +1376,7 @@ fn archive_writes_digests_in_the_configured_formats() -> Result<(), Box<dyn std:
     })?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
 
@@ -1371,7 +1407,8 @@ fn archive_writes_digests_in_the_configured_formats() -> Result<(), Box<dyn std:
 
 #[test]
 fn archive_names_the_configured_software_and_operator() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     let urls = [format!("http://127.0.0.1:{port}/")];
 
     let archiver = Archiver::new(Config {
@@ -1387,7 +1424,7 @@ fn archive_names_the_configured_software_and_operator() -> Result<(), Box<dyn st
     })?;
     let mut bytes = Vec::new();
     let summary = archiver.archive(&urls, Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
 
@@ -1475,7 +1512,8 @@ fn archive_concurrently_preserves_input_order() -> Result<(), Box<dyn std::error
         "/target",
         "/",
     ];
-    let (port, server) = serve(paths.len())?;
+    let server = serve(paths.len())?;
+    let port = server.port();
     let urls = paths
         .iter()
         .map(|path| format!("http://127.0.0.1:{port}{path}"))
@@ -1487,7 +1525,7 @@ fn archive_concurrently_preserves_input_order() -> Result<(), Box<dyn std::error
     })?;
     let mut bytes = Vec::new();
     let summary = archiver.archive(&urls, Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(
@@ -1525,14 +1563,18 @@ fn archive_concurrently_bounds_the_captures_a_slow_one_holds_back()
     // the bound allows behind it has completed.
     let (release, released) = std::sync::mpsc::channel::<()>();
     let released = std::sync::Mutex::new(released);
-    let (port, server) = serve_concurrently_with(URLS, move |_, request| {
-        if request.path() == "/0" {
-            let _ = released
+    let server = serve_with(URLS, |_| (respond("/"), ()))?;
+    let port = server.port();
+    let proxy = RecordingProxy::start(port, move |request, _| {
+        if request.starts_with(b"GET /0 HTTP/1.1\r\n") {
+            released
                 .lock()
-                .map(|released| released.recv_timeout(Duration::from_secs(10)));
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .expect("capture bound should release the first response");
         }
-        (respond("/"), ())
     })?;
+    let port = proxy.port();
     let urls = (0..URLS)
         .map(|index| format!("http://127.0.0.1:{port}/{index}"))
         .collect::<Vec<_>>();
@@ -1565,7 +1607,8 @@ fn archive_concurrently_bounds_the_captures_a_slow_one_holds_back()
         };
         archiver.archive_with_progress(&urls, Cursor::new(&mut bytes), &mut sink)?
     };
-    server.join().expect("server thread should not panic");
+    proxy.finish()?;
+    let _ = server.finish();
 
     assert!(summary.is_complete());
     assert_eq!(summary.captures.len(), URLS);
@@ -1580,7 +1623,8 @@ fn archive_concurrently_bounds_the_captures_a_slow_one_holds_back()
 #[test]
 fn archive_encodes_url_characters_the_uri_grammar_rejects() -> Result<(), Box<dyn std::error::Error>>
 {
-    let (port, server) = serve(1)?;
+    let server = serve(1)?;
+    let port = server.port();
     // A WHATWG URL serializes `|` unencoded, which the URI grammar does not allow.
     let url = format!("http://127.0.0.1:{port}/target?x=1|2");
 
@@ -1590,10 +1634,10 @@ fn archive_encodes_url_characters_the_uri_grammar_rejects() -> Result<(), Box<dy
     })?;
     let mut bytes = Vec::new();
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
-    let requests = server.join().expect("server thread should not panic");
+    let requests = server.finish();
 
     assert!(summary.is_complete());
-    assert!(requests[0].starts_with(b"GET /target?x=1%7C2 HTTP/1.1\r\n"));
+    assert_eq!(requests[0].path(), "/target?x=1%7C2");
 
     let records = records(&bytes)?;
     let Record::Response { header, .. } = &records[2] else {
@@ -1610,13 +1654,14 @@ fn archive_encodes_url_characters_the_uri_grammar_rejects() -> Result<(), Box<dy
 
 #[test]
 fn archive_never_revisits_a_truncated_capture() -> Result<(), Box<dyn std::error::Error>> {
-    let (port, server) = serve(2)?;
+    let server = serve(2)?;
+    let port = server.port();
     // Two URLs with byte-identical responses, both cut short by the limit.
     let urls = [
         format!("http://127.0.0.1:{port}/first"),
         format!("http://127.0.0.1:{port}/second"),
     ];
-    let limit = respond("/first").len() as u64 - 2;
+    let limit = response_bytes(respond("/first"))?.len() as u64 - 2;
 
     let archiver = Archiver::new(Config {
         max_response_length: Some(limit),
@@ -1625,7 +1670,7 @@ fn archive_never_revisits_a_truncated_capture() -> Result<(), Box<dyn std::error
     })?;
     let mut bytes = Vec::new();
     let summary = archiver.archive(&urls, Cursor::new(&mut bytes))?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     assert!(summary.is_complete());
 
@@ -1646,12 +1691,13 @@ fn archive_repeats_a_short_payload_rather_than_revisiting_it()
     const PAYLOAD: &str = "[]";
 
     // Three archives of two URLs answered identically, under different minimum lengths.
-    let (port, server) = serve_with(6, |_| {
+    let server = serve_with(6, |_| {
         (
-            response("200 OK", &[("content-type", "application/json")], PAYLOAD),
+            response(200, &[("content-type", "application/json")], PAYLOAD),
             (),
         )
     })?;
+    let port = server.port();
     let urls = [
         format!("http://127.0.0.1:{port}/first"),
         format!("http://127.0.0.1:{port}/second"),
@@ -1671,7 +1717,7 @@ fn archive_repeats_a_short_payload_rather_than_revisiting_it()
     let by_default = archive(Config::DEFAULT_MIN_REVISIT_PAYLOAD_LENGTH)?;
     let at_the_length = archive(PAYLOAD.len() as u64)?;
     let unlimited = archive(0)?;
-    server.join().expect("server thread should not panic");
+    let _ = server.finish();
 
     // The default stores the duplicate as a second full response.
     assert_eq!(by_default.len(), 7);
