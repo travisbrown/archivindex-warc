@@ -8,7 +8,7 @@ use std::time::Duration;
 
 mod support;
 
-use archivindex_archiver::capture::{CaptureControl, CaptureEvent};
+use archivindex_archiver::capture::{ProgressControl, ProgressEvent};
 use archivindex_archiver::config::{DigestConfig, DigestOverride, Operator, Software};
 use archivindex_archiver::{Archiver, Config, ConfigError, CookieError, Error};
 use archivindex_test_support::http::{dead_port, response, serve_concurrently_with, serve_with};
@@ -664,21 +664,21 @@ fn event_sink_can_cancel_and_finalize_a_partial_archive() -> Result<(), Box<dyn 
     let mut bytes = Vec::new();
     let mut events = Vec::new();
     let summary = {
-        let mut sink = |event: CaptureEvent<'_>| {
+        let mut sink = |event: ProgressEvent<'_>| {
             events.push(match event {
-                CaptureEvent::Started { .. } => "started",
-                CaptureEvent::Captured { .. } => "captured",
-                CaptureEvent::Written { .. } => "written",
-                CaptureEvent::Retrying { .. } => "retrying",
-                CaptureEvent::Failed { .. } => "failed",
+                ProgressEvent::Started { .. } => "started",
+                ProgressEvent::Captured { .. } => "captured",
+                ProgressEvent::Written { .. } => "written",
+                ProgressEvent::Retrying { .. } => "retrying",
+                ProgressEvent::Failed { .. } => "failed",
             });
-            if matches!(event, CaptureEvent::Written { .. }) {
-                CaptureControl::Cancel
+            if matches!(event, ProgressEvent::Written { .. }) {
+                ProgressControl::Cancel
             } else {
-                CaptureControl::Continue
+                ProgressControl::Continue
             }
         };
-        archiver.archive_with_events(&urls, Cursor::new(&mut bytes), &mut sink)?
+        archiver.archive_with_progress(&urls, Cursor::new(&mut bytes), &mut sink)?
     };
     server.join().expect("server thread should not panic");
 
@@ -707,17 +707,17 @@ fn event_sink_can_cancel_before_the_first_dispatch() -> Result<(), Box<dyn std::
     let mut bytes = Vec::new();
     let mut events = Vec::new();
     let summary = {
-        let mut sink = |event: CaptureEvent<'_>| {
+        let mut sink = |event: ProgressEvent<'_>| {
             events.push(match event {
-                CaptureEvent::Started { .. } => "started",
-                CaptureEvent::Captured { .. } => "captured",
-                CaptureEvent::Written { .. } => "written",
-                CaptureEvent::Retrying { .. } => "retrying",
-                CaptureEvent::Failed { .. } => "failed",
+                ProgressEvent::Started { .. } => "started",
+                ProgressEvent::Captured { .. } => "captured",
+                ProgressEvent::Written { .. } => "written",
+                ProgressEvent::Retrying { .. } => "retrying",
+                ProgressEvent::Failed { .. } => "failed",
             });
-            CaptureControl::Cancel
+            ProgressControl::Cancel
         };
-        archiver.archive_with_events(&urls, Cursor::new(&mut bytes), &mut sink)?
+        archiver.archive_with_progress(&urls, Cursor::new(&mut bytes), &mut sink)?
     };
     server.join().expect("server thread should not panic");
 
@@ -830,16 +830,16 @@ fn archive_to_path_writes_a_collection() -> Result<(), Box<dyn std::error::Error
 
     let archiver = Archiver::new(gzip_config())?;
     let mut saw_partial = false;
-    let mut events = |event: CaptureEvent<'_>| {
-        if matches!(event, CaptureEvent::Started { .. }) {
+    let mut events = |event: ProgressEvent<'_>| {
+        if matches!(event, ProgressEvent::Started { .. }) {
             saw_partial = true;
             assert!(partial_path.exists());
             assert!(std::fs::metadata(&partial_path).is_ok_and(|metadata| metadata.len() > 0));
             assert!(!path.exists());
         }
-        CaptureControl::Continue
+        ProgressControl::Continue
     };
-    let summary = archiver.archive_to_path_with_events(
+    let summary = archiver.archive_to_path_with_progress(
         [format!("http://127.0.0.1:{port}/")],
         &path,
         &mut events,
@@ -1546,24 +1546,24 @@ fn archive_concurrently_bounds_the_captures_a_slow_one_holds_back()
     let mut captured_behind = 0;
     let mut started_at_release = None;
     let summary = {
-        let mut sink = |event: CaptureEvent<'_>| {
+        let mut sink = |event: ProgressEvent<'_>| {
             match event {
-                CaptureEvent::Started { .. } => started += 1,
-                CaptureEvent::Captured { url, .. } if !url.ends_with("/0") => {
+                ProgressEvent::Started { .. } => started += 1,
+                ProgressEvent::Captured { url, .. } if !url.ends_with("/0") => {
                     captured_behind += 1;
                     if captured_behind == 2 * CONCURRENCY - 1 {
                         started_at_release = Some(started);
                         let _ = release.send(());
                     }
                 }
-                CaptureEvent::Captured { .. }
-                | CaptureEvent::Written { .. }
-                | CaptureEvent::Retrying { .. }
-                | CaptureEvent::Failed { .. } => {}
+                ProgressEvent::Captured { .. }
+                | ProgressEvent::Written { .. }
+                | ProgressEvent::Retrying { .. }
+                | ProgressEvent::Failed { .. } => {}
             }
-            CaptureControl::Continue
+            ProgressControl::Continue
         };
-        archiver.archive_with_events(&urls, Cursor::new(&mut bytes), &mut sink)?
+        archiver.archive_with_progress(&urls, Cursor::new(&mut bytes), &mut sink)?
     };
     server.join().expect("server thread should not panic");
 

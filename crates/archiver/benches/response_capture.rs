@@ -3,7 +3,7 @@
 use std::hint::black_box;
 use std::time::Duration;
 
-use archivindex_archiver::recorder::framing::ResponseCapture;
+use archivindex_archiver::backend::ResponseCapture;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 fn response_capture(criterion: &mut Criterion) {

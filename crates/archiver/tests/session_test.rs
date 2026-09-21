@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use archivindex_archiver::capture::{CaptureControl, CaptureEvent, CaptureSummary, Origin};
+use archivindex_archiver::capture::{CaptureSummary, Origin, ProgressControl, ProgressEvent};
 use archivindex_archiver::config::{Operator, SessionConfig, Software};
 use archivindex_archiver::session::{
     self, Capture, CaptureProcessor, Crawl, Discovery, RetryConfig, Session,
@@ -1326,11 +1326,11 @@ fn a_post_that_fails_is_not_retried() -> Result<(), Box<dyn std::error::Error>> 
         Crawl::new([session::Request::post(&url, b"q=1".to_vec())]),
         &output,
     )?
-    .events(move |event: CaptureEvent<'_>| {
-        if matches!(event, CaptureEvent::Started { .. }) {
+    .progress(move |event: ProgressEvent<'_>| {
+        if matches!(event, ProgressEvent::Started { .. }) {
             counted.fetch_add(1, Ordering::Relaxed);
         }
-        CaptureControl::Continue
+        ProgressControl::Continue
     })
     .retry(RetryConfig {
         attempts: 4,
@@ -1623,18 +1623,18 @@ fn session_retries_retryable_http_statuses() -> Result<(), Box<dyn std::error::E
         Crawl::seeds([&url]),
         &path,
     )?
-    .events(move |event: CaptureEvent<'_>| {
+    .progress(move |event: ProgressEvent<'_>| {
         events_for_sink
             .lock()
             .expect("event lock")
             .push(match event {
-                CaptureEvent::Started { attempt, .. } => format!("started:{attempt}"),
-                CaptureEvent::Retrying { attempt, .. } => format!("retrying:{attempt}"),
-                CaptureEvent::Captured { .. } => "captured".to_owned(),
-                CaptureEvent::Written { .. } => "written".to_owned(),
-                CaptureEvent::Failed { .. } => "failed".to_owned(),
+                ProgressEvent::Started { attempt, .. } => format!("started:{attempt}"),
+                ProgressEvent::Retrying { attempt, .. } => format!("retrying:{attempt}"),
+                ProgressEvent::Captured { .. } => "captured".to_owned(),
+                ProgressEvent::Written { .. } => "written".to_owned(),
+                ProgressEvent::Failed { .. } => "failed".to_owned(),
             });
-        CaptureControl::Continue
+        ProgressControl::Continue
     })
     .retry(RetryConfig {
         attempts: 2,
@@ -1713,11 +1713,11 @@ fn session_honours_an_http_date_retry_after() -> Result<(), Box<dyn std::error::
         Crawl::seeds([&url]),
         &path,
     )?
-    .events(move |event: CaptureEvent<'_>| {
-        if let CaptureEvent::Retrying { delay, .. } = event {
+    .progress(move |event: ProgressEvent<'_>| {
+        if let ProgressEvent::Retrying { delay, .. } = event {
             delays_for_sink.lock().expect("delay lock").push(delay);
         }
-        CaptureControl::Continue
+        ProgressControl::Continue
     })
     .retry(RetryConfig {
         attempts: 2,
@@ -1810,11 +1810,11 @@ fn session_cancelled_during_a_retry_keeps_the_completed_attempt()
         &mut crawl,
         &path,
     )?
-    .events(|event: CaptureEvent<'_>| {
-        if matches!(event, CaptureEvent::Retrying { .. }) {
-            CaptureControl::Cancel
+    .progress(|event: ProgressEvent<'_>| {
+        if matches!(event, ProgressEvent::Retrying { .. }) {
+            ProgressControl::Cancel
         } else {
-            CaptureControl::Continue
+            ProgressControl::Continue
         }
     })
     .retry(RetryConfig {
@@ -2009,14 +2009,14 @@ fn session_writes_to_named_partial_before_publishing() -> Result<(), Box<dyn std
         Crawl::seeds([&url]),
         &path,
     )?
-    .events(|event: CaptureEvent<'_>| {
-        if matches!(event, CaptureEvent::Started { .. }) {
+    .progress(|event: ProgressEvent<'_>| {
+        if matches!(event, ProgressEvent::Started { .. }) {
             saw_partial = true;
             assert!(partial_path.exists());
             assert!(std::fs::metadata(&partial_path).is_ok_and(|metadata| metadata.len() > 0));
             assert!(!path.exists());
         }
-        CaptureControl::Continue
+        ProgressControl::Continue
     })
     .run()?;
     server.join().expect("server thread should not panic");
@@ -2173,19 +2173,19 @@ fn recording_acknowledgment_respects_cancellation_and_failures()
             &mut driver,
             &output,
         )?
-        .events(|event: CaptureEvent<'_>| {
-            if matches!(event, CaptureEvent::Written { .. }) && mode == "publish-error" {
+        .progress(|event: ProgressEvent<'_>| {
+            if matches!(event, ProgressEvent::Written { .. }) && mode == "publish-error" {
                 std::fs::write(&output, b"existing output").expect("create publication collision");
             }
             if matches!(
                 (mode, event),
-                ("started", CaptureEvent::Started { .. })
-                    | ("captured", CaptureEvent::Captured { .. })
-                    | ("written", CaptureEvent::Written { .. })
+                ("started", ProgressEvent::Started { .. })
+                    | ("captured", ProgressEvent::Captured { .. })
+                    | ("written", ProgressEvent::Written { .. })
             ) {
-                CaptureControl::Cancel
+                ProgressControl::Cancel
             } else {
-                CaptureControl::Continue
+                ProgressControl::Continue
             }
         })
         .run();

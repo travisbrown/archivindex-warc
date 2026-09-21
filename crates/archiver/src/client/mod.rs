@@ -2,11 +2,13 @@
 
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 
 use archivindex_warc_revisit_index::Index as RevisitIndex;
 use http::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
 
-use crate::capture::{ArchiveSummary, CaptureControl, CaptureEvent, CaptureEventSink, Origin};
+use crate::backend::Backend;
+use crate::capture::{ArchiveSummary, Origin, ProgressControl, ProgressEvent, ProgressSink};
 use crate::recorder::Recorder;
 use crate::{Archiver, Config, ConfigError, CookieError, Error, UserAgentError};
 
@@ -26,11 +28,11 @@ use warc_fields::{WarcinfoOptions, check_warcinfo_fields};
 const WARC_NAME: &str = "data.warc";
 const GZIP_WARC_NAME: &str = "data.warc.gz";
 
-struct IgnoreEvents;
+struct IgnoreProgress;
 
-impl CaptureEventSink for IgnoreEvents {
-    fn event(&mut self, _event: CaptureEvent<'_>) -> CaptureControl {
-        CaptureControl::Continue
+impl ProgressSink for IgnoreProgress {
+    fn event(&mut self, _event: ProgressEvent<'_>) -> ProgressControl {
+        ProgressControl::Continue
     }
 }
 
@@ -44,6 +46,28 @@ impl Archiver {
     /// not enabled in this build, or [`ConfigError::UnwritableWarcinfoField`] if the configured
     /// software or operator cannot be written to the `warcinfo` record.
     pub fn new(config: Config) -> Result<Self, ConfigError> {
+        let backend = match config.backend {
+            crate::config::BuiltinBackend::Recorder {} => Arc::new(
+                Recorder::new()
+                    .connect_timeout(Some(config.timeout))
+                    .io_timeout(Some(config.timeout))
+                    .max_response_length(config.max_response_length),
+            ),
+        };
+        Self::with_backend(config, backend)
+    }
+
+    /// Capture with a backend of your own rather than one named by
+    /// [`Config::backend`](crate::Config::backend).
+    ///
+    /// Every other setting still applies, including headers, cookies, redirects, challenges,
+    /// digests, limits, and session behavior. Timeouts and the response-length limit are the
+    /// backend's to honor; a backend that ignores them changes what the archiver records.
+    ///
+    /// # Errors
+    ///
+    /// Fails for the same configuration reasons as [`Archiver::new`].
+    pub fn with_backend(config: Config, backend: Arc<dyn Backend>) -> Result<Self, ConfigError> {
         let user_agent = HeaderValue::from_str(&config.user_agent)
             .map_err(|_| UserAgentError(config.user_agent.clone()))?;
         check_warcinfo_fields(&config)?;
@@ -59,13 +83,8 @@ impl Archiver {
         headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
         headers.insert(USER_AGENT, user_agent);
 
-        let recorder = Recorder::new()
-            .connect_timeout(Some(config.timeout))
-            .io_timeout(Some(config.timeout))
-            .max_response_length(config.max_response_length);
-
         Ok(Self {
-            recorder,
+            backend,
             headers,
             cookies: std::sync::Arc::default(),
             config,
@@ -130,15 +149,19 @@ impl Archiver {
         urls: I,
         path: P,
     ) -> Result<ArchiveSummary, Error> {
-        self.archive_to_path_with_events(urls, path, &mut IgnoreEvents)
+        self.archive_to_path_with_progress(urls, path, &mut IgnoreProgress)
     }
 
-    /// Download URLs with live events and atomically publish a new WARC at `path`.
-    pub fn archive_to_path_with_events<P: AsRef<Path>, I: IntoIterator<Item = S>, S: AsRef<str>>(
+    /// Download URLs with live progress and atomically publish a new WARC at `path`.
+    pub fn archive_to_path_with_progress<
+        P: AsRef<Path>,
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    >(
         &self,
         urls: I,
         path: P,
-        events: &mut impl CaptureEventSink,
+        progress: &mut impl ProgressSink,
     ) -> Result<ArchiveSummary, Error> {
         let path = path.as_ref();
         let warc_name = match path.file_name() {
@@ -149,7 +172,7 @@ impl Archiver {
             None => WARC_NAME,
         };
         let (collection, cancelled) =
-            self.archive_collection(urls, warc_name, Some(path), events)?;
+            self.archive_collection(urls, warc_name, Some(path), progress)?;
         let mut summary = collection.finish_to_path(path)?;
         summary.cancelled = cancelled;
         Ok(summary)
@@ -161,22 +184,22 @@ impl Archiver {
         urls: I,
         writer: W,
     ) -> Result<ArchiveSummary, Error> {
-        self.archive_with_events(urls, writer, &mut IgnoreEvents)
+        self.archive_with_progress(urls, writer, &mut IgnoreProgress)
     }
 
-    /// Download URLs with live events and write a WARC stream to `writer`.
-    pub fn archive_with_events<W: Write, I: IntoIterator<Item = S>, S: AsRef<str>>(
+    /// Download URLs with live progress and write a WARC stream to `writer`.
+    pub fn archive_with_progress<W: Write, I: IntoIterator<Item = S>, S: AsRef<str>>(
         &self,
         urls: I,
         writer: W,
-        events: &mut impl CaptureEventSink,
+        progress: &mut impl ProgressSink,
     ) -> Result<ArchiveSummary, Error> {
         let warc_name = if self.config.gzip_warc {
             GZIP_WARC_NAME
         } else {
             WARC_NAME
         };
-        let (collection, cancelled) = self.archive_collection(urls, warc_name, None, events)?;
+        let (collection, cancelled) = self.archive_collection(urls, warc_name, None, progress)?;
         let mut summary = collection.finish(writer)?;
         summary.cancelled = cancelled;
         Ok(summary)
@@ -218,7 +241,7 @@ impl Archiver {
         urls: I,
         warc_name: &str,
         output: Option<&Path>,
-        events: &mut impl CaptureEventSink,
+        progress: &mut impl ProgressSink,
     ) -> Result<(Collection, bool), Error> {
         let gzip = self.config.gzip_warc;
         let options = || CollectionOptions {
@@ -241,20 +264,21 @@ impl Archiver {
         if concurrency == 1 {
             for url in urls {
                 let url = url.as_ref();
-                if events.started(url, 1) {
+                if progress.started(url, 1) {
                     cancelled = true;
                     break;
                 }
                 let outcome = self.capture(url, None);
-                cancelled |= notify_outcome(events, url, &outcome);
+                cancelled |= notify_outcome(progress, url, &outcome);
                 collection.record(url.to_owned(), outcome, Origin::Seed, None)?;
-                cancelled |= events.event(CaptureEvent::Written { url }) == CaptureControl::Cancel;
+                cancelled |=
+                    progress.event(ProgressEvent::Written { url }) == ProgressControl::Cancel;
                 if cancelled {
                     break;
                 }
             }
         } else {
-            cancelled = self.capture_concurrently(urls, concurrency, &mut collection, events)?;
+            cancelled = self.capture_concurrently(urls, concurrency, &mut collection, progress)?;
         }
 
         Ok((collection, cancelled))
@@ -262,19 +286,19 @@ impl Archiver {
 }
 
 pub fn notify_outcome(
-    events: &mut (impl CaptureEventSink + ?Sized),
+    progress: &mut (impl ProgressSink + ?Sized),
     url: &str,
     outcome: &CaptureOutcome,
 ) -> bool {
     let event = match outcome {
-        CaptureOutcome::Captured { exchanges, .. } => CaptureEvent::Captured {
+        CaptureOutcome::Captured { exchanges, .. } => ProgressEvent::Captured {
             url,
             status: exchanges
                 .last()
                 .expect("successful capture has an exchange")
                 .status,
         },
-        CaptureOutcome::Failed { error, .. } => CaptureEvent::Failed { url, error },
+        CaptureOutcome::Failed { error, .. } => ProgressEvent::Failed { url, error },
     };
-    events.event(event) == CaptureControl::Cancel
+    progress.event(event) == ProgressControl::Cancel
 }

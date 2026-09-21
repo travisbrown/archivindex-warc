@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 
 use anyhow::{Context, Result};
 use archivindex_archiver::Archiver;
-use archivindex_archiver::capture::{CaptureControl, CaptureEvent};
+use archivindex_archiver::capture::{ProgressControl, ProgressEvent};
 use archivindex_cli_support::config::load_config;
 use archivindex_cli_support::progress::spinner;
 use archivindex_cli_support::{CommandOutcome, Verbosity, exit_code, interrupt_flag, plural};
@@ -64,17 +64,17 @@ fn archive(options: &ArchiveOptions, quiet: bool) -> Result<CommandOutcome> {
     let urls = read_urls(std::io::stdin().lock(), &mut input_error);
     let progress = spinner("Archiving", Some("URLs"));
     let interrupted = interrupt_flag();
-    let mut events = |event: CaptureEvent<'_>| {
-        if matches!(event, CaptureEvent::Written { .. }) {
+    let mut events = |event: ProgressEvent<'_>| {
+        if matches!(event, ProgressEvent::Written { .. }) {
             progress.inc(1);
         }
         if interrupted.load(Ordering::Relaxed) {
-            CaptureControl::Cancel
+            ProgressControl::Cancel
         } else {
-            CaptureControl::Continue
+            ProgressControl::Continue
         }
     };
-    let result = archiver.archive_to_path_with_events(urls, &options.output, &mut events);
+    let result = archiver.archive_to_path_with_progress(urls, &options.output, &mut events);
     progress.finish_and_clear();
     let summary =
         result.with_context(|| format!("cannot archive to {}", options.output.display()))?;

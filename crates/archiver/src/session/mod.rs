@@ -15,7 +15,7 @@ use std::time::Duration;
 use http::{HeaderMap, Method};
 
 use crate::capture::{
-    CaptureControl, CaptureEvent, CaptureEventSink, CaptureSummary, Failure, Origin,
+    CaptureSummary, Failure, Origin, ProgressControl, ProgressEvent, ProgressSink,
 };
 use crate::config::SessionConfig;
 use crate::{Archiver, Error};
@@ -345,7 +345,7 @@ pub struct Session<'a> {
     request_delay: Duration,
     limit: Option<usize>,
     revisit_index: Option<PathBuf>,
-    events: Option<Box<dyn CaptureEventSink + 'a>>,
+    progress: Option<Box<dyn ProgressSink + 'a>>,
 }
 
 impl<'a> Session<'a> {
@@ -392,7 +392,7 @@ impl<'a> Session<'a> {
             request_delay,
             limit: None,
             revisit_index,
-            events: None,
+            progress: None,
         })
     }
 
@@ -422,17 +422,17 @@ impl<'a> Session<'a> {
         self
     }
 
-    /// Observe capture lifecycle events and optionally request clean cancellation.
+    /// Observe capture lifecycle progress and optionally request clean cancellation.
     #[must_use]
-    pub fn events<E: CaptureEventSink + 'a>(mut self, events: E) -> Self {
-        self.events = Some(Box::new(events));
+    pub fn progress<E: ProgressSink + 'a>(mut self, progress: E) -> Self {
+        self.progress = Some(Box::new(progress));
         self
     }
 
-    fn event(&mut self, event: CaptureEvent<'_>) -> CaptureControl {
-        self.events
+    fn event(&mut self, event: ProgressEvent<'_>) -> ProgressControl {
+        self.progress
             .as_mut()
-            .map_or(CaptureControl::Continue, |sink| sink.event(event))
+            .map_or(ProgressControl::Continue, |sink| sink.event(event))
     }
 
     /// Set the transient-failure retry policy.
