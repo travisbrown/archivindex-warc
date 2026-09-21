@@ -1,7 +1,7 @@
 # WARC command-line tools
 
-This workspace application provides commands for inspecting and transforming WARC files. It uses
-the version of [`archivindex-warc`][archivindex-warc] in this repository.
+This workspace application provides commands for inspecting and transforming WARC files. It uses the
+version of [`archivindex-warc`][archivindex-warc] in this repository.
 
 A path with a `.gz` extension names a gzip-compressed file, for inputs and outputs alike. A
 compressed output holds one gzip member per record. An input of `-` is standard input, which is
@@ -9,8 +9,8 @@ decompressed when it begins with the gzip magic number; `merge`,
 `propagate-identified-payload-type`, and `remove-same-target-revisits` read each of their inputs
 twice, so they take files only.
 
-`-q` logs errors only, the default adds warnings and normal program output, and `-v`, `-vv`,
-and `-vvv` raise the diagnostic level to informational, debug, and trace.
+`-q` logs errors only, the default adds warnings and normal program output, and `-v`, `-vv`, and
+`-vvv` raise the diagnostic level to informational, debug, and trace.
 
 ## canonicalize
 
@@ -18,10 +18,9 @@ and `-vvv` raise the diagnostic level to informational, debug, and trace.
 cargo run --manifest-path tools/cli/Cargo.toml -- canonicalize -i input.warc.gz -o output.warc.gz
 ```
 
-Respells standard header fields as the WARC standard prints them and puts them in conventional
-order in every record. Extension fields follow the standard fields and keep their spelling and
-relative order. Field values, bodies, record order, and the relative order of repeated fields are
-preserved.
+Respells standard header fields as the WARC standard prints them and puts them in conventional order
+in every record. Extension fields follow the standard fields and keep their spelling and relative
+order. Field values, bodies, record order, and the relative order of repeated fields are preserved.
 
 ## compress
 
@@ -29,10 +28,10 @@ preserved.
 cargo run --manifest-path tools/cli/Cargo.toml -- compress -i input.warc
 ```
 
-Compresses each record as a separate gzip member. Every `WARC-Filename` field in a `warcinfo`
-record is rewritten to the output filename; use `--keep-filename` to leave these fields unchanged.
-The output defaults to the input path with `.gz` appended; use `--output` to choose another name,
-which must end in `.gz`. Use `--level` to choose a compression level from 0 through 9.
+Compresses each record as a separate gzip member. Every `WARC-Filename` field in a `warcinfo` record
+is rewritten to the output filename; use `--keep-filename` to leave these fields unchanged. The
+output defaults to the input path with `.gz` appended; use `--output` to choose another name, which
+must end in `.gz`. Use `--level` to choose a compression level from 0 through 9.
 
 ## digest-framed-payloads
 
@@ -43,13 +42,13 @@ cargo run --manifest-path tools/cli/Cargo.toml -- \
 
 WARC 1.1 makes the payload of an HTTP message its entity-body, which is the message body with any
 transfer-coding removed. Several other tools digest the message body as it was framed, chunk sizes
-and trailers included, and expect the same of the files they validate. Each `request` or
-`response` record with an HTTP or HTTPS target and a `Content-Type` of `application/http` or none
-that declares `WARC-Payload-Digest` has it recomputed over the framed body under the algorithm and
-encoding it declares, keeping the label as read. A segmented or truncated record, a record whose
-digest is malformed or names an algorithm this build does not compute, and a record whose message
-has no end of header section are copied as read, the last three with a warning. Every other record
-is copied as read.
+and trailers included, and expect the same of the files they validate. Each `request` or `response`
+record with an HTTP or HTTPS target and a `Content-Type` of `application/http` or none that declares
+`WARC-Payload-Digest` has it recomputed over the framed body under the algorithm and encoding it
+declares, keeping the label as read. A segmented or truncated record, a record whose digest is
+malformed or names an algorithm this build does not compute, and a record whose message has no end
+of header section are copied as read, the last three with a warning. Every other record is copied as
+read.
 
 ## export
 
@@ -99,9 +98,9 @@ cargo run --manifest-path tools/cli/Cargo.toml -- load-revisit-index -i captures
 
 Indexes every record of a WARC file into the SQLite revisit index named by `--db`, creating the
 index when it does not exist. A directory stands for the `.warc` and `.warc.gz` files directly in
-it, taken in file-name order. Each file is indexed in one transaction, so a file that cannot be
-read leaves the index as it was before that file. A record whose HTTP head or WARC payload is
-malformed is skipped with a warning.
+it, taken in file-name order. Each file is indexed in one transaction, so a file that cannot be read
+leaves the index as it was before that file. A record whose HTTP head or WARC payload is malformed
+is skipped with a warning.
 
 ## merge
 
@@ -112,15 +111,15 @@ cargo run --manifest-path tools/cli/Cargo.toml -- \
 ```
 
 Writes every record of the first file followed by every record of the second, dropping duplicate
-warcinfo records. Two warcinfo records are duplicates when they declare the same WARC version,
-carry the same body apart from allowed fields, and carry the same fields other than
-`WARC-Record-ID`, `WARC-Date`, `WARC-Filename`, `WARC-Block-Digest`, `WARC-Payload-Digest`, and
-`Content-Length`. `isPartOf` and each warcinfo body field named by a repeatable `--ignore-field`
-option may differ (names match case-insensitively). The duplicate with the earliest `WARC-Date` is
-written where the first of them stood, and every reference to a dropped record
-(`WARC-Warcinfo-ID`, `WARC-Refers-To`, `WARC-Concurrent-To`, and `WARC-Segment-Origin-ID`) is
-redirected to it. Existing `WARC-Filename` fields on retained warcinfo records are updated to
-the output filename. Records requiring neither change are copied unchanged.
+warcinfo records. Two warcinfo records are duplicates when they declare the same WARC version, carry
+the same body apart from allowed fields, and carry the same fields other than `WARC-Record-ID`,
+`WARC-Date`, `WARC-Filename`, `WARC-Block-Digest`, `WARC-Payload-Digest`, and `Content-Length`.
+`isPartOf` and each warcinfo body field named by a repeatable `--ignore-field` option may differ
+(names match case-insensitively). The duplicate with the earliest `WARC-Date` is written where the
+first of them stood, and every reference to a dropped record (`WARC-Warcinfo-ID`, `WARC-Refers-To`,
+`WARC-Concurrent-To`, and `WARC-Segment-Origin-ID`) is redirected to it. Existing `WARC-Filename`
+fields on retained warcinfo records are updated to the output filename. Records requiring neither
+change are copied unchanged.
 
 ## propagate-identified-payload-type
 

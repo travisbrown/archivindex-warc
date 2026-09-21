@@ -8,15 +8,15 @@
 [![crates.io][crates-downloads-badge]][crates]
 [![API Docs][docs-badge]][docs]
 
-A Rust library for reading and writing WARC 1.0 and 1.1 files. It provides raw, grammar-checked,
-and semantic record representations, with support for record-at-a-time gzip compression.
+A Rust library for reading and writing WARC 1.0 and 1.1 files. It provides raw, grammar-checked, and
+semantic record representations, with support for record-at-a-time gzip compression.
 
 ## Status
 
-This project began as a fork of [Reza Akhavan][jedireza]'s [`warc` crate][warc-crate], which is
-[no longer maintained][warc-unmaintained]. It now has a substantially different API and
-implementation, including WARC 1.1 support, layered validation, semantic record builders, and
-record framing for indexed access.
+This project began as a fork of [Reza Akhavan][jedireza]'s [`warc` crate][warc-crate], which is [no
+longer maintained][warc-unmaintained]. It now has a substantially different API and implementation,
+including WARC 1.1 support, layered validation, semantic record builders, and record framing for
+indexed access.
 
 ## Repository
 
