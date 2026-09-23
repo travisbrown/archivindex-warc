@@ -166,8 +166,11 @@ fn capture_records(
         .or(payload_digest);
     let mut event = CaptureEvent::new(target_uri.clone(), date)
         .warcinfo_id(context.warcinfo_id.clone())
-        .ip_address(ip_address)
         .identify_payload_type();
+
+    if let Some(ip_address) = ip_address {
+        event = event.ip_address(ip_address);
+    }
 
     if let Some(digest) = payload_digest {
         event = event.payload_digest(digest.clone());

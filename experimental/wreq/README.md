@@ -18,7 +18,11 @@ let archiver = Archiver::with_backend(Config::default(), Arc::new(backend))?;
 
 All existing limits, headers, cookies, redirects, challenges, digests, and session settings still
 apply. `WreqBackend` also provides standalone `fetch` and `fetch_by` methods and a custom
-certificate-store setter. There is no public arbitrary-client setter: supplying a client with
+certificate-store setter. Call `.proxy(Some("socks5h://127.0.0.1:1080"))?` on the backend to
+use a SOCKS5 proxy with remote DNS. `socks5://` uses local DNS; both accept username/password
+authentication. Environment proxy settings remain disabled. Proxied captures omit the origin IP
+because the socket peer identifies the proxy. There is no public arbitrary-client setter: supplying
+a client with
 redirects, retries, pooling, or incompatible protocol settings would invalidate attribution.
 
 From the command-line tool in [`../cli`](../cli), built with its `wreq` feature:

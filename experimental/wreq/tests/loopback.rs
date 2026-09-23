@@ -55,3 +55,11 @@ async fn synchronous_capture_works_inside_a_tokio_runtime() {
     let captured = fetch(&backend(), port, "/nested");
     assert_eq!(captured.request, server.join().unwrap());
 }
+fn proxied_archiver(proxy: &str) -> archivindex_archiver::Archiver {
+    archivindex_archiver::Archiver::with_backend(
+        archivindex_archiver::Config::default(),
+        Arc::new(backend().proxy(Some(proxy)).unwrap()),
+    )
+    .unwrap()
+}
+include!("../../../crates/archiver/tests/support/proxy_conformance.rs");

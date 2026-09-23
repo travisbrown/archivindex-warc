@@ -120,7 +120,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.20",
  "url",
  "webpki-roots",
 ]
@@ -141,7 +141,8 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "thiserror",
+ "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "wreq",
  "wreq-util",
@@ -163,7 +164,7 @@ dependencies = [
  "log",
  "serde",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -178,7 +179,7 @@ dependencies = [
  "serde",
  "serde_json",
  "simplelog",
- "thiserror",
+ "thiserror 2.0.20",
  "toml",
 ]
 
@@ -188,7 +189,7 @@ version = "0.1.0"
 source = "git+https://github.com/travisbrown/archivindex#f6e131cb8255090c5384f6cdcb099348247ad1ff"
 dependencies = [
  "tempfile",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -215,7 +216,7 @@ dependencies = [
  "memchr",
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.20",
  "uuid",
 ]
 
@@ -228,7 +229,7 @@ dependencies = [
  "serde",
  "sha1",
  "sha2",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -241,7 +242,7 @@ dependencies = [
  "fluent-uri",
  "log",
  "serde",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -251,7 +252,7 @@ dependencies = [
  "archivindex-warc",
  "fluent-uri",
  "rusqlite",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -266,7 +267,7 @@ dependencies = [
  "nom",
  "num-traits",
  "rusticata-macros",
- "thiserror",
+ "thiserror 2.0.20",
  "time",
 ]
 
@@ -1876,7 +1877,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c51c9ae4df8a7fba42103df5c621fa3c37eccf3a3c650879e90fc48b11cc192c"
 dependencies = [
  "hashbrown 0.16.1",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2206,11 +2207,31 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
+dependencies = [
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
 version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 2.0.20",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2300,6 +2321,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "tokio-socks"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7e2948f60dbe26b35f2c7fb74ac2854c1fddded0fe9d7548fcc674a246f7615"
+dependencies = [
+ "either",
+ "futures-util",
+ "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]
@@ -2845,6 +2878,7 @@ dependencies = [
  "socket2",
  "tokio",
  "tokio-btls",
+ "tokio-socks",
  "tower",
  "url",
  "webpki-root-certs",
@@ -2917,7 +2951,7 @@ dependencies = [
  "oid-registry",
  "ring",
  "rusticata-macros",
- "thiserror",
+ "thiserror 2.0.20",
  "time",
 ]
 

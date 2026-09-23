@@ -22,6 +22,37 @@ The `session` module supports driver-steered crawls, retries, and a persistent r
 deduplication and HTTP revalidation across runs. For a command-line interface, see
 [`archivindex-archiver-cli`](../../experimental/cli/README.md).
 
+## Proxies
+
+Set `Config::proxy` to route every request through a SOCKS5 proxy, including redirects, challenge
+responses, and session retries:
+
+```rust,no_run
+use archivindex_archiver::{Archiver, Config};
+
+let archiver = Archiver::new(Config {
+    proxy: Some("socks5h://127.0.0.1:1080".to_owned()),
+    ..Config::default()
+})?;
+# Ok::<(), archivindex_archiver::ConfigError>(())
+```
+
+Use `socks5h://` to resolve destination hostnames through the proxy, or `socks5://` for local DNS.
+The default proxy port is 1080. Username/password authentication is supported with
+`socks5h://user:password@host:port`; percent-encode reserved characters in credentials. The recorder
+rejects other proxy schemes. No proxy is used by default, and environment proxy settings are
+ignored.
+A proxy failure never falls back to a direct connection. Socket timeouts and capture deadlines also
+bound SOCKS negotiation; local DNS resolution remains outside those bounds.
+
+Proxied captures omit `WARC-IP-Address`: the socket peer is the proxy, and SOCKS does not reliably
+identify the origin IP. `CapturedExchange::ip_address` is therefore optional. HTTP capture bytes
+exclude proxy negotiation and authentication.
+
+For standalone captures, use `Recorder::proxy`. When supplying another backend with
+`Archiver::with_backend`, apply the proxy to that backend yourself. The experimental CLI applies
+its configuration and `--proxy` option to either supported backend.
+
 ## Record IDs
 
 The archiver assigns content-derived IDs to the records it writes. This is the archiver's identity

@@ -37,6 +37,7 @@ pub use wreq_util::Profile;
 #[derive(Clone)]
 pub struct WreqBackend {
     profile: Profile,
+    proxy: Option<wreq::Proxy>,
     connect_timeout: Option<Duration>,
     io_timeout: Option<Duration>,
     max_response_length: Option<u64>,
@@ -47,6 +48,7 @@ impl std::fmt::Debug for WreqBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WreqBackend")
             .field("profile", &self.profile)
+            .field("proxied", &self.proxy.is_some())
             .field("connect_timeout", &self.connect_timeout)
             .field("io_timeout", &self.io_timeout)
             .field("max_response_length", &self.max_response_length)
@@ -61,11 +63,43 @@ impl WreqBackend {
     pub const fn new(profile: Profile) -> Self {
         Self {
             profile,
+            proxy: None,
             connect_timeout: Some(DEFAULT_TIMEOUT),
             io_timeout: Some(DEFAULT_TIMEOUT),
             max_response_length: Some(DEFAULT_MAX_RESPONSE_LENGTH),
             cert_store: None,
         }
+    }
+
+    /// Set an explicit proxy for every request, or use direct connections with `None`.
+    ///
+    /// Supports `socks5://` for local DNS and `socks5h://` for proxy DNS, with optional username
+    /// and password credentials. Environment proxy settings remain disabled. Invalid or unsupported
+    /// URIs return an error before any request is sent.
+    pub fn proxy(mut self, proxy: Option<&str>) -> Result<Self, Error> {
+        self.proxy = proxy
+            .map(|proxy| {
+                // wreq accepts nonnumeric ports and defers failure until connecting.
+                let invalid = || io::Error::new(ErrorKind::InvalidInput, "invalid proxy URI");
+                let uri = fluent_uri::Uri::parse(proxy).map_err(|_| invalid())?;
+                if !matches!(uri.scheme().as_str(), "socks5" | "socks5h") {
+                    return Err(io::Error::new(
+                        ErrorKind::InvalidInput,
+                        "expected socks5:// or socks5h://",
+                    )
+                    .into());
+                }
+                let authority = uri
+                    .authority()
+                    .filter(|authority| !authority.host().is_empty())
+                    .ok_or_else(invalid)?;
+                if authority.port_to_u16().map_err(|_| invalid())? == Some(0) {
+                    return Err(invalid().into());
+                }
+                wreq::Proxy::all(proxy).map_err(backend_error)
+            })
+            .transpose()?;
+        Ok(self)
     }
 
     /// Bound connecting, including DNS and TLS, or remove the bound with `None`.
@@ -158,6 +192,32 @@ impl WreqBackend {
         })
     }
 
+    /// Build the isolated client with the selected transport settings and capture observer.
+    fn client(&self, tap: Arc<Tap>) -> Result<wreq::Client, Error> {
+        let mut builder = wreq::Client::builder()
+            .emulation(self.profile)
+            .http1_only()
+            .redirect(wreq::redirect::Policy::none())
+            .retry(wreq::retry::Policy::never())
+            .no_proxy()
+            .no_gzip()
+            .no_brotli()
+            .no_deflate()
+            .no_zstd()
+            .pool_max_idle_per_host(0)
+            .connection_observer(tap);
+        if let Some(proxy) = &self.proxy {
+            builder = builder.proxy(proxy.clone());
+        }
+        if let Some(timeout) = self.connect_timeout {
+            builder = builder.connect_timeout(timeout);
+        }
+        if let Some(store) = &self.cert_store {
+            builder = builder.tls_cert_store(store.clone());
+        }
+        builder.build().map_err(backend_error)
+    }
+
     async fn capture(
         &self,
         method: &Method,
@@ -178,25 +238,7 @@ impl WreqBackend {
             done: Notify::new(),
             activity: Notify::new(),
         });
-        let mut builder = wreq::Client::builder()
-            .emulation(self.profile)
-            .http1_only()
-            .redirect(wreq::redirect::Policy::none())
-            .retry(wreq::retry::Policy::never())
-            .no_proxy()
-            .no_gzip()
-            .no_brotli()
-            .no_deflate()
-            .no_zstd()
-            .pool_max_idle_per_host(0)
-            .connection_observer(tap.clone());
-        if let Some(timeout) = self.connect_timeout {
-            builder = builder.connect_timeout(timeout);
-        }
-        if let Some(store) = &self.cert_store {
-            builder = builder.tls_cert_store(store.clone());
-        }
-        let client = builder.build().map_err(backend_error)?;
+        let client = self.client(tap.clone())?;
         let mut headers = headers.clone();
         headers.insert(header::CONNECTION, HeaderValue::from_static("close"));
         // A provided byte body has a known length. Do not let caller framing turn it into
@@ -260,9 +302,15 @@ impl WreqBackend {
             response,
             response_metadata,
             target_uri: fluent_uri::Uri::parse(target.to_string().as_str())?.to_owned(),
-            ip_address: state
-                .ip_address
-                .ok_or_else(|| io::Error::other("missing peer address"))?,
+            ip_address: if self.proxy.is_some() {
+                None
+            } else {
+                Some(
+                    state
+                        .ip_address
+                        .ok_or_else(|| io::Error::other("missing peer address"))?,
+                )
+            },
             date,
             fetch_time,
             truncated,

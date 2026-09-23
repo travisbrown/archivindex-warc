@@ -44,11 +44,13 @@ impl Archiver {
     /// Returns [`ConfigError::InvalidUserAgent`] if the configured `User-Agent` cannot be sent as a
     /// field value, [`ConfigError::UnsupportedDigestAlgorithm`] if a configured digest algorithm is
     /// not enabled in this build, or [`ConfigError::UnwritableWarcinfoField`] if the configured
-    /// software or operator cannot be written to the `warcinfo` record.
+    /// software or operator cannot be written to the `warcinfo` record. An invalid or unsupported
+    /// proxy URI returns [`ConfigError::InvalidProxy`].
     pub fn new(config: Config) -> Result<Self, ConfigError> {
         let backend = match config.backend {
             crate::config::BuiltinBackend::Recorder {} => Arc::new(
                 Recorder::new()
+                    .proxy(config.proxy.as_deref())?
                     .connect_timeout(Some(config.timeout))
                     .io_timeout(Some(config.timeout))
                     .max_response_length(config.max_response_length),
@@ -61,12 +63,13 @@ impl Archiver {
     /// [`Config::backend`](crate::Config::backend).
     ///
     /// Every other setting still applies, including headers, cookies, redirects, challenges,
-    /// digests, limits, and session behavior. Timeouts and the response-length limit are the
-    /// backend's to honor; a backend that ignores them changes what the archiver records.
+    /// digests, limits, and session behavior. Proxy settings, timeouts, and the response-length
+    /// limit must be applied when constructing the backend.
     ///
     /// # Errors
     ///
-    /// Fails for the same configuration reasons as [`Archiver::new`].
+    /// Fails for the same configuration reasons as [`Archiver::new`], except proxy validation,
+    /// which is the supplied backend's responsibility.
     pub fn with_backend(config: Config, backend: Arc<dyn Backend>) -> Result<Self, ConfigError> {
         let user_agent = HeaderValue::from_str(&config.user_agent)
             .map_err(|_| UserAgentError(config.user_agent.clone()))?;

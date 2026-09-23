@@ -75,8 +75,9 @@ pub struct CapturedExchange {
     pub response_metadata: ResponseMetadata,
     /// The requested URI.
     pub target_uri: Uri<String>,
-    /// The peer IP address.
-    pub ip_address: IpAddr,
+    /// The origin IP address, when known. Proxied captures omit it because the socket peer is
+    /// the proxy and the tunnel does not reliably identify the origin address.
+    pub ip_address: Option<IpAddr>,
     /// When network activity began.
     pub date: DateTime<Utc>,
     /// Time from starting network activity to finishing the response.
@@ -89,9 +90,12 @@ impl CapturedExchange {
     /// Create a capture event with this exchange's shared fields.
     #[must_use]
     pub fn capture_event(&self) -> CaptureEvent {
-        let event = CaptureEvent::new(self.target_uri.clone(), self.date)
-            .ip_address(self.ip_address)
-            .fetch_time(self.fetch_time);
+        let mut event =
+            CaptureEvent::new(self.target_uri.clone(), self.date).fetch_time(self.fetch_time);
+
+        if let Some(ip_address) = self.ip_address {
+            event = event.ip_address(ip_address);
+        }
 
         match self.truncated.clone() {
             Some(reason) => event.truncated(reason),

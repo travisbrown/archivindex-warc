@@ -61,11 +61,18 @@ fn reidentify(input: &Path, output: &Path, quiet: bool) -> Result<CommandOutcome
 ///
 /// Backends other than the built-in recorder live in their own crates, so selecting one is this
 /// program's concern rather than the archiver's configuration.
-#[cfg(feature = "wreq")]
 fn build_archiver(
-    config: archivindex_archiver::Config,
+    mut config: archivindex_archiver::Config,
     options: &ArchiveOptions,
 ) -> Result<Archiver> {
+    if let Some(proxy) = &options.proxy {
+        config.proxy = Some(proxy.clone());
+    }
+    #[cfg(not(feature = "wreq"))]
+    {
+        Archiver::new(config).map_err(Into::into)
+    }
+    #[cfg(feature = "wreq")]
     match options.backend {
         Backend::Recorder => Archiver::new(config).map_err(Into::into),
         Backend::Wreq => {
@@ -73,20 +80,13 @@ fn build_archiver(
             let timeout = config.timeout;
             let max_response_length = config.max_response_length;
             let backend = archivindex_archiver_backend_wreq::WreqBackend::new(profile)
+                .proxy(config.proxy.as_deref())?
                 .connect_timeout(Some(timeout))
                 .io_timeout(Some(timeout))
                 .max_response_length(max_response_length);
             Archiver::with_backend(config, std::sync::Arc::new(backend)).map_err(Into::into)
         }
     }
-}
-
-#[cfg(not(feature = "wreq"))]
-fn build_archiver(
-    config: archivindex_archiver::Config,
-    _options: &ArchiveOptions,
-) -> Result<Archiver> {
-    Archiver::new(config).map_err(Into::into)
 }
 
 /// The capture backend to archive with.
@@ -234,6 +234,10 @@ struct ArchiveOptions {
     #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
     config: Option<PathBuf>,
 
+    /// Proxy URI, overriding the config file (use socks5h://host:port for proxy DNS).
+    #[arg(long, value_name = "URI")]
+    proxy: Option<String>,
+
     /// The WARC file to write; an existing file is not overwritten.
     #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
     output: PathBuf,
@@ -303,6 +307,54 @@ mod tests {
 
         assert_eq!(without.config, None);
         assert_eq!(with.config.as_deref(), Some(Path::new("capture.toml")));
+    }
+
+    #[test]
+    fn proxy_is_optional_and_overrides_the_configuration_for_each_backend() {
+        let backends: &[&[&str]] = &[
+            &[],
+            #[cfg(feature = "wreq")]
+            &["--backend", "wreq"],
+        ];
+        for backend in backends {
+            for proxy in [None, Some("socks5h://127.0.0.1:1080")] {
+                let mut args = vec![
+                    "archivindex-archiver",
+                    "archive",
+                    "--output",
+                    "capture.warc",
+                ];
+                args.extend_from_slice(backend);
+                if let Some(proxy) = proxy {
+                    args.extend(["--proxy", proxy]);
+                }
+                let cli = Cli::try_parse_from(args).unwrap();
+                let Command::Archive(options) = cli.command else {
+                    panic!("archive command")
+                };
+                assert_eq!(options.proxy.as_deref(), proxy);
+                let config = Config {
+                    proxy: Some("socks5h://127.0.0.1:invalid".to_owned()),
+                    ..Config::default()
+                };
+                assert_eq!(
+                    super::build_archiver(config, &options).is_ok(),
+                    proxy.is_some()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn configuration_files_accept_a_proxy() {
+        for (format, document) in [
+            (Format::Toml, "proxy = \"socks5h://127.0.0.1:1080\""),
+            (Format::Json, r#"{"proxy":"socks5h://127.0.0.1:1080"}"#),
+        ] {
+            let config = format.parse::<Config>(document).unwrap();
+            assert_eq!(config.proxy.as_deref(), Some("socks5h://127.0.0.1:1080"));
+        }
+        assert_eq!(Config::default().proxy, None);
     }
 
     #[test]

@@ -20,6 +20,8 @@
 //! accept `None` to remove their bounds. [`Recorder::fetch_by`] adds a deadline, excluding DNS
 //! resolution.
 
+mod socks;
+
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
@@ -40,6 +42,7 @@ use crate::backend::{
 #[derive(Clone, Debug)]
 pub struct Recorder {
     tls: Arc<rustls::ClientConfig>,
+    proxy: Option<socks::Proxy>,
     connect_timeout: Option<Duration>,
     io_timeout: Option<Duration>,
     max_response_length: Option<u64>,
@@ -70,10 +73,21 @@ impl Recorder {
 
         Self {
             tls: Arc::new(tls),
+            proxy: None,
             connect_timeout: Some(DEFAULT_TIMEOUT),
             io_timeout: Some(DEFAULT_TIMEOUT),
             max_response_length: Some(DEFAULT_MAX_RESPONSE_LENGTH),
         }
+    }
+
+    /// Set a SOCKS5 proxy, or use direct connections with `None` (the default).
+    ///
+    /// `socks5://` resolves target hostnames locally; `socks5h://` sends them to the proxy.
+    /// Both accept optional username and password credentials. Environment proxy settings are
+    /// ignored. Invalid or unsupported URIs return [`crate::ConfigError::InvalidProxy`].
+    pub fn proxy(mut self, proxy: Option<&str>) -> Result<Self, crate::ConfigError> {
+        self.proxy = proxy.map(socks::Proxy::parse).transpose()?;
+        Ok(self)
     }
 
     /// Replace the TLS client configuration.
@@ -209,8 +223,28 @@ impl Recorder {
         let date = Utc::now();
         let clock = Instant::now();
 
-        let stream = self.connect(host, port, deadline)?;
-        let ip_address = stream.peer_addr()?.ip();
+        let stream = if let Some(proxy) = &self.proxy {
+            let stream = self.connect(&proxy.host, proxy.port, deadline)?;
+            stream.set_read_timeout(self.io_timeout)?;
+            stream.set_write_timeout(self.io_timeout)?;
+            let mut transport = Transport {
+                stream: Stream::Plain(stream),
+                io_timeout: self.io_timeout,
+                deadline,
+            };
+            proxy.tunnel(&mut transport, host, port)?;
+            let Stream::Plain(stream) = transport.stream else {
+                unreachable!("SOCKS negotiation uses a plain connection");
+            };
+            stream
+        } else {
+            self.connect(host, port, deadline)?
+        };
+        let ip_address = if self.proxy.is_none() {
+            Some(stream.peer_addr()?.ip())
+        } else {
+            None
+        };
         stream.set_read_timeout(self.io_timeout)?;
         stream.set_write_timeout(self.io_timeout)?;
 
@@ -320,7 +354,6 @@ struct Transport {
 impl Transport {
     /// Bound the next socket operation by the time left to the deadline, when there is one.
     ///
-    /// Without a deadline the socket keeps the timeout set when it was connected.
     fn arm(&self) -> std::io::Result<()> {
         if self.deadline.is_none() {
             return Ok(());

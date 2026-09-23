@@ -44,6 +44,20 @@ every key with its default value and meaning. Durations are humantime strings su
 `10m`, and the limits `max-capture-time` and `max-response-length` are lifted by writing
 `"unbounded"`.
 
+Use `--proxy` to route requests through a SOCKS5 proxy:
+
+```sh
+archivindex-archiver archive --proxy socks5h://127.0.0.1:1080 \
+  --output capture.warc < urls.txt
+```
+
+This works with both backends. Alternatively, set the top-level `proxy` key in the configuration
+file; `--proxy` takes precedence. `socks5h://` resolves destination hostnames through the proxy,
+while `socks5://` resolves them locally. Both support `user:password@host:port` authentication.
+No proxy is used by default, and environment proxy settings are ignored. Redirects, challenge
+responses, and retries use the same proxy. Failed proxy connections never fall back to direct
+connections. Proxied captures omit `WARC-IP-Address` because the origin IP is not known reliably.
+
 The `warcinfo` record of every WARC file names the software that wrote it and, when configured, its
 operator:
 

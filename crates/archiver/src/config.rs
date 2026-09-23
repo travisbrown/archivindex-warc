@@ -49,6 +49,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             backend: BuiltinBackend::default(),
+            proxy: None,
             user_agent: Self::DEFAULT_USER_AGENT.to_owned(),
             timeout: DEFAULT_TIMEOUT,
             max_capture_time: Some(Self::DEFAULT_MAX_CAPTURE_TIME),

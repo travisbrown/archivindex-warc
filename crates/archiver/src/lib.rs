@@ -91,6 +91,7 @@ pub struct Archiver {
 ///
 /// ```toml
 /// user-agent = "archivindex-archiver/0.1.0"  # this crate's name and version
+/// # proxy = "socks5h://127.0.0.1:1080"  # none by default
 /// timeout = "30s"
 /// max-capture-time = "10m"
 /// max-redirects = 10
@@ -127,6 +128,13 @@ pub struct Archiver {
 pub struct Config {
     /// The built-in capture backend. Defaults to the synchronous recorder.
     pub backend: config::BuiltinBackend,
+    /// Proxy URI for every request, including redirects, challenges, and session retries.
+    ///
+    /// The built-in recorder supports `socks5://` (local DNS) and `socks5h://` (proxy DNS),
+    /// with optional username and password authentication. No proxy is used by default, and
+    /// environment proxy settings are ignored. An external backend must be configured separately
+    /// when using [`Archiver::with_backend`].
+    pub proxy: Option<String>,
     /// The `User-Agent` header value sent with every request.
     ///
     /// [`Archiver::new`] rejects values that cannot be used as HTTP field values.
@@ -322,6 +330,9 @@ pub enum CookieError {
 /// See [`Archiver::new`].
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ConfigError {
+    /// The proxy URI is malformed or unsupported by the recorder.
+    #[error("invalid proxy: {0}")]
+    InvalidProxy(&'static str),
     /// The configured `User-Agent` cannot be sent or recorded safely.
     #[error(transparent)]
     InvalidUserAgent(#[from] UserAgentError),
