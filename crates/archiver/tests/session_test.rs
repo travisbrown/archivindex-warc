@@ -1992,6 +1992,76 @@ fn session_refuses_an_existing_output() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[test]
+fn warcinfo_records_the_proxy_without_credentials() -> Result<(), Box<dyn std::error::Error>> {
+    // Empty runs exercise both warcinfo construction paths without contacting a proxy. Reading
+    // them back also checks that record identifiers cover the added field.
+    for (proxy, expected) in [
+        (None, None),
+        (
+            Some("socks5://localhost:1080"),
+            Some("socks5://localhost:1080"),
+        ),
+        (Some("socks5h://localhost"), Some("socks5h://localhost")),
+        (
+            Some("socks5h://username:secret@127.0.0.1:9050"),
+            Some("socks5h://127.0.0.1:9050"),
+        ),
+        (
+            Some("socks5h://user%40name:pass%3Aword@[::1]:1080"),
+            Some("socks5h://[::1]:1080"),
+        ),
+    ] {
+        let archiver = archiver(Config {
+            proxy: proxy.map(str::to_owned),
+            ..gzip_config()
+        });
+        let mut one_shot = Vec::new();
+        assert!(
+            archiver
+                .archive([] as [&str; 0], &mut one_shot)?
+                .is_complete()
+        );
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("proxy.warc.gz");
+        assert!(
+            Session::new(archiver, "proxy", Crawl::seeds([] as [&str; 0]), &path)?
+                .run()?
+                .is_complete()
+        );
+
+        for bytes in [one_shot, std::fs::read(path)?] {
+            let records = records(&bytes)?;
+            assert_eq!(records.len(), 1);
+            let Record::Warcinfo {
+                body: FieldsBlock::Fields(fields),
+                ..
+            } = &records[0]
+            else {
+                panic!("warcinfo with fields");
+            };
+            let field = WarcinfoField::from("archivindex-proxy");
+            assert_eq!(fields.get(&field), expected);
+            assert_eq!(
+                fields.iter().filter(|(key, _)| *key == &field).count(),
+                usize::from(expected.is_some())
+            );
+            let body = fields.to_string();
+            for credential in [
+                "username",
+                "secret",
+                "user%40name",
+                "pass%3Aword",
+                "user@name",
+                "pass:word",
+            ] {
+                assert!(!body.contains(credential), "credential in warcinfo");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn session_with_no_seeds_writes_an_empty_collection() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("session.warc.gz");

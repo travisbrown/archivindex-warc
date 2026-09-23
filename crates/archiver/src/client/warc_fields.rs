@@ -7,14 +7,15 @@ use archivindex_warc::record::extension::NoExtension;
 use archivindex_warc::record::fields::Error as FieldsError;
 use archivindex_warc::record::fields::dcmi::DcmiTerm;
 use archivindex_warc::record::fields::metadata::MetadataField;
+use archivindex_warc::record::fields::warcinfo::WarcinfoField;
 use archivindex_warc::value::WarcDate;
 use chrono::Utc;
 use fluent_uri::Uri;
 
-use super::outcome::DATE_PRECISION;
+use super::outcome::{DATE_PRECISION, redact_credentials};
 use super::record_id::assign_record_id;
 use crate::config::{Operator, Software};
-use crate::{Config, Error};
+use crate::{Config, ConfigError, Error};
 
 /// Information recorded in the WARC file's initial `warcinfo` record.
 pub struct WarcinfoOptions<'a> {
@@ -22,6 +23,7 @@ pub struct WarcinfoOptions<'a> {
     pub software: &'a Software,
     pub operator: Option<&'a Operator>,
     pub session_id: Option<&'a str>,
+    pub proxy: Option<&'a str>,
 }
 
 impl<'a> WarcinfoOptions<'a> {
@@ -32,6 +34,7 @@ impl<'a> WarcinfoOptions<'a> {
             software: &config.software,
             operator: config.operator.as_ref(),
             session_id: None,
+            proxy: config.proxy.as_deref(),
         }
     }
 }
@@ -64,6 +67,14 @@ pub fn warcinfo_record(warc_name: &str, options: &WarcinfoOptions<'_>) -> Result
         .software(&options.software.name, &options.software.version)?;
     if let Some(operator) = options.operator {
         builder = builder.operator(&operator.name, operator.email.as_deref())?;
+    }
+    if let Some(proxy) = options.proxy {
+        let proxy =
+            url::Url::parse(proxy).map_err(|_| ConfigError::InvalidProxy("malformed URI"))?;
+        builder = builder.field(
+            WarcinfoField::from("archivindex-proxy"),
+            &redact_credentials(&proxy),
+        )?;
     }
     builder = builder.http_header_user_agent(options.user_agent)?;
     if let Some(session_id) = options.session_id {

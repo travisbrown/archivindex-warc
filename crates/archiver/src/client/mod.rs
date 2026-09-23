@@ -230,6 +230,7 @@ impl Archiver {
                     software,
                     operator,
                     session_id: Some(id),
+                    proxy: self.config.proxy.as_deref(),
                 },
                 request_headers: self.headers.clone(),
                 persistent_index,

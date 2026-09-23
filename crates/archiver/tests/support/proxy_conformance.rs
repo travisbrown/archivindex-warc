@@ -283,7 +283,9 @@ mod proxy_tests {
     fn retries_redirects_and_challenges_stay_on_the_proxy_and_warc_omits_its_ip() {
         use archivindex_archiver::session::{Crawl, RetryConfig, Session};
         use archivindex_warc::io::read::WarcReader;
+        use archivindex_warc::record::FieldsBlock;
         use archivindex_warc::record::extension::NoExtension;
+        use archivindex_warc::record::fields::warcinfo::WarcinfoField;
 
         let script = "v='clearance';document.cookie='sucuri_cloudproxy_uuid_test=' + v + ';path=/;max-age=86400;SameSite=Lax'; location.reload();";
         let encoded = data_encoding::BASE64.encode(script.as_bytes());
@@ -339,5 +341,16 @@ mod proxy_tests {
             4
         );
         assert!(records.iter().all(|record| record.ip_address().is_none()));
+        let Record::Warcinfo {
+            body: FieldsBlock::Fields(fields),
+            ..
+        } = &records[0]
+        else {
+            panic!("warcinfo with fields")
+        };
+        assert_eq!(
+            fields.get(&WarcinfoField::from("archivindex-proxy")),
+            Some(proxy.as_str())
+        );
     }
 }

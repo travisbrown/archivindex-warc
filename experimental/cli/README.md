@@ -57,6 +57,8 @@ while `socks5://` resolves them locally. Both support `user:password@host:port` 
 No proxy is used by default, and environment proxy settings are ignored. Redirects, challenge
 responses, and retries use the same proxy. Failed proxy connections never fall back to direct
 connections. Proxied captures omit `WARC-IP-Address` because the origin IP is not known reliably.
+The `warcinfo` body records the proxy URI in `archivindex-proxy`, with username and password
+removed.
 
 The `warcinfo` record of every WARC file names the software that wrote it and, when configured, its
 operator:

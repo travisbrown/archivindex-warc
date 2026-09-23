@@ -132,8 +132,9 @@ pub struct Config {
     ///
     /// The built-in recorder supports `socks5://` (local DNS) and `socks5h://` (proxy DNS),
     /// with optional username and password authentication. No proxy is used by default, and
-    /// environment proxy settings are ignored. An external backend must be configured separately
-    /// when using [`Archiver::with_backend`].
+    /// environment proxy settings are ignored. When set, the URI is recorded without credentials
+    /// as `archivindex-proxy` in the `warcinfo` body. An external backend must be configured
+    /// separately with the same proxy when using [`Archiver::with_backend`].
     pub proxy: Option<String>,
     /// The `User-Agent` header value sent with every request.
     ///
