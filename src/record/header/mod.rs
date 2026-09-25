@@ -4,7 +4,7 @@
 //! use [`Option`], and forbidden fields are absent. The record variant supplies `WARC-Type`, while
 //! each header stores the WARC version declared by its version line.
 //!
-//! The structs represent WARC 1.1 fields and values. Parsing and rendering check version-specific
+//! The structs represent WARC 1.1 fields and values, plus the `WARC-Protocol` extension. Parsing and rendering check version-specific
 //! restrictions for WARC 1.0 records.
 //!
 //! Every header except [`ContinuationHeader`] has a `segment_origin` flag. It represents a
@@ -13,6 +13,7 @@
 //! The type parameter provides record types, fields, and truncation reasons defined by an
 //! extension. See [`crate::record::extension`].
 
+pub mod protocol;
 pub mod truncated_type;
 
 use std::fmt::{Display, Formatter};
@@ -21,6 +22,7 @@ use std::net::IpAddr;
 use fluent_uri::Uri;
 
 use crate::record::extension::{Extension, NoExtension};
+use crate::record::header::protocol::Protocol;
 use crate::record::header::truncated_type::TruncatedType;
 use crate::value::{LabelledDigest, MediaType, Text, WarcDate};
 use crate::version::WarcVersion;
@@ -206,6 +208,10 @@ pub struct ResponseHeader<E: Extension = NoExtension> {
     pub warcinfo_id: Option<Uri<String>>,
     /// `WARC-IP-Address`: the address the response was received from.
     pub ip_address: Option<IpAddr>,
+    /// Repeated `WARC-Protocol` fields describing the original network protocols.
+    ///
+    /// This supported IIPC extension does not describe the stored block format.
+    pub protocols: Vec<Protocol>,
     /// `WARC-Concurrent-To`: the records produced by the same capture event, typically the matching
     /// `request`. The one field the standard allows to repeat.
     pub concurrent_to: Vec<Uri<String>>,
@@ -232,6 +238,10 @@ pub struct ResourceHeader<E: Extension = NoExtension> {
     pub warcinfo_id: Option<Uri<String>>,
     /// `WARC-IP-Address`: the address the resource was retrieved from.
     pub ip_address: Option<IpAddr>,
+    /// Repeated `WARC-Protocol` fields describing the original network protocols.
+    ///
+    /// This supported IIPC extension does not describe the stored block format.
+    pub protocols: Vec<Protocol>,
     /// `WARC-Concurrent-To`: the records produced by the same capture event.
     pub concurrent_to: Vec<Uri<String>>,
     /// Whether `WARC-Segment-Number` is present with the value `1`, marking this record as the
@@ -257,6 +267,10 @@ pub struct RequestHeader<E: Extension = NoExtension> {
     pub warcinfo_id: Option<Uri<String>>,
     /// `WARC-IP-Address`: the address the request was directed to.
     pub ip_address: Option<IpAddr>,
+    /// Repeated `WARC-Protocol` fields describing the original network protocols.
+    ///
+    /// This supported IIPC extension does not describe the stored block format.
+    pub protocols: Vec<Protocol>,
     /// `WARC-Concurrent-To`: the records produced by the same capture event, typically the matching
     /// `response`.
     pub concurrent_to: Vec<Uri<String>>,
@@ -285,6 +299,10 @@ pub struct MetadataHeader<E: Extension = NoExtension> {
     pub warcinfo_id: Option<Uri<String>>,
     /// `WARC-IP-Address`: the address the described material was retrieved from.
     pub ip_address: Option<IpAddr>,
+    /// Repeated `WARC-Protocol` fields describing the original network protocols.
+    ///
+    /// This supported IIPC extension does not describe the stored block format.
+    pub protocols: Vec<Protocol>,
     /// `WARC-Concurrent-To`: the records produced by the same capture event.
     pub concurrent_to: Vec<Uri<String>>,
     /// `WARC-Refers-To`: the record this one describes, which may be of any type, `metadata`
@@ -317,6 +335,10 @@ pub struct RevisitHeader<E: Extension = NoExtension> {
     pub profile: RevisitProfile,
     /// `WARC-IP-Address`: the address the revisited resource was retrieved from.
     pub ip_address: Option<IpAddr>,
+    /// Repeated `WARC-Protocol` fields describing the original network protocols.
+    ///
+    /// This supported IIPC extension does not describe the stored block format.
+    pub protocols: Vec<Protocol>,
     /// `WARC-Concurrent-To`: the records produced by the same capture event.
     pub concurrent_to: Vec<Uri<String>>,
     /// `WARC-Refers-To`: the earlier record holding the content this one duplicates. Recommended to

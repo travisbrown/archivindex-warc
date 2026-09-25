@@ -1,11 +1,13 @@
-//! Standard and extension field names.
+//! Standard and supported extension field names.
 
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 
 use crate::version::WarcVersion;
 
-/// A field the WARC standard defines.
+/// A standard field or the supported `WARC-Protocol` extension.
+///
+/// `WARC-Protocol` follows IIPC proposal 42, not the WARC 1.1 standard.
 ///
 /// Any other valid name is an extension field.
 ///
@@ -22,6 +24,7 @@ pub enum Field {
     Filename,
     ConcurrentTo,
     IPAddress,
+    Protocol,
     Profile,
     RefersTo,
     RefersToTargetURI,
@@ -68,6 +71,7 @@ impl Field {
             Self::SegmentNumber => ("warc-segment-number", "WARC-Segment-Number"),
             Self::SegmentOriginID => ("warc-segment-origin-id", "WARC-Segment-Origin-ID"),
             Self::SegmentTotalLength => ("warc-segment-total-length", "WARC-Segment-Total-Length"),
+            Self::Protocol => ("warc-protocol", "WARC-Protocol"),
             Self::IPAddress => ("warc-ip-address", "WARC-IP-Address"),
             Self::ConcurrentTo => ("warc-concurrent-to", "WARC-Concurrent-To"),
             Self::ContentType => ("content-type", "Content-Type"),
@@ -89,7 +93,7 @@ impl Field {
         let candidates: &[Self] = match name.len() {
             9 => &[Self::WarcType, Self::Date],
             12 => &[Self::Profile, Self::ContentType],
-            13 => &[Self::Filename],
+            13 => &[Self::Filename, Self::Protocol],
             14 => &[
                 Self::RecordID,
                 Self::RefersTo,
@@ -113,7 +117,9 @@ impl Field {
             .find(|field| name.eq_ignore_ascii_case(field.name()))
     }
 
-    /// Whether the given version of the standard defines this field.
+    /// Whether this field is supported for the given WARC version.
+    ///
+    /// The `WARC-Protocol` extension is supported with both versions.
     ///
     /// WARC 1.1 added `WARC-Refers-To-Date` and `WARC-Refers-To-Target-URI`.
     #[must_use]
@@ -313,7 +319,7 @@ mod tests {
     ///
     /// This is written out rather than derived from the enum, so that the declaration order the
     /// ranking relies on is checked here rather than assumed.
-    const CANONICAL_ORDER: [Field; 21] = [
+    const CANONICAL_ORDER: [Field; 22] = [
         Field::WarcType,
         Field::TargetURI,
         Field::Date,
@@ -322,6 +328,7 @@ mod tests {
         Field::Filename,
         Field::ConcurrentTo,
         Field::IPAddress,
+        Field::Protocol,
         Field::Profile,
         Field::RefersTo,
         Field::RefersToTargetURI,

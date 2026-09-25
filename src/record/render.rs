@@ -171,6 +171,20 @@ impl Renderer {
         })
     }
 
+    /// Append one field per original network protocol, following IIPC proposal 42.
+    pub(super) fn push_protocols(
+        &mut self,
+        protocols: Vec<crate::record::header::protocol::Protocol>,
+    ) -> Result<(), RenderError> {
+        for protocol in protocols {
+            self.push_text(
+                Field::Protocol,
+                Text::parse(protocol.as_str().as_bytes()).expect("a protocol identifier is text"),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Append one `WARC-Concurrent-To` line per referenced record.
     pub(super) fn push_concurrent_to(
         &mut self,

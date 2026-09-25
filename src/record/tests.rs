@@ -2076,6 +2076,7 @@ fn response() -> Record {
             target_uri: uri("http://example.com/"),
             warcinfo_id: Some(uri("urn:uuid:warcinfo")),
             ip_address: Some(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))),
+            protocols: Vec::new(),
             concurrent_to: vec![uri("urn:uuid:request")],
             segment_origin: false,
             other: (),
@@ -2203,4 +2204,135 @@ fn round_trips_a_record_through_its_rendering(#[strategy = prop::record()] recor
 
     prop_assert_eq!(&rewritten, &written);
     prop_assert_eq!(lift_bytes(&rewritten), lifted);
+}
+
+/// The proposal and Browsertrix use repeated fields. Preserve their order and unknown IDs, and
+/// keep the block's media type independent of its original network protocols.
+#[test]
+fn protocol_fields_round_trip_on_allowed_record_types() {
+    use crate::record::header::protocol::Protocol;
+    for version in [WarcVersion::V1_0, WarcVersion::V1_1] {
+        for kind in ["request", "response", "resource", "metadata", "revisit"] {
+            let target = if version == WarcVersion::V1_0 {
+                "<https://example.com/>"
+            } else {
+                "https://example.com/"
+            };
+            let mut lines = vec![
+                ("WARC-Target-URI", target),
+                ("WARC-Protocol", "h2"),
+                ("warc-protocol", "tls/1.3"),
+                ("WARC-Protocol", "future/9"),
+            ];
+            if kind == "revisit" {
+                lines.push((
+                    "WARC-Profile",
+                    if version == WarcVersion::V1_0 {
+                        "<http://netpreserve.org/warc/1.0/revisit/server-not-modified>"
+                    } else {
+                        "http://netpreserve.org/warc/1.1/revisit/server-not-modified"
+                    },
+                ));
+            }
+            let record = lift_grammar(grammar_of(version, kind, &lines, b"")).unwrap();
+            let expected = vec![
+                Protocol::H2,
+                "tls/1.3".parse().unwrap(),
+                "future/9".parse().unwrap(),
+            ];
+            assert_eq!(record.protocols(), expected);
+            let raw = record.into_raw().unwrap();
+            assert_eq!(
+                written_names(&raw)
+                    .iter()
+                    .filter(|name| **name == "WARC-Protocol")
+                    .count(),
+                3
+            );
+            let round_trip: Record =
+                Record::try_from(untyped::Record::try_from(raw).unwrap()).unwrap();
+            assert_eq!(round_trip.protocols(), expected);
+        }
+    }
+}
+
+#[test]
+fn protocol_fields_are_forbidden_on_non_capture_record_types() {
+    for kind in ["warcinfo", "conversion", "continuation"] {
+        let mut lines = vec![("WARC-Protocol", "h2")];
+        if kind == "conversion" || kind == "continuation" {
+            lines.push(("WARC-Target-URI", "https://example.com/"));
+        }
+        if kind == "continuation" {
+            lines.extend([
+                ("WARC-Segment-Number", "2"),
+                ("WARC-Segment-Origin-ID", "<urn:uuid:origin>"),
+            ]);
+        }
+        assert!(matches!(
+            lift(kind, &lines),
+            Err(Error::ForbiddenField {
+                field: Field::Protocol,
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
+fn protocol_lists_are_not_single_identifiers() {
+    for value in ["h2, tls/1.3", "h2 tls/1.3", "tls/", "tls/1/3"] {
+        assert!(matches!(
+            lift(
+                "response",
+                &[
+                    ("WARC-Target-URI", "https://example.com/"),
+                    ("WARC-Protocol", value)
+                ]
+            ),
+            Err(Error::MalformedField {
+                field: Field::Protocol,
+                ..
+            })
+        ));
+    }
+}
+
+/// Request and response protocols can differ; a revisit describes the current exchange.
+#[test]
+fn capture_protocols_survive_revisit_mapping() {
+    use crate::record::capture::CaptureEvent;
+    use crate::record::header::protocol::Protocol;
+    let event: CaptureEvent = CaptureEvent::new(
+        "https://example.com/".parse().unwrap(),
+        WarcDate::parse(DATE, WarcVersion::V1_1).unwrap(),
+    )
+    .request_protocol(Protocol::HTTP_1_1)
+    .response_protocol(Protocol::HTTP_1_0);
+    let original = event
+        .exchange(b"GET / HTTP/1.1\r\n\r\n", RESPONSE_BLOCK)
+        .unwrap();
+    assert_eq!(original.request.protocols(), [Protocol::HTTP_1_1]);
+    assert_eq!(original.response.protocols(), [Protocol::HTTP_1_0]);
+    let revisit: CaptureEvent = CaptureEvent::new(
+        "https://example.com/".parse().unwrap(),
+        WarcDate::parse(DATE, WarcVersion::V1_1).unwrap(),
+    )
+    .request_protocol(Protocol::H2)
+    .response_protocol(Protocol::H2)
+    .response_protocol("tls/1.3".parse().unwrap());
+    let records = revisit
+        .revisit_exchange(
+            b"GET / HTTP/1.1\r\n\r\n",
+            b"HTTP/1.1 304 Not Modified\r\n\r\n",
+            RevisitProfile::SERVER_NOT_MODIFIED,
+            original.revisit_original(),
+        )
+        .unwrap();
+    assert_eq!(records.request.protocols(), [Protocol::H2]);
+    assert_eq!(
+        records.response.protocols(),
+        [Protocol::H2, "tls/1.3".parse().unwrap()]
+    );
+    records.response.into_raw().unwrap();
 }

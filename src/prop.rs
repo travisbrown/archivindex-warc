@@ -361,6 +361,7 @@ macro_rules! capture_record {
                         target_uri,
                         warcinfo_id,
                         ip_address,
+                        protocols: Vec::new(),
                         concurrent_to,
                         segment_origin,
                         other: (),
@@ -430,6 +431,7 @@ fn metadata_record(version: WarcVersion) -> BoxedStrategy<Record<NoExtension>> {
                     target_uri: Some(target_uri),
                     warcinfo_id,
                     ip_address,
+                    protocols: Vec::new(),
                     concurrent_to,
                     refers_to,
                     segment_origin,
@@ -468,6 +470,7 @@ fn revisit_record(version: WarcVersion) -> BoxedStrategy<Record<NoExtension>> {
                         warcinfo_id,
                         profile,
                         ip_address,
+                        protocols: Vec::new(),
                         concurrent_to,
                         refers_to,
                         // The two fields WARC 1.1 named are the two 1.0 cannot write.

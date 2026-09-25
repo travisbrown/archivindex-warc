@@ -130,6 +130,21 @@ impl Lifter {
         Ok(Some(date))
     }
 
+    /// Remove repeated protocol identifiers without treating a comma list as one identifier.
+    pub(super) fn take_protocols(
+        &mut self,
+    ) -> Result<Vec<crate::record::header::protocol::Protocol>, Error> {
+        let mut protocols = Vec::new();
+        while let Some(text) = self.take_text(Field::Protocol) {
+            let value = text.to_string();
+            protocols.push(value.parse().map_err(|_| Error::MalformedField {
+                field: Field::Protocol,
+                value,
+            })?);
+        }
+        Ok(protocols)
+    }
+
     /// Remove every `WARC-Concurrent-To` line, in order.
     pub(super) fn take_concurrent_to(&mut self) -> Vec<Uri<String>> {
         let mut concurrent_to = Vec::new();

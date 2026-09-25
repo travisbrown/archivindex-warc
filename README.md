@@ -75,3 +75,20 @@ file in each package's directory for the full text.
 [prototype-fund]: https://www.prototypefund.de/en/
 [warc-crate]: https://crates.io/crates/warc/
 [warc-unmaintained]: https://github.com/jedireza/warc/issues/54
+
+## Original network protocols
+
+The library supports the repeated `WARC-Protocol` fields from
+[IIPC proposal 42](https://github.com/iipc/warc-specifications/issues/42), following the form
+adopted by [Browsertrix](https://github.com/webrecorder/browsertrix-crawler/pull/715). This is an
+extension, not a field defined by WARC 1.1. It is supported for both WARC versions on request,
+response, resource, metadata, and revisit records. Each builder's `protocol()` method appends one
+identifier; `protocols()` reads them in order. Unknown identifiers are preserved, but comma lists
+are rejected.
+
+These fields describe the original network message, independently of `Content-Type`, which still
+specifies the stored block format. For example, an HTTP/2 message can be reconstructed as
+`application/http; msgtype=response` with an HTTP/1.1 status line and `WARC-Protocol: h2`.
+Another field can record an observed TLS version, such as `WARC-Protocol: tls/1.3`.
+A writer must not infer a TLS version from an HTTPS URL. Request and response protocols can differ;
+a revisit records the protocols of the current capture rather than copying the original's.

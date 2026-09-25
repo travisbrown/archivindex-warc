@@ -101,7 +101,7 @@ const fn form_of(field: Field) -> FormKind {
         | Field::TargetURI
         | Field::WarcinfoID => FormKind::Uri,
         Field::Date | Field::RefersToDate => FormKind::Date,
-        Field::Filename => FormKind::Text,
+        Field::Filename | Field::Protocol => FormKind::Text,
         Field::IPAddress => FormKind::IpAddress,
         Field::Truncated | Field::WarcType => FormKind::Token,
     }

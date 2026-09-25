@@ -15,6 +15,7 @@ use fluent_uri::Uri;
 use crate::record::builder::{MetadataBuilder, RequestBuilder};
 use crate::record::extension::{Extension, NoExtension};
 use crate::record::header::RevisitProfile;
+use crate::record::header::protocol::Protocol;
 use crate::record::header::truncated_type::TruncatedType;
 use crate::record::{BlockError, Record};
 use crate::value::{LabelledDigest, MediaType, WarcDate};
@@ -29,6 +30,8 @@ pub struct CaptureEvent<E: Extension = NoExtension> {
     date: WarcDate,
     warcinfo_id: Option<Uri<String>>,
     ip_address: Option<IpAddr>,
+    request_protocols: Vec<Protocol>,
+    response_protocols: Vec<Protocol>,
     payload_digest: Option<LabelledDigest>,
     truncated: Option<TruncatedType<E::TruncatedReasons>>,
     fetch_time: Option<Duration>,
@@ -46,6 +49,8 @@ impl<E: Extension> CaptureEvent<E> {
             date: date.into(),
             warcinfo_id: None,
             ip_address: None,
+            request_protocols: Vec::new(),
+            response_protocols: Vec::new(),
             payload_digest: None,
             truncated: None,
             fetch_time: None,
@@ -68,6 +73,22 @@ impl<E: Extension> CaptureEvent<E> {
     pub const fn ip_address(mut self, ip_address: IpAddr) -> Self {
         self.ip_address = Some(ip_address);
 
+        self
+    }
+
+    /// Append an original network protocol to the request record.
+    #[must_use]
+    pub fn request_protocol(mut self, protocol: Protocol) -> Self {
+        self.request_protocols.push(protocol);
+        self
+    }
+
+    /// Append an original network protocol to the response or revisit record.
+    ///
+    /// These describe this capture, not the earlier capture a revisit refers to.
+    #[must_use]
+    pub fn response_protocol(mut self, protocol: Protocol) -> Self {
+        self.response_protocols.push(protocol);
         self
     }
 
@@ -161,6 +182,9 @@ impl<E: Extension> CaptureEvent<E> {
         if let Some(reason) = self.truncated.take() {
             response_builder = response_builder.truncated(reason);
         }
+        for protocol in &self.response_protocols {
+            response_builder = response_builder.protocol(protocol.clone());
+        }
         let response = response_builder.body(response)?;
         let metadata = self.metadata_record(response.core().record_id.clone());
 
@@ -234,6 +258,9 @@ impl<E: Extension> CaptureEvent<E> {
         if let Some(reason) = truncated {
             revisit_builder = revisit_builder.truncated(reason);
         }
+        for protocol in &self.response_protocols {
+            revisit_builder = revisit_builder.protocol(protocol.clone());
+        }
         let revisit = revisit_builder.body(response)?;
         let metadata = self.metadata_record(revisit.core().record_id.clone());
 
@@ -256,6 +283,9 @@ impl<E: Extension> CaptureEvent<E> {
             builder = builder.warcinfo_id(warcinfo_id.clone());
         }
 
+        for protocol in &self.request_protocols {
+            builder = builder.protocol(protocol.clone());
+        }
         builder
     }
 

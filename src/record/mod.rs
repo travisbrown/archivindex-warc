@@ -246,13 +246,14 @@ pub enum RenderError {
 /// The first nonrepeatable standard field written more than once, if a block has one.
 ///
 /// `WARC-Concurrent-To` is the one standard field a record may repeat. A name no version of the
-/// standard defines is the extension's business rather than this crate's, so it is not compared.
+/// standard defines is the extension's business, except for the supported `WARC-Protocol`
+/// extension, which also permits repetition.
 fn repeated_field<'a>(names: impl Iterator<Item = &'a HeaderName>) -> Option<Field> {
     // A block holds at most one line per field before it repeats one, so this scan compares at most
-    // the twenty-one the standard defines.
+    // the recognized fields.
     let mut seen = Vec::new();
     for field in names.filter_map(HeaderName::field) {
-        if field == Field::ConcurrentTo {
+        if matches!(field, Field::ConcurrentTo | Field::Protocol) {
             continue;
         }
         if seen.contains(&field) {
@@ -623,6 +624,14 @@ header_accessors! {
         Warcinfo | Conversion | Continuation | Other => None,
     }
 
+    /// Original network protocols, in recorded order. Empty when absent or forbidden.
+    ///
+    /// `Content-Type`, not this extension, describes the stored block format.
+    pub fn protocols(&self) -> &[crate::record::header::protocol::Protocol] {
+        Response | Resource | Request | Metadata | Revisit => &header.protocols,
+        Warcinfo | Conversion | Continuation | Other => &[],
+    }
+
     /// `WARC-Concurrent-To`: the other records of this record's capture event, in the order they
     /// were given. Empty for the record types forbidden the field.
     pub fn concurrent_to(&self) -> &[Uri<String>] {
@@ -660,6 +669,7 @@ macro_rules! capture_record {
             let target_uri = lifter.take_required_uri(Field::TargetURI)?;
             let warcinfo_id = lifter.take_uri(Field::WarcinfoID);
             let ip_address = lifter.take_ip_address();
+            let protocols = lifter.take_protocols()?;
             let concurrent_to = lifter.take_concurrent_to();
             let segment_origin = lifter.take_segment_origin()?;
             let (other, unrecognized) = lifter.finish($type_name)?;
@@ -672,6 +682,7 @@ macro_rules! capture_record {
                 target_uri,
                 warcinfo_id,
                 ip_address,
+                protocols,
                 concurrent_to,
                 segment_origin,
                 other,
@@ -690,6 +701,7 @@ macro_rules! capture_record {
             renderer.push_uri(Field::TargetURI, header.target_uri)?;
             renderer.push_optional_uri(Field::WarcinfoID, header.warcinfo_id)?;
             renderer.push_ip_address(header.ip_address)?;
+            renderer.push_protocols(header.protocols)?;
             renderer.push_concurrent_to(header.concurrent_to)?;
             renderer.push_segment_origin(header.segment_origin)?;
             renderer.push_extension(&header.other)?;
@@ -998,6 +1010,7 @@ impl<E: Extension> Record<E> {
                 renderer.push_optional_uri(Field::TargetURI, header.target_uri)?;
                 renderer.push_optional_uri(Field::WarcinfoID, header.warcinfo_id)?;
                 renderer.push_ip_address(header.ip_address)?;
+                renderer.push_protocols(header.protocols)?;
                 renderer.push_concurrent_to(header.concurrent_to)?;
                 renderer.push_optional_uri(Field::RefersTo, header.refers_to)?;
                 renderer.push_segment_origin(header.segment_origin)?;
@@ -1021,6 +1034,7 @@ impl<E: Extension> Record<E> {
                 renderer.push_optional_uri(Field::WarcinfoID, header.warcinfo_id)?;
                 renderer.push_profile(&header.profile)?;
                 renderer.push_ip_address(header.ip_address)?;
+                renderer.push_protocols(header.protocols)?;
                 renderer.push_concurrent_to(header.concurrent_to)?;
                 renderer.push_optional_uri(Field::RefersTo, header.refers_to)?;
                 renderer
@@ -1142,6 +1156,7 @@ impl<E: Extension> RecordHeader<E> {
         let target_uri = lifter.take_uri(Field::TargetURI);
         let warcinfo_id = lifter.take_uri(Field::WarcinfoID);
         let ip_address = lifter.take_ip_address();
+        let protocols = lifter.take_protocols()?;
         let concurrent_to = lifter.take_concurrent_to();
         let refers_to = lifter.take_uri(Field::RefersTo);
         let segment_origin = lifter.take_segment_origin()?;
@@ -1154,6 +1169,7 @@ impl<E: Extension> RecordHeader<E> {
             target_uri,
             warcinfo_id,
             ip_address,
+            protocols,
             concurrent_to,
             refers_to,
             segment_origin,
@@ -1181,6 +1197,7 @@ impl<E: Extension> RecordHeader<E> {
             return Err(Error::MissingField(Field::PayloadDigest));
         }
         let ip_address = lifter.take_ip_address();
+        let protocols = lifter.take_protocols()?;
         let concurrent_to = lifter.take_concurrent_to();
         let refers_to = lifter.take_uri(Field::RefersTo);
         let refers_to_target_uri = lifter.take_uri(Field::RefersToTargetURI);
@@ -1197,6 +1214,7 @@ impl<E: Extension> RecordHeader<E> {
             warcinfo_id,
             profile,
             ip_address,
+            protocols,
             concurrent_to,
             refers_to,
             refers_to_target_uri,
