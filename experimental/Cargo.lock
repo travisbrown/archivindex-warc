@@ -135,6 +135,7 @@ dependencies = [
  "chrono",
  "data-encoding",
  "fluent-uri",
+ "h2",
  "http",
  "http-body-util",
  "rcgen",
@@ -144,7 +145,9 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-rustls",
  "wreq",
+ "wreq-proto",
  "wreq-util",
 ]
 
@@ -2321,6 +2324,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "tokio-rustls"
+version = "0.26.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0c85f2c3ef0b1cd58b36682f4b17aaa995f0e5db534d85692b4903abce21f67"
+dependencies = [
+ "rustls",
+ "tokio",
 ]
 
 [[package]]

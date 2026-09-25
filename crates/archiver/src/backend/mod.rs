@@ -1,18 +1,17 @@
 //! The capture backend interface and the contract every backend shares.
 //!
-//! A [`Backend`] performs one HTTP exchange and returns its exact bytes in a
-//! [`CapturedExchange`]. The crate ships one implementation,
-//! [`Recorder`], and
-//! [`Archiver::with_backend`](crate::Archiver::with_backend) accepts any other. Backends exist to
-//! change how bytes reach the wire, through a different TLS stack or transport, not to change
-//! what is recorded: drive [`ResponseCapture`] so that every backend agrees on framing,
-//! truncation, and content.
+//! A [`Backend`] performs one HTTP exchange and returns its stored HTTP representation in a
+//! [`CapturedExchange`]. The built-in [`Recorder`] captures HTTP/1 bytes exactly. Other backends
+//! may reconstruct messages from a framed protocol, provided they declare the original protocol
+//! and document the reconstruction. [`ResponseCapture`] defines HTTP/1 framing and truncation for
+//! both wire messages and reconstructed streams.
 
 use std::fmt::Debug;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use archivindex_warc::record::capture::CaptureEvent;
+use archivindex_warc::record::header::protocol::Protocol;
 use archivindex_warc::record::header::truncated_type::TruncatedType;
 use archivindex_warc::record::http::ResponseMetadata;
 use chrono::{DateTime, Utc};
@@ -67,10 +66,16 @@ pub enum Error {
 /// [`capture_event`](Self::capture_event) copies the shared fields into a [`CaptureEvent`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CapturedExchange {
-    /// Request bytes exactly as written.
+    /// Stored request message, exact for HTTP/1 and reconstructed for framed protocols.
     pub request: Vec<u8>,
-    /// Response bytes exactly as read, from the final status line through the recorded end.
+    /// Stored response message, from the final status line through the recorded end.
+    ///
+    /// A framed protocol may be reconstructed as HTTP/1.1; see `response_protocols`.
     pub response: Vec<u8>,
+    /// Known original request protocols, emitted as repeated `WARC-Protocol` fields.
+    pub request_protocols: Vec<Protocol>,
+    /// Known original response protocols, independent of the stored message format.
+    pub response_protocols: Vec<Protocol>,
     /// Parsed fields and boundaries of the recorded response.
     pub response_metadata: ResponseMetadata,
     /// The requested URI.
@@ -93,6 +98,12 @@ impl CapturedExchange {
         let mut event =
             CaptureEvent::new(self.target_uri.clone(), self.date).fetch_time(self.fetch_time);
 
+        for protocol in &self.request_protocols {
+            event = event.request_protocol(protocol.clone());
+        }
+        for protocol in &self.response_protocols {
+            event = event.response_protocol(protocol.clone());
+        }
         if let Some(ip_address) = self.ip_address {
             event = event.ip_address(ip_address);
         }

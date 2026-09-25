@@ -152,6 +152,8 @@ fn capture_records(
     let CapturedExchange {
         request,
         mut response,
+        request_protocols,
+        response_protocols,
         target_uri,
         ip_address,
         date: _,
@@ -168,6 +170,12 @@ fn capture_records(
         .warcinfo_id(context.warcinfo_id.clone())
         .identify_payload_type();
 
+    for protocol in request_protocols {
+        event = event.request_protocol(protocol);
+    }
+    for protocol in response_protocols {
+        event = event.response_protocol(protocol);
+    }
     if let Some(ip_address) = ip_address {
         event = event.ip_address(ip_address);
     }

@@ -1,7 +1,8 @@
-# Exact HTTP/1 capture with wreq
+# HTTP/1 and HTTP/2 capture with wreq
 
 An experimental [`archivindex-archiver`](../../crates/archiver) capture backend that performs
-byte-exact HTTP/1 exchanges through BoringSSL with browser-derived TLS emulation. It is
+byte-exact HTTP/1 capture and reconstructed HTTP/2 capture through BoringSSL with browser-derived
+TLS emulation. It is
 unpublished and lives outside the repository's root workspace, so its dependency tree cannot
 constrain the published library crates. Building it needs Rust 1.98 and a native BoringSSL
 toolchain: a C and C++ compiler, CMake, and libclang for bindgen.
@@ -83,35 +84,57 @@ system DNS lookup may finish in the background; runtime shutdown does not wait f
 the timeout. The extra thread permits use inside
 an existing Tokio runtime; this deliberately favors isolation over client/runtime reuse.
 
-The profile is applied first, then HTTP/1 is forced. This changes ALPN and does not reproduce a
-browser's complete fingerprint. Configured request headers, including the default archiver
-`User-Agent`, override profile values. Browser emulation may improve access but is not guaranteed
-to make a site accept the request.
+The profile supplies TLS, ALPN, and HTTP/2 settings. HTTPS negotiates HTTP/2 when the server
+supports it and otherwise falls back to HTTP/1. Configured request headers, including the default
+archiver `User-Agent`, override profile values. Applications that require the profile's user-agent
+should use that value in the archiver configuration too, so `warcinfo` describes the actual request.
+Browser emulation may improve access but is not guaranteed to make a site accept the request.
 
 Redirects, retries, pooling, automatic proxies, decompression, and the wreq cookie store are off.
 The archiver owns application-level follow-ups, including proof-of-work submissions. Every
-completed exchange goes through the existing outcome and WARC mapping paths. Request blocks
-contain observed writes, including emulation/framing headers. A supplied byte body's framing is
-normalized, and `Connection: close` is forced.
+completed exchange goes through the existing outcome and WARC mapping paths. A supplied byte
+body's framing is normalized. `Connection: close` is added only when serializing HTTP/1.
 
-The archiver's `backend::ResponseCapture` owns message framing for every backend:
+HTTP/1 request and response blocks retain observed wire bytes, including reason phrases, header
+formatting, duplicates, chunk extensions, and trailers. The shared `backend::ResponseCapture`
+parser discards interim responses and retains only the final response. A codec error fails an
+unfinished capture unless the observer already found the wire boundary or truncation.
 
-- Discard interim responses; retain only the final HTTP response.
-- Preserve reason phrases, header formatting/duplicates, chunks/extensions, and trailers.
-- Bound stored wire bytes, not transfer-decoded body bytes; fail if the head cannot be retained.
-- Distinguish complete-at-cap responses from length truncation. Chunked and close-delimited
-  responses may need one further read as evidence when the retained prefix reaches the cap.
-- Retain a partial body with `length`, `time`, or `disconnect` truncation as appropriate.
-- Signal completion and cancel the wreq operation; discard its connection and subsequent bytes.
+HTTP/2 records follow the repeated-field form of
+[IIPC proposal 42](https://github.com/iipc/warc-specifications/issues/42), also adopted by
+[Browsertrix](https://github.com/webrecorder/browsertrix-crawler/pull/715):
 
-The wreq HTTP codec still parses the stream to drive I/O. Its decoded frames are discarded, never
-reconstructed into archive blocks. A codec error fails an unfinished capture unless the observer
-already found the wire boundary or truncation. Some malformed responses accepted by the built-in
-recorder may therefore fail under wreq. No HTTP/2 or normalized capture mode is provided.
+- Request and response records carry `WARC-Protocol: h2`. Revisits retain the protocol of the
+  current exchange. TLS versions are omitted because the current observer does not expose them;
+  the backend does not guess from the URI or profile.
+- Blocks remain `application/http` with HTTP/1.1 start lines. Pseudo-headers become request method,
+  target, and authority (`Host`) or response status. This representation is reconstructed, not a
+  transcript of binary HTTP/2 frames. Header ordering and reason phrases in response blocks are
+  produced by reconstruction.
+- Requests use finalized headers from the codec's header-preservation callback, after defaults,
+  framing, and removal of connection-specific headers. The callback delegates ordering and casing
+  to the profile. Observed outgoing frame boundaries must show a complete request; another stream
+  or connection is rejected rather than silently attributed to the first exchange.
+- Responses retain content-encoded data and repeated headers. Body-bearing responses use generated
+  chunked framing, replacing the original `Content-Length`, so trailers can be retained separately
+  from initial headers. `HEAD`, `204`, and `304` preserve their bodyless semantics and appropriate
+  representation lengths. Interim responses are not archived.
+- Block digests describe the stored reconstruction. Payload digests describe the retained entity
+  bytes with transfer framing removed and content coding preserved. Original HTTP/2 frame bytes,
+  HPACK state, and original response framing declarations are not retained.
 
-Connect timeout includes DNS and TLS. Once connected, an idle timer is reset by observed plaintext
-reads/writes. The overall capture deadline includes DNS, unlike the built-in recorder. Transport
-failures before a usable head fail; timeouts after it preserve a time-truncated prefix. Concurrent
+For either protocol, the response limit counts stored message bytes, including headers and transfer
+framing. For HTTP/2 this means reconstructed bytes, not connection traffic or just payload bytes.
+A header that cannot fit fails the capture. Exact completion at the cap is distinguished from
+truncation; incomplete captures retain `length`, `time`, or `disconnect` reasons. Decoded HTTP/2
+trailers have an additional 64 KiB limit. The codec applies its configured header-list bound before
+reconstruction.
+
+Connect timeout includes DNS and TLS. The overall capture deadline includes DNS too. After
+connecting, HTTP/1 idle time tracks plaintext I/O. HTTP/2 idle time tracks outgoing request frames
+and decoded response progress, so connection control traffic cannot keep a stalled response alive.
+Failures before usable headers fail; timeouts or disconnects after them preserve a truncated
+prefix. Completion or a capture limit cancels the operation and disposes its connection. Concurrent
 captures cannot share observer state or connections.
 
 This crate requires Rust 1.98 and native BoringSSL tooling (C/C++ compiler, CMake,
@@ -125,12 +148,14 @@ been claimed.
 The archiver's exactness contract lives in
 [`backend_conformance.rs`](../../crates/archiver/tests/support/backend_conformance.rs) and is
 included by both the built-in recorder's loopback suite and this crate's, so both backends are
-held to identical framing, truncation, and bytes. It covers trusted HTTPS, request equality,
+held to identical HTTP/1 framing, truncation, and bytes. It covers trusted HTTPS, request equality,
 chunk and trailer framing, interim and duplicate headers, cap edges, cancellation, timeouts,
 disconnects, and concurrency. Additional tests here cover invocation inside Tokio, the absence of
 hidden redirects and retries, profile-name validation, and byte-for-byte WARC readback of a
 redirect followed by a Sucuri challenge and answer. The fork carries its own unit and integration
-tests for observation itself.
+tests for observation itself. Local TLS HTTP/2 fixtures additionally verify negotiation, finalized
+request headers and bodies, duplicate response headers and trailers, bodyless responses, cap edges,
+timeouts, stream resets, and protocol fields on WARC request, response, and revisit records.
 
 CI runs this workspace as its own job, the way it runs the validator. Run it locally with:
 

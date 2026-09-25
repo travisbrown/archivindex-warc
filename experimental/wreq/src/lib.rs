@@ -1,39 +1,29 @@
-//! Exact HTTP/1 capture with browser-derived TLS emulation (feature `wreq`, Rust 1.98+).
+//! HTTP/1 wire capture and reconstructed HTTP/2 capture with browser TLS emulation.
 //!
-//! Each fetch owns a client, runtime, and observer. Redirects, retries, cookies, automatic
-//! proxies, decompression, and pooling are disabled. Profiles are applied before forcing HTTP/1;
-//! this changes ALPN and therefore does not reproduce a browser's complete fingerprint.
-//! The archiver's configured headers take precedence over profile headers.
+//! Each fetch owns an isolated client and runtime. Redirects, retries, cookies, automatic proxies,
+//! decompression, and pooling are disabled. The selected profile supplies TLS and HTTP/2 settings;
+//! configured request headers override profile headers.
 //!
-//! The response block comes exclusively from the plaintext observer, through the archiver's
-//! shared framing parser. No parsed wreq response is reconstructed. A completed capture or limit
-//! cancels the request and disposes its connection. The HTTP codec may reject some responses the
-//! built-in recorder accepts; codec errors are reported when the wire capture is not already
-//! complete.
+//! HTTP/1 messages are captured exactly. HTTP/2 exchanges are reconstructed as HTTP/1.1 messages,
+//! with `WARC-Protocol: h2` identifying their original protocol. Content coding is preserved and
+//! chunked framing retains response trailers. Block digests cover the stored representation.
 //!
-//! Calls are synchronous and run a dedicated thread/runtime, including when called within an
-//! existing Tokio runtime. Connect timeouts include DNS and TLS; the capture deadline covers DNS
-//! too. After connecting, the idle timeout bounds absence of plaintext read or write progress.
+//! Calls are synchronous and can run inside an existing Tokio runtime. See the crate README for
+//! capture limits, reconstruction, and timeout semantics.
+
+mod capture;
 
 use std::io::{self, ErrorKind};
-use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use archivindex_archiver::backend::{
     Backend, CapturedExchange, DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT, Error,
-    ResponseCapture, ResponseError,
 };
-use archivindex_warc::record::http::ResponseMetadata;
-use chrono::Utc;
-use http::{HeaderMap, HeaderValue, Method, Uri, header};
-use http_body_util::BodyExt;
-use tokio::sync::Notify;
-use wreq::connection_observer::{ConnectionEvent, ConnectionObserver};
+use http::{HeaderMap, Method, Uri};
 /// A versioned browser/client profile supplied by wreq-util.
 pub use wreq_util::Profile;
 
-/// An isolated, byte-exact HTTP/1 backend using `BoringSSL` and browser emulation.
+/// An isolated HTTP/1 and HTTP/2 backend using `BoringSSL` and browser emulation.
 #[derive(Clone)]
 pub struct WreqBackend {
     profile: Profile,
@@ -58,7 +48,7 @@ impl std::fmt::Debug for WreqBackend {
 }
 
 impl WreqBackend {
-    /// Select a profile. HTTP/1 is forced after applying it.
+    /// Select a profile, including its TLS and HTTP/2 settings.
     #[must_use]
     pub const fn new(profile: Profile) -> Self {
         Self {
@@ -109,14 +99,18 @@ impl WreqBackend {
         self
     }
 
-    /// Bound idle plaintext reads and writes after connecting, or remove the bound with `None`.
+    /// Bound idle exchange progress after connecting, or remove the bound with `None`.
+    ///
+    /// HTTP/2 connection control traffic does not count as response progress.
     #[must_use]
     pub const fn io_timeout(mut self, timeout: Option<Duration>) -> Self {
         self.io_timeout = timeout;
         self
     }
 
-    /// Bound retained wire bytes, including the final response head and chunk framing.
+    /// Bound stored response bytes, including the final head and transfer framing.
+    ///
+    /// HTTP/2 counts the reconstructed message, not binary connection traffic.
     #[must_use]
     pub const fn max_response_length(mut self, limit: Option<u64>) -> Self {
         self.max_response_length = limit;
@@ -191,131 +185,6 @@ impl WreqBackend {
                 .map_err(|_| io::Error::other("the wreq capture worker panicked"))?
         })
     }
-
-    /// Build the isolated client with the selected transport settings and capture observer.
-    fn client(&self, tap: Arc<Tap>) -> Result<wreq::Client, Error> {
-        let mut builder = wreq::Client::builder()
-            .emulation(self.profile)
-            .http1_only()
-            .redirect(wreq::redirect::Policy::none())
-            .retry(wreq::retry::Policy::never())
-            .no_proxy()
-            .no_gzip()
-            .no_brotli()
-            .no_deflate()
-            .no_zstd()
-            .pool_max_idle_per_host(0)
-            .connection_observer(tap);
-        if let Some(proxy) = &self.proxy {
-            builder = builder.proxy(proxy.clone());
-        }
-        if let Some(timeout) = self.connect_timeout {
-            builder = builder.connect_timeout(timeout);
-        }
-        if let Some(store) = &self.cert_store {
-            builder = builder.tls_cert_store(store.clone());
-        }
-        builder.build().map_err(backend_error)
-    }
-
-    async fn capture(
-        &self,
-        method: &Method,
-        target: &Uri,
-        headers: &HeaderMap,
-        body: Option<&[u8]>,
-        deadline: Option<Instant>,
-    ) -> Result<CapturedExchange, Error> {
-        let tap = Arc::new(Tap {
-            state: Mutex::new(State {
-                response: ResponseCapture::new(*method == Method::HEAD, self.max_response_length),
-                request: Vec::new(),
-                error: None,
-                id: None,
-                ip_address: None,
-                last_activity: None,
-            }),
-            done: Notify::new(),
-            activity: Notify::new(),
-        });
-        let client = self.client(tap.clone())?;
-        let mut headers = headers.clone();
-        headers.insert(header::CONNECTION, HeaderValue::from_static("close"));
-        // A provided byte body has a known length. Do not let caller framing turn it into
-        // a different message or smuggle a subsequent request.
-        headers.remove(header::TRANSFER_ENCODING);
-        headers.remove(header::CONTENT_LENGTH);
-        let mut request = client
-            .request(method.clone(), target.to_string())
-            .headers(headers);
-        if let Some(body) = body {
-            request = request.body(body.to_vec());
-        }
-        let date = Utc::now();
-        let clock = Instant::now();
-        let operation = async {
-            let mut response = request.send().await?;
-            // Drive the codec, discarding its transfer-decoded frames. Only the tap records.
-            while let Some(frame) = response.frame().await {
-                frame?;
-            }
-            Ok::<(), wreq::Error>(())
-        };
-        let expire = async {
-            if let Some(deadline) = deadline {
-                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
-            } else {
-                std::future::pending::<()>().await;
-            }
-        };
-        tokio::select! {
-            biased;
-            () = tap.done.notified() => {},
-            () = expire => tap.end(true),
-            () = tap.idle(self.io_timeout) => tap.end(true),
-            result = operation => {
-                if let Err(error) = result {
-                    if error.is_timeout() { tap.end(true); }
-                    else if error.is_connect() { tap.fail(io::Error::other(error).into()); }
-                    else { tap.fail(backend_error(error)); }
-                } else {
-                    // Codec completion is not evidence of transport EOF. Framed responses
-                    // must already be complete according to our parser.
-                    let mut state = tap.state();
-                    if !state.response.is_done() && state.error.is_none() {
-                        state.error = Some(io::Error::other("wreq ended before the wire message boundary").into());
-                    }
-                }
-            }
-        }
-        let fetch_time = clock.elapsed();
-        let mut state = tap.state();
-        if let Some(error) = state.error.take() {
-            return Err(error);
-        }
-        let response = std::mem::replace(&mut state.response, ResponseCapture::new(false, None));
-        let (response, truncated) = response.into_parts();
-        let response_metadata =
-            ResponseMetadata::parse(&response).ok_or(ResponseError::MalformedStatusLine)?;
-        Ok(CapturedExchange {
-            request: std::mem::take(&mut state.request),
-            response,
-            response_metadata,
-            target_uri: fluent_uri::Uri::parse(target.to_string().as_str())?.to_owned(),
-            ip_address: if self.proxy.is_some() {
-                None
-            } else {
-                Some(
-                    state
-                        .ip_address
-                        .ok_or_else(|| io::Error::other("missing peer address"))?,
-                )
-            },
-            date,
-            fetch_time,
-            truncated,
-        })
-    }
 }
 
 /// A profile name that no known browser/client profile matches.
@@ -350,145 +219,5 @@ impl Backend for WreqBackend {
         deadline: Option<Instant>,
     ) -> Result<CapturedExchange, Error> {
         Self::fetch_within(self, method, target, headers, body, deadline)
-    }
-}
-
-struct Tap {
-    state: Mutex<State>,
-    done: Notify,
-    activity: Notify,
-}
-struct State {
-    response: ResponseCapture,
-    request: Vec<u8>,
-    error: Option<Error>,
-    id: Option<u64>,
-    ip_address: Option<IpAddr>,
-    last_activity: Option<Instant>,
-}
-
-impl Tap {
-    /// Borrow the capture state, tolerating poisoning.
-    ///
-    /// A panic in one observer callback must not turn every later callback into a second
-    /// panic, which during a connection drop would abort the process.
-    fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    async fn idle(&self, timeout: Option<Duration>) {
-        let Some(timeout) = timeout else {
-            return std::future::pending().await;
-        };
-        loop {
-            let last = self.state().last_activity;
-            if let Some(last) = last {
-                tokio::select! {
-                    biased;
-                    () = self.activity.notified() => {},
-                    () = tokio::time::sleep_until(tokio::time::Instant::from_std(last + timeout)) => return,
-                }
-            } else {
-                self.activity.notified().await;
-            }
-        }
-    }
-
-    fn end(&self, timed_out: bool) {
-        let mut state = self.state();
-        if state.error.is_none()
-            && let Err(error) = state.response.end(timed_out)
-        {
-            state.error = Some(error.into());
-        }
-        drop(state);
-        self.done.notify_one();
-    }
-
-    fn fail(&self, error: Error) {
-        let mut state = self.state();
-        if !state.response.is_done() && state.error.is_none() {
-            state.error = Some(error);
-        }
-        drop(state);
-        self.done.notify_one();
-    }
-}
-
-impl ConnectionObserver for Tap {
-    fn observe(&self, event: ConnectionEvent<'_>) {
-        match event {
-            ConnectionEvent::Eof { .. } => {
-                self.end(false);
-                return;
-            }
-            ConnectionEvent::ReadError { error, .. } => {
-                match error.kind() {
-                    ErrorKind::UnexpectedEof | ErrorKind::ConnectionReset => self.end(false),
-                    ErrorKind::TimedOut | ErrorKind::WouldBlock => self.end(true),
-                    _ => self.fail(io::Error::new(error.kind(), error.to_string()).into()),
-                }
-                return;
-            }
-            // The request did not reach the peer in full, so no exchange can be attributed to it.
-            // A response already captured in full is kept: `fail` leaves a finished capture alone.
-            ConnectionEvent::WriteError { error, .. }
-            | ConnectionEvent::FlushError { error, .. } => {
-                self.fail(io::Error::new(error.kind(), error.to_string()).into());
-                return;
-            }
-            // Closing our write half can fail once a complete response has been read, and a
-            // connection that is genuinely gone reports that again on the read side. Neither
-            // outcome invalidates what was captured.
-            ConnectionEvent::ShutdownError { .. } => return,
-            _ => {}
-        }
-        let mut state = self.state();
-        if state.error.is_some() {
-            return;
-        }
-        if matches!(
-            event,
-            ConnectionEvent::Connected { .. }
-                | ConnectionEvent::Read { .. }
-                | ConnectionEvent::Write { .. }
-        ) {
-            state.last_activity = Some(Instant::now());
-            self.activity.notify_one();
-        }
-        match event {
-            ConnectionEvent::Connected {
-                id,
-                remote_addr,
-                http2,
-                ..
-            } => {
-                if state.id.replace(id).is_some() || http2 {
-                    state.error =
-                        Some(io::Error::other("unexpected additional connection or HTTP/2").into());
-                }
-                state.ip_address = remote_addr.map(|addr| addr.ip());
-            }
-            ConnectionEvent::Read { id, bytes } => {
-                if state.id != Some(id) {
-                    state.error = Some(io::Error::other("unexpected connection ID").into());
-                } else if let Err(error) = state.response.push(bytes) {
-                    state.error = Some(error.into());
-                }
-            }
-            ConnectionEvent::Write { id, bytes } => {
-                if state.id == Some(id) {
-                    state.request.extend_from_slice(bytes);
-                } else {
-                    state.error = Some(io::Error::other("unexpected connection ID").into());
-                }
-            }
-            _ => {}
-        }
-        if state.error.is_some() || state.response.is_done() {
-            self.done.notify_one();
-        }
     }
 }
