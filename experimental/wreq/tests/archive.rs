@@ -2,7 +2,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use archivindex_archiver::{Archiver, Config};
-use archivindex_archiver_backend_wreq::{Profile, WreqBackend};
+use archivindex_archiver_wreq::{Profile, WreqBackend};
 use archivindex_test_support::http::proxy::RecordingProxy;
 use archivindex_test_support::http::{RequestExt as _, response, serve_with};
 use archivindex_warc::io::read::WarcReader;
@@ -84,10 +84,10 @@ fn redirects_and_challenge_answers_are_archived_exactly_once() {
 #[test]
 fn profiles_are_named_explicitly_and_validated() {
     assert_eq!(
-        archivindex_archiver_backend_wreq::parse_profile("chrome_136").unwrap(),
+        archivindex_archiver_wreq::parse_profile("chrome_136").unwrap(),
         Profile::Chrome136
     );
-    assert!(archivindex_archiver_backend_wreq::parse_profile("chrome_136 ").is_err());
-    assert!(archivindex_archiver_backend_wreq::parse_profile("not_a_browser").is_err());
-    assert!(archivindex_archiver_backend_wreq::parse_profile("").is_err());
+    assert!(archivindex_archiver_wreq::parse_profile("chrome_136 ").is_err());
+    assert!(archivindex_archiver_wreq::parse_profile("not_a_browser").is_err());
+    assert!(archivindex_archiver_wreq::parse_profile("").is_err());
 }

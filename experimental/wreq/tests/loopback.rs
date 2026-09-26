@@ -1,5 +1,5 @@
 //! Run the shared exactness contract against the optional wreq backend.
-use archivindex_archiver_backend_wreq::{Profile, WreqBackend as Backend};
+use archivindex_archiver_wreq::{Profile, WreqBackend as Backend};
 
 const fn backend() -> Backend {
     Backend::new(Profile::Chrome136)

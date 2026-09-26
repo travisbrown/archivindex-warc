@@ -126,7 +126,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "archivindex-archiver-backend-wreq"
+name = "archivindex-archiver-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "archivindex-archiver",
+ "archivindex-archiver-wreq",
+ "archivindex-cli-support",
+ "archivindex-test-support",
+ "archivindex-warc",
+ "archivindex-warc-ops",
+ "clap",
+ "fluent-uri",
+ "log",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "archivindex-archiver-wreq"
 version = "0.1.0"
 dependencies = [
  "archivindex-archiver",
@@ -149,25 +168,6 @@ dependencies = [
  "wreq",
  "wreq-proto",
  "wreq-util",
-]
-
-[[package]]
-name = "archivindex-archiver-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "archivindex-archiver",
- "archivindex-archiver-backend-wreq",
- "archivindex-cli-support",
- "archivindex-test-support",
- "archivindex-warc",
- "archivindex-warc-ops",
- "clap",
- "fluent-uri",
- "log",
- "serde",
- "tempfile",
- "thiserror 2.0.20",
 ]
 
 [[package]]

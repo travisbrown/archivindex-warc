@@ -1,6 +1,6 @@
 [package]
 workspace = ".."
-name = "archivindex-archiver-backend-wreq"
+name = "archivindex-archiver-wreq"
 description = "An HTTP/1 and HTTP/2 archiver backend using BoringSSL and browser emulation"
 authors.workspace = true
 repository.workspace = true

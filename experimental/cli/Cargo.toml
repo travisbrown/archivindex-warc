@@ -20,14 +20,14 @@ doc = false
 
 [features]
 # Browser-derived TLS emulation with exact HTTP/1 capture. Compiles BoringSSL from source.
-wreq = ["dep:archivindex-archiver-backend-wreq"]
+wreq = ["dep:archivindex-archiver-wreq"]
 # Compile SQLite from source rather than linking the system library.
 bundled = ["archivindex-archiver/bundled"]
 
 [dependencies]
 anyhow = "1"
 archivindex-archiver.workspace = true
-archivindex-archiver-backend-wreq = { workspace = true, optional = true }
+archivindex-archiver-wreq = { workspace = true, optional = true }
 archivindex-cli-support.workspace = true
 archivindex-warc.workspace = true
 archivindex-warc-ops = { path = "../../crates/ops" }

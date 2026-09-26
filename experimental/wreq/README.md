@@ -11,7 +11,7 @@ toolchain: a C and C++ compiler, CMake, and libclang for bindgen.
 use std::sync::Arc;
 
 use archivindex_archiver::{Archiver, Config};
-use archivindex_archiver_backend_wreq::{Profile, WreqBackend};
+use archivindex_archiver_wreq::{Profile, WreqBackend};
 
 let backend = WreqBackend::new(Profile::Chrome136);
 let archiver = Archiver::with_backend(Config::default(), Arc::new(backend))?;
@@ -168,7 +168,7 @@ CI runs this workspace as its own job, the way it runs the validator. Run it loc
 cargo +nightly fmt --manifest-path experimental/Cargo.toml --all -- --check
 cargo +stable clippy --locked --manifest-path experimental/Cargo.toml --workspace --all-targets --features archivindex-archiver-cli/wreq -- -D warnings
 cargo +stable test --locked --manifest-path experimental/Cargo.toml --workspace --features archivindex-archiver-cli/wreq
-RUSTDOCFLAGS='-D warnings' cargo +stable doc --locked --manifest-path experimental/Cargo.toml -p archivindex-archiver-backend-wreq --no-deps
+RUSTDOCFLAGS='-D warnings' cargo +stable doc --locked --manifest-path experimental/Cargo.toml -p archivindex-archiver-wreq --no-deps
 cargo deny --manifest-path experimental/Cargo.toml --config ../deny.toml check
 ```
 
