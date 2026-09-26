@@ -62,5 +62,9 @@ exceptions = [
 unknown-registry = "deny"
 unknown-git = "deny"
 # The support packages shared across the Archivindex repositories, and the observer-enabled `wreq`
-# fork the experimental capture backend needs until that API is released upstream.
-allow-git = ["https://github.com/travisbrown/archivindex", "https://github.com/travisbrown/wreq"]
+# fork and unreleased btls APIs required by the experimental capture backend.
+allow-git = [
+  "https://github.com/travisbrown/archivindex",
+  "https://github.com/travisbrown/wreq",
+  "https://github.com/0x676e67/btls",
+]

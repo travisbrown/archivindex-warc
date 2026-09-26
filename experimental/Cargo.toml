@@ -1,6 +1,6 @@
 # This workspace builds on its own, outside the repository's root workspace, so that its
 # dependency tree cannot constrain the published library crates. Its members need an
-# observer-enabled `wreq` fork checked out beside this repository; see wreq/README.md.
+# observer-enabled `wreq` fork pinned in Cargo.lock; see wreq/README.md.
 [workspace]
 members = ["cli", "wreq"]
 resolver = "3"
@@ -10,6 +10,11 @@ resolver = "3"
 # one `wreq` in the graph. The root workspace has no `wreq` dependency and is unaffected.
 [patch.crates-io]
 wreq = { git = "https://github.com/travisbrown/wreq", branch = "topic/archivindex-observer" }
+
+# The fork uses btls APIs not yet published in 0.5.6. Match its tested BoringSSL revision.
+# Dependency-level patches do not propagate into this workspace.
+btls = { git = "https://github.com/0x676e67/btls", rev = "de7ab84fdb58641a2bdfdf9d8ebd7db1dcf4b29b" }
+btls-sys = { git = "https://github.com/0x676e67/btls", rev = "de7ab84fdb58641a2bdfdf9d8ebd7db1dcf4b29b" }
 
 [workspace.package]
 version = "0.1.0"

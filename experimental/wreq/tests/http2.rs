@@ -48,14 +48,27 @@ struct Received {
 }
 
 fn serve(reply: Reply, count: usize) -> (Uri, WreqBackend, thread::JoinHandle<Vec<Received>>) {
+    serve_with_versions(reply, &vec![&rustls::version::TLS13; count])
+}
+
+fn serve_with_versions(
+    reply: Reply,
+    versions: &[&'static rustls::SupportedProtocolVersion],
+) -> (Uri, WreqBackend, thread::JoinHandle<Vec<Received>>) {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
     let certificate = cert.cert.der().clone();
     let key = rustls::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
-    let mut config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![certificate.clone()], key.into())
-        .unwrap();
-    config.alpn_protocols = vec![b"h2".to_vec()];
+    let acceptors: Vec<_> = versions
+        .iter()
+        .map(|version| {
+            let mut config = rustls::ServerConfig::builder_with_protocol_versions(&[version])
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate.clone()], key.clone_key().into())
+                .unwrap();
+            config.alpn_protocols = vec![b"h2".to_vec()];
+            (TlsAcceptor::from(Arc::new(config)), version.version)
+        })
+        .collect();
     let store = wreq::tls::trust::CertStore::builder()
         .add_der_cert(&certificate)
         .build()
@@ -67,12 +80,12 @@ fn serve(reply: Reply, count: usize) -> (Uri, WreqBackend, thread::JoinHandle<Ve
     let server = thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async move {
             let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-            let acceptor = TlsAcceptor::from(Arc::new(config));
             let mut received = Vec::new();
-            for _ in 0..count {
+            for (acceptor, version) in acceptors {
                 let (socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await.unwrap().unwrap();
                 let tls = acceptor.accept(socket).await.unwrap();
                 assert_eq!(tls.get_ref().1.alpn_protocol(), Some(&b"h2"[..]));
+                assert_eq!(tls.get_ref().1.protocol_version(), Some(version));
                 let mut connection = h2::server::handshake(tls).await.unwrap();
                 let (request, mut respond) = connection.accept().await.unwrap().unwrap();
                 assert_eq!(request.version(), Version::HTTP_2);
@@ -157,8 +170,9 @@ fn captures_negotiated_http2_with_finalized_request_headers_and_trailers() {
         .unwrap();
     let received = server.join().unwrap().pop().unwrap();
     assert_eq!(received.body, b"request body");
-    assert_eq!(captured.request_protocols, [Protocol::H2]);
-    assert_eq!(captured.response_protocols, [Protocol::H2]);
+    let protocols = [Protocol::H2, "tls/1.3".parse().unwrap()];
+    assert_eq!(captured.request_protocols, protocols);
+    assert_eq!(captured.response_protocols, protocols);
     assert_eq!(captured.truncated, None);
     assert_eq!(captured.entity_body().unwrap().as_ref(), b"hello");
     assert!(
@@ -275,7 +289,10 @@ fn timeout_before_headers_fails() {
 
 #[test]
 fn archive_and_revisit_records_keep_original_protocols() {
-    let (target, backend, server) = serve(Reply::default(), 2);
+    let (target, backend, server) = serve_with_versions(
+        Reply::default(),
+        &[&rustls::version::TLS12, &rustls::version::TLS13],
+    );
     let archiver = Archiver::with_backend(
         Config {
             min_revisit_payload_length: 0,
@@ -305,9 +322,33 @@ fn archive_and_revisit_records_keep_original_protocols() {
             .iter()
             .any(|record| record.type_name() == "revisit")
     );
-    for record in captures {
-        assert_eq!(record.protocols(), [Protocol::H2]);
+    let requests: Vec<_> = captures
+        .iter()
+        .filter(|record| record.type_name() == "request")
+        .collect();
+    assert_eq!(requests.len(), 2);
+    for (request, version) in requests.iter().zip(["tls/1.2", "tls/1.3"]) {
+        assert_eq!(
+            request.protocols(),
+            [Protocol::H2, version.parse().unwrap()]
+        );
     }
+    let response = captures
+        .iter()
+        .find(|record| record.type_name() == "response")
+        .unwrap();
+    let revisit = captures
+        .iter()
+        .find(|record| record.type_name() == "revisit")
+        .unwrap();
+    assert_eq!(
+        response.protocols(),
+        [Protocol::H2, "tls/1.2".parse().unwrap()]
+    );
+    assert_eq!(
+        revisit.protocols(),
+        [Protocol::H2, "tls/1.3".parse().unwrap()]
+    );
 }
 
 #[test]

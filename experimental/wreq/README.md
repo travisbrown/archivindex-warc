@@ -44,6 +44,8 @@ patches `wreq` to a fork branch:
 ```toml
 [patch.crates-io]
 wreq = { git = "https://github.com/travisbrown/wreq", branch = "topic/archivindex-observer" }
+btls = { git = "https://github.com/0x676e67/btls", rev = "de7ab84fdb58641a2bdfdf9d8ebd7db1dcf4b29b" }
+btls-sys = { git = "https://github.com/0x676e67/btls", rev = "de7ab84fdb58641a2bdfdf9d8ebd7db1dcf4b29b" }
 ```
 
 Cargo pins the exact commit in this workspace's lockfile, so builds are reproducible and no local
@@ -51,26 +53,28 @@ checkout is needed. A patch rather than a plain dependency, because it must also
 of `wreq` reached through `wreq-util`; with two `wreq` crates in the graph the build does not even
 compile. The root workspace has no `wreq` dependency and is unaffected.
 
-The fork branch is based on `63429b4229f88adf6f1a71d7c3ffa62b5947f38c`, the source commit of
-published `wreq 0.16.1`. Its newer original branch needs unpublished BoringSSL APIs and was
-deliberately left unchanged. An upstream release containing the observer is the preferred
-endpoint; until then, a patch in this workspace does not reach anyone depending on this crate, so
-this crate stays unpublished.
+The fork also requires unpublished `btls` APIs. The workspace patches `btls` and `btls-sys` to
+revision `de7ab84fdb58641a2bdfdf9d8ebd7db1dcf4b29b`, matching the fork's lockfile. An upstream
+release containing the observer and these APIs is the preferred endpoint. Cargo does not propagate
+these patches to dependent workspaces; applications using this backend must declare all three
+patches in their own workspace manifest. This crate stays unpublished.
 
 The fork adds a public `connection_observer` module, a `ClientBuilder::connection_observer`
 setter, and an internal `conn::observe` layer that the connector installs only when a client
 supplies an observer. The existing verbose tracing wrapper is untouched, so unobserved
-connections and all trace output are exactly what upstream produces; against upstream the patch
-changes four existing lines and adds new files.
+connections and all trace output are exactly what upstream produces. The fork also exposes the
+negotiated TLS version through `TlsInfo::protocol_version()` and the observer's connected event.
 
 `ConnectionObserver::observe` receives connection ID, available socket addresses, HTTP/2
-negotiation, newly read bytes, successful writes, EOF, read, write, flush and shutdown errors, and
-wrapper disposal. Callbacks borrow their data, must not block or panic, and can run concurrently
-across connections. The read wrapper excludes prefilled `ReadBuf` bytes and reports nothing if a
-reader shrinks the filled region; vectored writes report only the successfully accepted prefix. A
-panic from the final `Closed` callback is contained so a drop during unwinding cannot abort the
-process. Observation works independently of tracing and does not log secrets. Proxy tunnel setup
-and TLS handshakes are below the hook.
+negotiation, negotiated TLS version, newly read bytes, successful writes, EOF, read, write, flush
+and shutdown errors, and wrapper disposal. Callbacks borrow their data, must not block or panic, and
+can run concurrently across connections. The read wrapper excludes prefilled `ReadBuf` bytes and
+reports nothing if a reader shrinks the filled region; vectored writes report only the successfully
+accepted prefix. A panic from the final `Closed` callback is contained so a drop during unwinding
+cannot abort the process. Observation works independently of tracing and does not log secrets. Proxy
+tunnel setup and TLS handshakes are below the hook. The connected event reports the negotiated TLS
+version independently of the response TLS-info setting; through a SOCKS tunnel it describes the
+origin.
 
 A failed write or flush fails an unfinished capture here, because the request never reached the
 peer in full. A failed shutdown does not: closing the write half can fail after a complete
@@ -104,9 +108,10 @@ HTTP/2 records follow the repeated-field form of
 [IIPC proposal 42](https://github.com/iipc/warc-specifications/issues/42), also adopted by
 [Browsertrix](https://github.com/webrecorder/browsertrix-crawler/pull/715):
 
-- Request and response records carry `WARC-Protocol: h2`. Revisits retain the protocol of the
-  current exchange. TLS versions are omitted because the current observer does not expose them;
-  the backend does not guess from the URI or profile.
+- Request and response records carry `WARC-Protocol: h2`. Both HTTP/1 and HTTP/2 captures also
+  record the observed TLS version, such as `WARC-Protocol: tls/1.3`, when available. Revisits
+  retain the protocols of the current exchange. Plaintext captures omit TLS metadata, and the
+  backend never guesses a version from the URI or profile.
 - Blocks remain `application/http` with HTTP/1.1 start lines. Pseudo-headers become request method,
   target, and authority (`Host`) or response status. This representation is reconstructed, not a
   transcript of binary HTTP/2 frames. Header ordering and reason phrases in response blocks are

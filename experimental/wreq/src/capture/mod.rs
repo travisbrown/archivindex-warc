@@ -16,6 +16,7 @@ use http_body_util::BodyExt;
 use tokio::sync::Notify;
 use wreq::IntoEmulation;
 use wreq::connection_observer::{ConnectionEvent, ConnectionObserver};
+use wreq::tls::TlsVersion;
 
 use super::{WreqBackend, backend_error};
 
@@ -121,11 +122,7 @@ impl WreqBackend {
         let response_metadata =
             ResponseMetadata::parse(&response).ok_or(ResponseError::MalformedStatusLine)?;
         let request = state.recorded_request(method, &sent_target, body)?;
-        let protocols = if state.http2 {
-            vec![Protocol::H2]
-        } else {
-            Vec::new()
-        };
+        let protocols = state.protocols()?;
         Ok(CapturedExchange {
             request,
             request_protocols: protocols.clone(),
@@ -162,12 +159,37 @@ struct State {
     ip_address: Option<IpAddr>,
     last_activity: Option<Instant>,
     http2: bool,
+    tls_version: Option<TlsVersion>,
     h2_response_started: bool,
     request_headers: Option<HeaderMap>,
     h2_request: http2::RequestCapture,
 }
 
 impl State {
+    fn protocols(&self) -> Result<Vec<Protocol>, Error> {
+        let mut protocols = if self.http2 {
+            vec![Protocol::H2]
+        } else {
+            Vec::new()
+        };
+        let tls_protocol = match self.tls_version {
+            Some(TlsVersion::TLS_1_0) => Some("tls/1.0"),
+            Some(TlsVersion::TLS_1_1) => Some("tls/1.1"),
+            Some(TlsVersion::TLS_1_2) => Some("tls/1.2"),
+            Some(TlsVersion::TLS_1_3) => Some("tls/1.3"),
+            // Omit unavailable or unrecognized versions rather than infer one from the profile.
+            _ => None,
+        };
+        if let Some(protocol) = tls_protocol {
+            protocols.push(
+                protocol
+                    .parse()
+                    .map_err(|error| Error::Other(Box::new(error)))?,
+            );
+        }
+        Ok(protocols)
+    }
+
     fn recorded_request(
         &mut self,
         method: &Method,
@@ -218,6 +240,7 @@ impl Tap {
                 ip_address: None,
                 last_activity: None,
                 http2: false,
+                tls_version: None,
                 h2_response_started: false,
                 request_headers: None,
                 h2_request: http2::RequestCapture::default(),
@@ -362,9 +385,11 @@ impl ConnectionObserver for Tap {
                 id,
                 remote_addr,
                 http2,
+                tls_version,
                 ..
             } => {
                 state.http2 = http2;
+                state.tls_version = tls_version;
                 if state.id.replace(id).is_some() {
                     state.error = Some(io::Error::other("unexpected additional connection").into());
                 }

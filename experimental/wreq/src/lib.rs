@@ -6,7 +6,8 @@
 //!
 //! HTTP/1 messages are captured exactly. HTTP/2 exchanges are reconstructed as HTTP/1.1 messages,
 //! with `WARC-Protocol: h2` identifying their original protocol. Content coding is preserved and
-//! chunked framing retains response trailers. Block digests cover the stored representation.
+//! chunked framing retains response trailers. Both HTTP versions also record the negotiated TLS
+//! version when available. Block digests cover the stored representation.
 //!
 //! Calls are synchronous and can run inside an existing Tokio runtime. See the crate README for
 //! capture limits, reconstruction, and timeout semantics.
