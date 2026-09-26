@@ -76,10 +76,10 @@ fn build_archiver(
     match options.backend {
         Backend::Recorder => Archiver::new(config).map_err(Into::into),
         Backend::Wreq => {
-            let profile = archivindex_archiver_backend_wreq::parse_profile(&options.profile)?;
+            let profile = archivindex_archiver_wreq::parse_profile(&options.profile)?;
             let timeout = config.timeout;
             let max_response_length = config.max_response_length;
-            let backend = archivindex_archiver_backend_wreq::WreqBackend::new(profile)
+            let backend = archivindex_archiver_wreq::WreqBackend::new(profile)
                 .proxy(config.proxy.as_deref())?
                 .connect_timeout(Some(timeout))
                 .io_timeout(Some(timeout))

@@ -5,7 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use archivindex_archiver::{Archiver, Config};
-use archivindex_archiver_backend_wreq::{Profile, WreqBackend};
+use archivindex_archiver_wreq::{Profile, WreqBackend};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::extension::NoExtension;
 use archivindex_warc::record::header::protocol::Protocol;

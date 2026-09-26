@@ -28,7 +28,7 @@ publish = false
 
 [workspace.dependencies]
 archivindex-archiver = { version = "0.1.0", path = "../crates/archiver" }
-archivindex-archiver-backend-wreq = { version = "0.1.0", path = "wreq" }
+archivindex-archiver-wreq = { version = "0.1.0", path = "wreq" }
 archivindex-cli-support = { git = "https://github.com/travisbrown/archivindex" }
 archivindex-test-support = { git = "https://github.com/travisbrown/archivindex" }
 archivindex-warc = { version = "0.1.0", path = ".." }

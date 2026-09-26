@@ -38,7 +38,7 @@ exceptions = [
   { crate = "archivindex-archiver", allow = [
     "GPL-3.0-only",
   ] },
-  { crate = "archivindex-archiver-backend-wreq", allow = [
+  { crate = "archivindex-archiver-wreq", allow = [
     "GPL-3.0-only",
   ] },
   { crate = "archivindex-archiver-cli", allow = [

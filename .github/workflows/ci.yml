@@ -235,7 +235,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: >-
           cargo doc --locked --manifest-path experimental/Cargo.toml
-          -p archivindex-archiver-backend-wreq --no-deps
+          -p archivindex-archiver-wreq --no-deps
 
   msrv:
     name: Rust 1.88 compatibility
