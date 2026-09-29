@@ -1,10 +1,10 @@
 //! The capture backend interface and the contract every backend shares.
 //!
 //! A [`Backend`] performs one HTTP exchange and returns its stored HTTP representation in a
-//! [`CapturedExchange`]. The built-in [`Recorder`] captures HTTP/1 bytes exactly. Other backends
-//! may reconstruct messages from a framed protocol, provided they declare the original protocol
-//! and document the reconstruction. [`ResponseCapture`] defines HTTP/1 framing and truncation for
-//! both wire messages and reconstructed streams.
+//! [`CapturedExchange`]. The built-in [`Recorder`](crate::recorder::Recorder) captures HTTP/1
+//! bytes exactly. Other backends may reconstruct messages from a framed protocol, provided they
+//! declare the original protocol and document the reconstruction. [`ResponseCapture`] defines
+//! HTTP/1 framing and truncation for both wire messages and reconstructed streams.
 
 use std::fmt::Debug;
 use std::net::IpAddr;
@@ -17,8 +17,6 @@ use archivindex_warc::record::http::ResponseMetadata;
 use chrono::{DateTime, Utc};
 use fluent_uri::Uri;
 use http::{HeaderMap, Method, Uri as HttpUri};
-
-use crate::recorder::Recorder;
 
 pub(crate) mod framing;
 
@@ -35,7 +33,7 @@ pub const DEFAULT_MAX_RESPONSE_LENGTH: u64 = 256 * 1024 * 1024;
 pub enum Error {
     /// A backend failed in a way that has no variant of its own.
     ///
-    /// The built-in [`Recorder`] never produces this variant.
+    /// The built-in [`Recorder`](crate::recorder::Recorder) never produces this variant.
     #[error(transparent)]
     Other(Box<dyn std::error::Error + Send + Sync + 'static>),
     /// The target is not an absolute HTTP or HTTPS URI.
@@ -151,17 +149,35 @@ pub trait Backend: Debug + Send + Sync + 'static {
         body: Option<&[u8]>,
         deadline: Option<Instant>,
     ) -> Result<CapturedExchange, Error>;
-}
 
-impl Backend for Recorder {
-    fn fetch_within(
+    /// Perform one exchange without a deadline.
+    ///
+    /// # Errors
+    ///
+    /// As for [`fetch_within`](Self::fetch_within).
+    fn fetch(
         &self,
         method: &Method,
         target: &HttpUri,
         headers: &HeaderMap,
         body: Option<&[u8]>,
-        deadline: Option<Instant>,
     ) -> Result<CapturedExchange, Error> {
-        Self::fetch_within(self, method, target, headers, body, deadline)
+        self.fetch_within(method, target, headers, body, None)
+    }
+
+    /// Perform one exchange, finishing before `deadline`.
+    ///
+    /// # Errors
+    ///
+    /// As for [`fetch_within`](Self::fetch_within), including when `deadline` has already passed.
+    fn fetch_by(
+        &self,
+        method: &Method,
+        target: &HttpUri,
+        headers: &HeaderMap,
+        body: Option<&[u8]>,
+        deadline: Instant,
+    ) -> Result<CapturedExchange, Error> {
+        self.fetch_within(method, target, headers, body, Some(deadline))
     }
 }

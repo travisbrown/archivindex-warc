@@ -124,30 +124,34 @@ impl WreqBackend {
         self.cert_store = Some(store);
         self
     }
+}
 
+/// A profile name that no known browser/client profile matches.
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("unknown profile `{0}`")]
+pub struct UnknownProfile(pub String);
+
+/// Look up a profile by the name used in configuration, such as `chrome_136`.
+///
+/// # Errors
+///
+/// Fails when no profile has that name.
+pub fn parse_profile(name: &str) -> Result<Profile, UnknownProfile> {
+    use serde::de::IntoDeserializer;
+    let deserializer: serde::de::value::StrDeserializer<'_, serde::de::value::Error> =
+        name.into_deserializer();
+    serde::Deserialize::deserialize(deserializer).map_err(|_| UnknownProfile(name.to_owned()))
+}
+
+/// Report a wreq failure through the archiver's catch-all backend error variant.
+fn backend_error(error: wreq::Error) -> Error {
+    Error::Other(Box::new(error))
+}
+
+impl Backend for WreqBackend {
     /// Perform and retain exactly one application exchange.
-    pub fn fetch(
-        &self,
-        method: &Method,
-        target: &Uri,
-        headers: &HeaderMap,
-        body: Option<&[u8]>,
-    ) -> Result<CapturedExchange, Error> {
-        self.fetch_within(method, target, headers, body, None)
-    }
-
-    /// Perform one exchange with a deadline covering DNS, connecting, and response capture.
-    pub fn fetch_by(
-        &self,
-        method: &Method,
-        target: &Uri,
-        headers: &HeaderMap,
-        body: Option<&[u8]>,
-        deadline: Instant,
-    ) -> Result<CapturedExchange, Error> {
-        self.fetch_within(method, target, headers, body, Some(deadline))
-    }
-
+    ///
+    /// A deadline covers DNS, connecting, and response capture.
     fn fetch_within(
         &self,
         method: &Method,
@@ -185,40 +189,5 @@ impl WreqBackend {
                 .join()
                 .map_err(|_| io::Error::other("the wreq capture worker panicked"))?
         })
-    }
-}
-
-/// A profile name that no known browser/client profile matches.
-#[derive(Clone, Debug, thiserror::Error)]
-#[error("unknown profile `{0}`")]
-pub struct UnknownProfile(pub String);
-
-/// Look up a profile by the name used in configuration, such as `chrome_136`.
-///
-/// # Errors
-///
-/// Fails when no profile has that name.
-pub fn parse_profile(name: &str) -> Result<Profile, UnknownProfile> {
-    use serde::de::IntoDeserializer;
-    let deserializer: serde::de::value::StrDeserializer<'_, serde::de::value::Error> =
-        name.into_deserializer();
-    serde::Deserialize::deserialize(deserializer).map_err(|_| UnknownProfile(name.to_owned()))
-}
-
-/// Report a wreq failure through the archiver's catch-all backend error variant.
-fn backend_error(error: wreq::Error) -> Error {
-    Error::Other(Box::new(error))
-}
-
-impl Backend for WreqBackend {
-    fn fetch_within(
-        &self,
-        method: &Method,
-        target: &Uri,
-        headers: &HeaderMap,
-        body: Option<&[u8]>,
-        deadline: Option<Instant>,
-    ) -> Result<CapturedExchange, Error> {
-        Self::fetch_within(self, method, target, headers, body, deadline)
     }
 }

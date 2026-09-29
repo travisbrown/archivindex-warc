@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use archivindex_archiver::backend::Backend as _;
 use archivindex_archiver::{Archiver, Config};
 use archivindex_archiver_wreq::{Profile, WreqBackend};
 use archivindex_warc::io::read::WarcReader;

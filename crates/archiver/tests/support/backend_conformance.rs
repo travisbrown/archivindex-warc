@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use archivindex_archiver::backend::{CapturedExchange, Error};
+use archivindex_archiver::backend::{Backend as _, CapturedExchange, Error};
 use archivindex_warc::record::Record;
 use archivindex_warc::record::capture::CaptureRecords;
 use archivindex_warc::record::header::truncated_type::TruncatedType;

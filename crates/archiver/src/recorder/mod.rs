@@ -17,7 +17,7 @@
 //! complete header section, a size limit, disconnect, or read timeout returns a truncated response.
 //! Before that point, failures return an error. [`Recorder::new`] sets [`DEFAULT_TIMEOUT`] per
 //! connection step and [`DEFAULT_MAX_RESPONSE_LENGTH`] per response. Timeout and size setters
-//! accept `None` to remove their bounds. [`Recorder::fetch_by`] adds a deadline, excluding DNS
+//! accept `None` to remove their bounds. [`Backend::fetch_by`] adds a deadline, excluding DNS
 //! resolution.
 
 mod socks;
@@ -35,7 +35,7 @@ use rustls::pki_types::ServerName;
 
 use crate::backend::framing::read_response;
 use crate::backend::{
-    CapturedExchange, DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT, Error, ResponseError,
+    Backend, CapturedExchange, DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT, Error, ResponseError,
 };
 
 /// An HTTP/1.1 client that records the exact bytes of one exchange per fetch.
@@ -129,48 +129,50 @@ impl Recorder {
         self
     }
 
+    /// Connect to the first resolved address that succeeds.
+    fn connect(
+        &self,
+        host: &str,
+        port: u16,
+        deadline: Option<Instant>,
+    ) -> Result<TcpStream, Error> {
+        let mut failure = None;
+        for address in (host, port).to_socket_addrs()? {
+            let attempt = bound(self.connect_timeout, deadline)?.map_or_else(
+                || TcpStream::connect(address),
+                |timeout| TcpStream::connect_timeout(&address, timeout),
+            );
+            match attempt {
+                Ok(stream) => return Ok(stream),
+                Err(error) => failure = Some(error),
+            }
+        }
+
+        Err(failure
+            .unwrap_or_else(|| {
+                std::io::Error::new(ErrorKind::NotFound, "the host resolved to no addresses")
+            })
+            .into())
+    }
+}
+
+impl Backend for Recorder {
     /// Perform one HTTP/1.1 exchange and record its exact bytes.
     ///
     /// The request is serialized from its parts. Missing `host` and `connection` headers are added,
     /// and framing is normalized for a provided body. The response is recorded verbatim from its
     /// final status line through the message boundary.
     ///
+    /// Connection and I/O timeouts are limited by the time remaining before `deadline`. DNS
+    /// resolution is not timed, so the deadline is not a strict wall-clock limit.
+    ///
     /// # Errors
     ///
     /// Returns [`Error`] for an invalid target, a connection or TLS failure, an incomplete header
-    /// section, or malformed response framing. A size limit, disconnect, or read timeout after the
-    /// header section instead returns a response with [`CapturedExchange::truncated`] set.
-    pub fn fetch(
-        &self,
-        method: &Method,
-        target: &http::Uri,
-        headers: &HeaderMap,
-        body: Option<&[u8]>,
-    ) -> Result<CapturedExchange, Error> {
-        self.fetch_within(method, target, headers, body, None)
-    }
-
-    /// Perform one exchange as [`fetch`](Self::fetch) does, ending it at `deadline`.
-    ///
-    /// Connection and I/O timeouts are limited by the remaining time. DNS resolution is not timed,
-    /// so this is not a strict wall-clock limit. Reaching the deadline fails the exchange before a
-    /// complete response header, or returns a `time` truncation afterward.
-    ///
-    /// # Errors
-    ///
-    /// As for [`fetch`](Self::fetch), with a passed deadline reported as a timed-out I/O operation.
-    pub fn fetch_by(
-        &self,
-        method: &Method,
-        target: &http::Uri,
-        headers: &HeaderMap,
-        body: Option<&[u8]>,
-        deadline: Instant,
-    ) -> Result<CapturedExchange, Error> {
-        self.fetch_within(method, target, headers, body, Some(deadline))
-    }
-
-    pub(crate) fn fetch_within(
+    /// section, or malformed response framing. A passed deadline is reported as a timed-out I/O
+    /// operation. A size limit, disconnect, or timeout after the header section instead returns a
+    /// response with [`CapturedExchange::truncated`] set.
+    fn fetch_within(
         &self,
         method: &Method,
         target: &http::Uri,
@@ -285,32 +287,6 @@ impl Recorder {
             fetch_time,
             truncated,
         })
-    }
-
-    /// Connect to the first resolved address that succeeds.
-    fn connect(
-        &self,
-        host: &str,
-        port: u16,
-        deadline: Option<Instant>,
-    ) -> Result<TcpStream, Error> {
-        let mut failure = None;
-        for address in (host, port).to_socket_addrs()? {
-            let attempt = bound(self.connect_timeout, deadline)?.map_or_else(
-                || TcpStream::connect(address),
-                |timeout| TcpStream::connect_timeout(&address, timeout),
-            );
-            match attempt {
-                Ok(stream) => return Ok(stream),
-                Err(error) => failure = Some(error),
-            }
-        }
-
-        Err(failure
-            .unwrap_or_else(|| {
-                std::io::Error::new(ErrorKind::NotFound, "the host resolved to no addresses")
-            })
-            .into())
     }
 }
 
