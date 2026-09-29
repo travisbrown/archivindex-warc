@@ -65,21 +65,25 @@ retain their UUID defaults.
 
 ### Identity policy
 
-A record's identity includes its type, capture date, stored content block, target URI, and
-relationships to other records. Segment numbers, origins, and total lengths distinguish pieces of a
-segmented record. A revisit's profile and original capture URI and date distinguish what its stored
-block represents.
+A record's identity includes its type, capture date, stored content block, and target URI. Segment
+numbers, origins, and total lengths distinguish pieces of a segmented record. A revisit's profile
+and original capture (its URI, date, and `WARC-Refers-To` ID) distinguish what its stored block
+represents.
 
 Dates use signed Unix **microseconds**, matching the archiver's capture precision. Finer input
 precision is truncated toward the earlier microsecond. Date spelling and declared precision do not
 affect identity: `.123Z` and `.123000Z` identify the same instant, and a reduced-precision date uses
 the beginning of its period. The same rule applies to `WARC-Refers-To-Date`.
 
-References use the final IDs of the records they name. The archiver assigns the `warcinfo` ID first,
-then each request, response or revisit, and associated metadata in dependency order.
-`WARC-Warcinfo-ID` is part of identity, so changing a capture's collection context changes its ID.
-External references are taken as supplied. Renaming the old IDs within a file does not change the
-IDs derived when all their targets are reidentified together.
+`WARC-Refers-To` and `WARC-Segment-Origin-ID` use the final IDs of the records they name, which the
+archiver always writes first. External references are taken as supplied.
+Renaming the old IDs within a file does not change the IDs derived when all their targets are
+reidentified together.
+
+`WARC-Warcinfo-ID` and `WARC-Concurrent-To` are excluded. The capture date, target URI, and block
+already distinguish captures, so these fields would add no uniqueness. Excluding them means a record
+keeps its ID when it is rewritten under a different `warcinfo` record, and concurrent records may
+name each other in either direction without forming a cycle.
 
 The block hash is always SHA-256 of the complete stored WARC content block. A revisit hashes its own
 stored block. Declared block and payload digests are excluded, so changing digest algorithms or
@@ -105,8 +109,8 @@ Record type bytes are `warcinfo` = 1, `request` = 2, `response` = 3, `metadata` 
 `resource` = 6, `conversion` = 7, `continuation` = 8. Extension record types are refused.
 
 Each present field is encoded as its `u8` tag, a `u64` byte length, and that many value bytes.
-Absent fields contribute no bytes. Fields appear in ascending tag order. References under tag 8 are
-sorted by their exact URI bytes; duplicates are retained. No field count or terminator is added.
+Absent fields contribute no bytes. Fields appear in ascending tag order. No field count or
+terminator is added.
 
 | Tag | Field                       | Value encoding                                     |
 | --- | --------------------------- | -------------------------------------------------- |
@@ -116,15 +120,13 @@ sorted by their exact URI bytes; duplicates are retained. No field count or term
 | 4   | `WARC-Profile`              | Exact URI bytes                                    |
 | 5   | `WARC-Refers-To-Target-URI` | Exact URI bytes                                    |
 | 6   | `WARC-Refers-To-Date`       | `i64`, Unix microseconds                           |
-| 7   | `WARC-Warcinfo-ID`          | Final record ID URI bytes                          |
-| 8   | `WARC-Concurrent-To`        | Final record ID URI bytes, one field per reference |
-| 9   | `WARC-Refers-To`            | Final record ID URI bytes                          |
-| 10  | `WARC-Segment-Origin-ID`    | Final record ID URI bytes                          |
+| 7   | `WARC-Refers-To`            | Final record ID URI bytes                          |
+| 8   | `WARC-Segment-Origin-ID`    | Final record ID URI bytes                          |
 
 URI brackets and surrounding header whitespace are excluded. URI spelling is otherwise exact,
 including percent escapes. Decimal leading zeros in segment fields are insignificant. Header name
-case and header order do not affect identity. A malformed or repeated identity field is refused,
-except that `WARC-Concurrent-To` may repeat. These bytes define version 1 of the scheme.
+case and header order do not affect identity. A malformed or repeated identity field is refused.
+These bytes define version 1 of the scheme.
 
 ## Benchmarks
 

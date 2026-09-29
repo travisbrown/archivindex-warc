@@ -210,8 +210,8 @@ enum Command {
     /// Give every record of a WARC file the identifier derived from its content.
     ///
     /// Identity includes the capture date at microsecond precision, content block, target URI,
-    /// record relationships, and segment and revisit context. References within the file are
-    /// resolved to final IDs before hashing. External references are kept. Unknown types and
+    /// and segment and revisit context. References within the file are resolved to final IDs
+    /// before hashing. External references are kept. Unknown types and
     /// unreadable identity fields retain their IDs with a warning. Duplicate IDs, output
     /// collisions, and cyclic dependencies are refused before writing.
     Reidentify {

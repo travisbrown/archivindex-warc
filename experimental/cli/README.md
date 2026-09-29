@@ -92,14 +92,15 @@ archivindex-archiver reidentify --input input.warc.gz --output output.warc.gz
 
 Replaces each identifiable record's `WARC-Record-ID` with the identifier the
 [Archivindex scheme](../../crates/archiver/README.md#record-ids) assigns. Identity includes the
-capture date at microsecond precision, stored block, target URI, record relationships, and segment
-and revisit context. Applying the command to its own output preserves the record IDs and references.
+capture date at microsecond precision, stored block, target URI, and segment and revisit context,
+including the records named by `WARC-Refers-To` and `WARC-Segment-Origin-ID`. Applying the command
+to its own output preserves the record IDs and references.
 
 Every `WARC-Warcinfo-ID`, `WARC-Refers-To`, `WARC-Concurrent-To`, and `WARC-Segment-Origin-ID`
 naming a record in the file is updated to that record's final ID. Forward references are supported.
 The command resolves dependencies before writing, so the new IDs describe the references actually
-written. A reference to a record outside the file remains unchanged and contributes its existing ID
-to identity.
+written. A reference to a record outside the file remains unchanged. A `WARC-Refers-To` or
+`WARC-Segment-Origin-ID` reference of that kind contributes its existing ID to identity.
 
 A record carrying no `WARC-Record-ID` is given one. A record with an extension type or an unreadable
 or repeated identity field keeps its ID with a warning. References in these records are still

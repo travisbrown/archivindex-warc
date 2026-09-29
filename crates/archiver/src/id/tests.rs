@@ -84,8 +84,6 @@ fn context_fields_distinguish_records() {
             "https://example.org/a",
             "https://example.org/b",
         ),
-        ("WARC-Warcinfo-ID", "urn:uuid:1", "urn:uuid:2"),
-        ("WARC-Concurrent-To", "urn:uuid:1", "urn:uuid:2"),
         ("WARC-Refers-To", "urn:uuid:1", "urn:uuid:2"),
         ("WARC-Segment-Origin-ID", "urn:uuid:1", "urn:uuid:2"),
         ("WARC-Segment-Number", "1", "2"),
@@ -114,15 +112,14 @@ fn context_fields_distinguish_records() {
     }
 }
 
-/// Header order, URI brackets, decimal padding, and concurrent-reference order are incidental.
-/// Duplicate references still count, and all header values remain unchanged in stored records.
+/// Header name case, header order, URI brackets, and decimal padding are incidental, and all
+/// header values remain unchanged in stored records.
 #[test]
 fn normalizes_only_incidental_spelling() {
     let first = record(
         "2026-01-01T00:00:00Z",
         &[
-            ("WARC-Concurrent-To", "urn:uuid:1"),
-            ("WARC-Concurrent-To", "urn:uuid:2"),
+            ("WARC-Refers-To", "urn:uuid:1"),
             ("WARC-Segment-Number", "2"),
         ],
     );
@@ -130,20 +127,15 @@ fn normalizes_only_incidental_spelling() {
         "2026-01-01T00:00:00Z",
         &[
             ("warc-segment-number", "002"),
-            ("warc-concurrent-to", "<urn:uuid:2>"),
-            ("WARC-Concurrent-To", "<urn:uuid:1>"),
+            ("warc-refers-to", "<urn:uuid:1>"),
         ],
     );
     assert_eq!(id(&first), id(&second));
-    let mut duplicate = first.clone();
-    duplicate
-        .header
-        .headers
-        .push(("WARC-Concurrent-To".to_owned(), b" urn:uuid:1".to_vec()));
-    assert_ne!(id(&first), id(&duplicate));
 }
 
-/// The source record ID, packaging, and digest configuration do not identify a capture.
+/// The source record ID, packaging, and digest configuration do not identify a capture. Neither
+/// do the collection context and concurrent records, so rewriting a file under a new `warcinfo`
+/// record keeps its IDs, and concurrent records may name each other without forming a cycle.
 #[test]
 fn ignores_fields_outside_archivindex_identity() {
     assert_eq!(
@@ -156,6 +148,9 @@ fn ignores_fields_outside_archivindex_identity() {
                 ("WARC-Block-Digest", "sha1:AAAA"),
                 ("WARC-Payload-Digest", "sha256:BBBB"),
                 ("WARC-IP-Address", "127.0.0.1"),
+                ("WARC-Warcinfo-ID", "urn:uuid:2"),
+                ("WARC-Concurrent-To", "urn:uuid:3"),
+                ("WARC-Concurrent-To", "urn:uuid:4"),
                 ("X-Annotation", "one"),
             ]
         ))
@@ -229,7 +224,7 @@ fn typed_and_raw_records_agree() {
     );
 }
 
-/// These vectors fix the context tags, numeric encodings, and sorted reference suffix. Expected
+/// These vectors fix the context tags, numeric encodings, and reference suffix. Expected
 /// digests were computed independently with Python's hashlib and big-endian struct packing.
 #[test]
 fn context_fixed_vectors() {
@@ -245,16 +240,13 @@ fn context_fixed_vectors() {
             ),
             ("WARC-Refers-To-Target-URI", "https://example.org/original"),
             ("WARC-Refers-To-Date", "1970-01-01T00:00:00.000001Z"),
-            ("WARC-Warcinfo-ID", "urn:uuid:info"),
-            ("WARC-Concurrent-To", "urn:uuid:b"),
-            ("WARC-Concurrent-To", "urn:uuid:a"),
             ("WARC-Refers-To", "urn:uuid:original"),
         ],
         "abc",
     );
     assert_eq!(
         id(&revisit).as_str(),
-        "https://archivindex.org/record/74797072597e5581af529dafcce67039ad15a95f6c5a9b5ba493ad7f6fc87ff5"
+        "https://archivindex.org/record/af01ad9c3365396c9252f7d7086f534e43a20ce0c646c77aa4400973c14ed64c"
     );
     let continuation = raw(
         &[
@@ -263,14 +255,13 @@ fn context_fixed_vectors() {
             ("WARC-Target-URI", "https://example.org/"),
             ("WARC-Segment-Number", "2"),
             ("WARC-Segment-Total-Length", "6"),
-            ("WARC-Warcinfo-ID", "urn:uuid:info"),
             ("WARC-Segment-Origin-ID", "urn:uuid:origin"),
         ],
         "abc",
     );
     assert_eq!(
         id(&continuation).as_str(),
-        "https://archivindex.org/record/ba96471768f0657d785b41feadbdad9b9994fc4dc5a4d96e448d8b4ce08dfefd"
+        "https://archivindex.org/record/c6b3f837074b9905977453fd71217107fd51772c0df46627973a824fb8c5a448"
     );
 }
 

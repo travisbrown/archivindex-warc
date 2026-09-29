@@ -28,21 +28,10 @@ pub(super) fn identity(record: &raw::Record) -> Result<Identity, Error> {
     identity.optional(4, uri(header, Field::Profile)?.map(str::as_bytes));
     identity.optional(5, uri(header, Field::RefersToTargetURI)?.map(str::as_bytes));
     identity.optional(6, date(header, Field::RefersToDate)?.map(date_bytes));
-    for (tag, field) in [
-        (7, Field::WarcinfoID),
-        (9, Field::RefersTo),
-        (10, Field::SegmentOriginID),
-    ] {
+    for (tag, field) in [(7, Field::RefersTo), (8, Field::SegmentOriginID)] {
         if let Some(value) = uri(header, field)? {
             identity.reference(tag, value);
         }
-    }
-    for (_, value) in header
-        .headers
-        .iter()
-        .filter(|(name, _)| name.eq_ignore_ascii_case(Field::ConcurrentTo.standard_name()))
-    {
-        identity.reference(8, parse_uri(value, Field::ConcurrentTo)?);
     }
     Ok(identity)
 }
@@ -75,17 +64,15 @@ fn date(header: &raw::RecordHeader, field: Field) -> Result<Option<WarcDate>, Er
 
 fn uri(header: &raw::RecordHeader, field: Field) -> Result<Option<&str>, Error> {
     value(header, field)?
-        .map(|value| parse_uri(value, field))
+        .map(|value| {
+            let value = value.trim_ascii();
+            let value = value
+                .strip_prefix(b"<")
+                .and_then(|value| value.strip_suffix(b">"))
+                .unwrap_or(value);
+            let value = std::str::from_utf8(value).map_err(|_| Error::InvalidField(field))?;
+            Uri::parse(value).map_err(|_| Error::InvalidField(field))?;
+            Ok(value)
+        })
         .transpose()
-}
-
-fn parse_uri(value: &[u8], field: Field) -> Result<&str, Error> {
-    let value = value.trim_ascii();
-    let value = value
-        .strip_prefix(b"<")
-        .and_then(|value| value.strip_suffix(b">"))
-        .unwrap_or(value);
-    let value = std::str::from_utf8(value).map_err(|_| Error::InvalidField(field))?;
-    Uri::parse(value).map_err(|_| Error::InvalidField(field))?;
-    Ok(value)
 }

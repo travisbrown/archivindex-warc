@@ -1,9 +1,10 @@
 //! Content-derived record IDs, including capture relationships and segment identity.
 //!
 //! Version 1 hashes the record type, date at microsecond precision, SHA-256 of its stored block,
-//! target URI, segment fields, revisit profile and original capture coordinates, and all four
-//! standard record-reference fields. References must name their final identifiers. See the crate
-//! README for the byte format and the fields intentionally excluded from identity.
+//! target URI, segment fields, revisit profile and original capture coordinates, and the
+//! `WARC-Refers-To` and `WARC-Segment-Origin-ID` references, which must name their final
+//! identifiers. See the crate README for the byte format and the fields intentionally excluded
+//! from identity.
 
 use archivindex_warc::parse::raw;
 use archivindex_warc::parse::untyped::name::Field;
@@ -27,7 +28,7 @@ pub enum Error {
     /// A required identity field is absent or an identity field cannot be parsed.
     #[error("missing or invalid {0}")]
     InvalidField(Field),
-    /// An identity field other than `WARC-Concurrent-To` appears more than once.
+    /// An identity field appears more than once.
     #[error("repeated {0}")]
     RepeatedField(Field),
 }
@@ -64,7 +65,7 @@ impl Identity {
         identity.optional(2, record.segment_number().map(u64::to_be_bytes));
         if let Record::Continuation { header, .. } = record {
             identity.optional(3, header.segment_total_length.map(u64::to_be_bytes));
-            identity.reference(10, header.segment_origin_id.as_str());
+            identity.reference(8, header.segment_origin_id.as_str());
         }
         if let Record::Revisit { header, .. } = record {
             identity.field(4, header.profile.to_string().as_bytes());
@@ -77,19 +78,13 @@ impl Identity {
             );
             identity.optional(6, header.refers_to_date.map(date_bytes));
         }
-        if let Some(uri) = record.warcinfo_id() {
-            identity.reference(7, uri.as_str());
-        }
-        for uri in record.concurrent_to() {
-            identity.reference(8, uri.as_str());
-        }
         if let Some(uri) = record.refers_to() {
-            identity.reference(9, uri.as_str());
+            identity.reference(7, uri.as_str());
         }
         Ok(identity)
     }
 
-    /// The IDs this record names, including repeated references.
+    /// The IDs this record's identity depends on.
     pub fn references(&self) -> impl Iterator<Item = &str> {
         self.references.iter().map(|(_, id)| id.as_str())
     }
@@ -103,7 +98,6 @@ impl Identity {
     /// Derive an ID using final reference IDs supplied by `resolve`.
     ///
     /// Returning `None` keeps a reference as read, for example when its target is in another file.
-    /// Reference order does not affect identity, but field roles and duplicate counts do.
     #[must_use]
     #[expect(
         clippy::missing_panics_doc,

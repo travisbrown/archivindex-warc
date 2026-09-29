@@ -577,16 +577,16 @@ fn refuses_reference_cycles_without_touching_output() {
         ),
         [
             record(
-                "request",
+                "metadata",
                 "urn:uuid:1",
-                &[("WARC-Concurrent-To", "urn:uuid:2")],
-                "request",
+                &[("WARC-Refers-To", "urn:uuid:2")],
+                "first",
             ),
             record(
-                "response",
+                "metadata",
                 "urn:uuid:2",
-                &[("WARC-Concurrent-To", "urn:uuid:1")],
-                "response",
+                &[("WARC-Refers-To", "urn:uuid:1")],
+                "second",
             ),
         ]
         .concat(),
@@ -603,19 +603,40 @@ fn refuses_reference_cycles_without_touching_output() {
     }
 }
 
+/// Concurrent records may name each other, since those links are rewritten but do not identify
+/// either record.
+#[test]
+fn reidentifies_records_that_name_each_other_as_concurrent() {
+    let contents = [
+        record(
+            "request",
+            "urn:uuid:1",
+            &[("WARC-Concurrent-To", "urn:uuid:2")],
+            "request",
+        ),
+        record(
+            "response",
+            "urn:uuid:2",
+            &[("WARC-Concurrent-To", "urn:uuid:1")],
+            "response",
+        ),
+    ]
+    .concat();
+    let (_, _, output) = reidentified(&contents).unwrap();
+    assert!(id_of(&output[0]).starts_with(" <https://archivindex.org/record/"));
+    assert_eq!(field(&output[0], "WARC-Concurrent-To"), id_of(&output[1]));
+    assert_eq!(field(&output[1], "WARC-Concurrent-To"), id_of(&output[0]));
+}
+
 /// References to records whose IDs are retained are fixed inputs to dependent identities, even
-/// when those records point back. Repeated links must not prevent dependency resolution.
+/// when those records point back.
 #[test]
 fn retained_ids_are_fixed_reference_targets() {
     let contents = [
         record(
             "metadata",
             "urn:uuid:1",
-            &[
-                ("WARC-Refers-To", "urn:uuid:2"),
-                ("WARC-Concurrent-To", "urn:uuid:2"),
-                ("WARC-Concurrent-To", "urn:uuid:2"),
-            ],
+            &[("WARC-Refers-To", "urn:uuid:2")],
             "note",
         ),
         record(
