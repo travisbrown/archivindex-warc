@@ -95,13 +95,7 @@ impl WreqBackend {
             () = tap.idle(self.io_timeout) => tap.end(true),
             result = operation => {
                 if let Err(error) = result {
-                    if tap.state().h2_response_started && matches!(error, Error::Other(_)) {
-                        let timed_out = matches!(&error, Error::Other(error)
-                            if error.downcast_ref::<wreq::Error>().is_some_and(wreq::Error::is_timeout));
-                        tap.end(timed_out);
-                    } else {
-                        tap.fail(error);
-                    }
+                    tap.fail(error);
                 } else {
                     // Codec completion is not evidence of transport EOF. Framed responses
                     // must already be complete according to our parser.
@@ -160,7 +154,6 @@ struct State {
     last_activity: Option<Instant>,
     http2: bool,
     tls_version: Option<TlsVersion>,
-    h2_response_started: bool,
     request_headers: Option<HeaderMap>,
     h2_request: http2::RequestCapture,
 }
@@ -241,7 +234,6 @@ impl Tap {
                 last_activity: None,
                 http2: false,
                 tls_version: None,
-                h2_response_started: false,
                 request_headers: None,
                 h2_request: http2::RequestCapture::default(),
             }),
@@ -265,13 +257,22 @@ impl Tap {
             self.h2_head(response.status(), response.headers(), head)?;
         }
         while let Some(frame) = response.frame().await {
-            let frame = frame.map_err(backend_error)?;
-            if h2 {
-                if let Some(data) = frame.data_ref() {
-                    self.h2_data(data)?;
-                } else if let Some(trailers) = frame.trailers_ref() {
-                    self.h2_trailers(trailers)?;
+            match frame {
+                Ok(frame) if h2 => {
+                    if let Some(data) = frame.data_ref() {
+                        self.h2_data(data)?;
+                    } else if let Some(trailers) = frame.trailers_ref() {
+                        self.h2_trailers(trailers)?;
+                    }
                 }
+                Ok(_) => {}
+                // The reconstructed head is already stored, so a stream error truncates the
+                // response. HTTP/1 disconnects reach the connection observer instead.
+                Err(_) if h2 => {
+                    self.end(false);
+                    return Ok(());
+                }
+                Err(error) => return Err(backend_error(error)),
             }
         }
         if h2 {

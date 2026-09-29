@@ -67,9 +67,7 @@ impl Tap {
         }
         let bytes = reconstruct_response(Version::HTTP_2, status, &headers, None)
             .map_err(|error| Error::Other(Box::new(error)))?;
-        self.h2_push(&bytes)?;
-        self.state().h2_response_started = true;
-        Ok(())
+        self.h2_push(&bytes)
     }
 
     pub(super) fn h2_data(&self, data: &[u8]) -> Result<(), Error> {
