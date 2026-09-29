@@ -87,14 +87,6 @@ impl Tap {
         }
         let mut bytes = Vec::from(&b"0\r\n"[..]);
         for (name, value) in trailers {
-            if bytes
-                .len()
-                .saturating_add(name.as_str().len())
-                .saturating_add(value.len())
-                > 64 * 1024 - 6
-            {
-                return Err(io::Error::other("HTTP/2 trailers exceed capture limit").into());
-            }
             bytes.extend_from_slice(name.as_str().as_bytes());
             bytes.extend_from_slice(b": ");
             bytes.extend_from_slice(value.as_bytes());

@@ -131,9 +131,8 @@ HTTP/2 records follow the repeated-field form of
 For either protocol, the response limit counts stored message bytes, including headers and transfer
 framing. For HTTP/2 this means reconstructed bytes, not connection traffic or just payload bytes.
 A header that cannot fit fails the capture. Exact completion at the cap is distinguished from
-truncation; incomplete captures retain `length`, `time`, or `disconnect` reasons. Decoded HTTP/2
-trailers have an additional 64 KiB limit. The codec applies its configured header-list bound before
-reconstruction.
+truncation; incomplete captures retain `length`, `time`, or `disconnect` reasons. The codec applies
+its configured header-list bound to HTTP/2 headers and trailers before reconstruction.
 
 Connect timeout includes DNS and TLS. The overall capture deadline includes DNS too. After
 connecting, HTTP/1 idle time tracks plaintext I/O. HTTP/2 idle time tracks outgoing request frames
