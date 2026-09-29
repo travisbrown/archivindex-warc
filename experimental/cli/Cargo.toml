@@ -19,7 +19,7 @@ path = "src/main.rs"
 doc = false
 
 [features]
-# Browser-derived TLS emulation with exact HTTP/1 capture. Compiles BoringSSL from source.
+# Browser-derived TLS emulation with HTTP/2 support. Compiles BoringSSL from source.
 wreq = ["dep:archivindex-archiver-wreq"]
 # Compile SQLite from source rather than linking the system library.
 bundled = ["archivindex-archiver/bundled"]

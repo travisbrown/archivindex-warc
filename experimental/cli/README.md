@@ -24,9 +24,11 @@ archivindex-archiver archive --backend wreq --profile chrome_136 \
   --output capture.warc < urls.txt
 ```
 
-Every other setting applies to whichever backend is chosen, and both record
-byte-identical HTTP framing. That backend compiles BoringSSL from source and
-needs an unpublished fork of `wreq`; see [its notes](../wreq/README.md).
+Every other setting applies to whichever backend is chosen. Both record HTTP/1
+exchanges exactly. The `wreq` backend also negotiates HTTP/2, which it records as
+reconstructed HTTP/1.1 messages marked with `WARC-Protocol: h2`. It compiles
+BoringSSL from source and needs an unpublished fork of `wreq`; see
+[its notes](../wreq/README.md).
 
 ## Configuration
 
