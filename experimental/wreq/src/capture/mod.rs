@@ -116,7 +116,7 @@ impl WreqBackend {
         let response_metadata =
             ResponseMetadata::parse(&response).ok_or(ResponseError::MalformedStatusLine)?;
         let request = state.recorded_request(method, &sent_target, body)?;
-        let protocols = state.protocols()?;
+        let protocols = state.protocols();
         Ok(CapturedExchange {
             request,
             request_protocols: protocols.clone(),
@@ -159,28 +159,20 @@ struct State {
 }
 
 impl State {
-    fn protocols(&self) -> Result<Vec<Protocol>, Error> {
-        let mut protocols = if self.http2 {
-            vec![Protocol::H2]
-        } else {
-            Vec::new()
-        };
-        let tls_protocol = match self.tls_version {
-            Some(TlsVersion::TLS_1_0) => Some("tls/1.0"),
-            Some(TlsVersion::TLS_1_1) => Some("tls/1.1"),
-            Some(TlsVersion::TLS_1_2) => Some("tls/1.2"),
-            Some(TlsVersion::TLS_1_3) => Some("tls/1.3"),
+    fn protocols(&self) -> Vec<Protocol> {
+        let tls = match self.tls_version {
+            Some(TlsVersion::TLS_1_0) => Some(Protocol::TLS_1_0),
+            Some(TlsVersion::TLS_1_1) => Some(Protocol::TLS_1_1),
+            Some(TlsVersion::TLS_1_2) => Some(Protocol::TLS_1_2),
+            Some(TlsVersion::TLS_1_3) => Some(Protocol::TLS_1_3),
             // Omit unavailable or unrecognized versions rather than infer one from the profile.
             _ => None,
         };
-        if let Some(protocol) = tls_protocol {
-            protocols.push(
-                protocol
-                    .parse()
-                    .map_err(|error| Error::Other(Box::new(error)))?,
-            );
-        }
-        Ok(protocols)
+        self.http2
+            .then_some(Protocol::H2)
+            .into_iter()
+            .chain(tls)
+            .collect()
     }
 
     fn recorded_request(
