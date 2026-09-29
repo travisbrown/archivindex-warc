@@ -16,17 +16,20 @@ use http_body_util::BodyExt;
 use tokio::sync::Notify;
 use wreq::IntoEmulation;
 use wreq::connection_observer::{ConnectionEvent, ConnectionObserver};
+use wreq::header::OrigHeaderMap;
 use wreq::tls::TlsVersion;
 
 use super::{WreqBackend, backend_error};
 
 impl WreqBackend {
     /// Build the isolated client with the selected transport settings and capture observer.
-    fn client(&self, tap: Arc<Tap>) -> Result<wreq::Client, Error> {
+    ///
+    /// Returns the profile's header ordering separately, for the request callback to apply.
+    fn client(&self, tap: Arc<Tap>) -> Result<(wreq::Client, OrigHeaderMap), Error> {
         let mut profile = self.profile.into_emulation();
         // The wrapper delegates ordering/casing to the profile and observes finalized headers.
         // Leave the default-header map intact, but install the ordering callback on the request.
-        profile.orig_headers = wreq::header::OrigHeaderMap::new();
+        let orig_headers = std::mem::replace(&mut profile.orig_headers, OrigHeaderMap::new());
         let mut builder = wreq::Client::builder()
             .emulation(profile)
             .redirect(wreq::redirect::Policy::none())
@@ -47,7 +50,8 @@ impl WreqBackend {
         if let Some(store) = &self.cert_store {
             builder = builder.tls_cert_store(store.clone());
         }
-        builder.build().map_err(backend_error)
+        let client = builder.build().map_err(backend_error)?;
+        Ok((client, orig_headers))
     }
 
     pub(super) async fn capture(
@@ -59,7 +63,7 @@ impl WreqBackend {
         deadline: Option<Instant>,
     ) -> Result<CapturedExchange, Error> {
         let tap = Arc::new(Tap::new(*method == Method::HEAD, self.max_response_length));
-        let client = self.client(tap.clone())?;
+        let (client, orig_headers) = self.client(tap.clone())?;
         let mut headers = headers.clone();
         // A provided byte body has a known length. Do not let caller framing turn it into
         // a different message or smuggle a subsequent request.
@@ -72,11 +76,7 @@ impl WreqBackend {
             request = request.body(body.to_vec());
         }
         let mut request: http::Request<wreq::Body> = request.build().map_err(backend_error)?.into();
-        http2::observe_headers(
-            &mut request,
-            self.profile.into_emulation().orig_headers,
-            tap.clone(),
-        );
+        http2::observe_headers(&mut request, orig_headers, tap.clone());
         let sent_target = request.uri().clone();
         let date = Utc::now();
         let clock = Instant::now();
