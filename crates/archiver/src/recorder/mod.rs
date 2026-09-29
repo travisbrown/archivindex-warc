@@ -296,6 +296,17 @@ impl Default for Recorder {
     }
 }
 
+/// Check a proxy URI against the rules [`Recorder::proxy`] applies.
+///
+/// Other backends use this so that every backend accepts the same proxy settings.
+///
+/// # Errors
+///
+/// Returns [`crate::ConfigError::InvalidProxy`] for a malformed or unsupported URI.
+pub fn check_proxy(uri: &str) -> Result<(), crate::ConfigError> {
+    socks::Proxy::parse(uri).map(drop)
+}
+
 /// The tighter of a step's timeout and the time left to a deadline.
 ///
 /// A deadline that has passed is a timed-out operation, since the socket refuses a zero timeout.

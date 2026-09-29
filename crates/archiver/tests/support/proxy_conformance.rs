@@ -274,6 +274,9 @@ mod proxy_tests {
             "socks5h://127.0.0.1:invalid",
             "http://localhost:1080",
             "socks4://localhost:1080",
+            "socks5h://localhost/path",
+            "socks5h://localhost?query",
+            "socks5h://user@localhost",
         ] {
             assert!(backend().proxy(Some(proxy)).is_err());
         }

@@ -17,9 +17,11 @@ mod capture;
 use std::io::{self, ErrorKind};
 use std::time::{Duration, Instant};
 
+use archivindex_archiver::ConfigError;
 use archivindex_archiver::backend::{
     Backend, CapturedExchange, DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT, Error,
 };
+use archivindex_archiver::recorder::check_proxy;
 use http::{HeaderMap, Method, Uri};
 /// A versioned browser/client profile supplied by wreq-util.
 pub use wreq_util::Profile;
@@ -65,29 +67,17 @@ impl WreqBackend {
     /// Set an explicit proxy for every request, or use direct connections with `None`.
     ///
     /// Supports `socks5://` for local DNS and `socks5h://` for proxy DNS, with optional username
-    /// and password credentials. Environment proxy settings remain disabled. Invalid or unsupported
-    /// URIs return an error before any request is sent.
-    pub fn proxy(mut self, proxy: Option<&str>) -> Result<Self, Error> {
+    /// and password credentials. Environment proxy settings remain disabled. URIs are checked with
+    /// [`check_proxy`], so this backend accepts exactly the proxies the built-in recorder accepts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::InvalidProxy`] for a malformed or unsupported URI.
+    pub fn proxy(mut self, proxy: Option<&str>) -> Result<Self, ConfigError> {
         self.proxy = proxy
             .map(|proxy| {
-                // wreq accepts nonnumeric ports and defers failure until connecting.
-                let invalid = || io::Error::new(ErrorKind::InvalidInput, "invalid proxy URI");
-                let uri = fluent_uri::Uri::parse(proxy).map_err(|_| invalid())?;
-                if !matches!(uri.scheme().as_str(), "socks5" | "socks5h") {
-                    return Err(io::Error::new(
-                        ErrorKind::InvalidInput,
-                        "expected socks5:// or socks5h://",
-                    )
-                    .into());
-                }
-                let authority = uri
-                    .authority()
-                    .filter(|authority| !authority.host().is_empty())
-                    .ok_or_else(invalid)?;
-                if authority.port_to_u16().map_err(|_| invalid())? == Some(0) {
-                    return Err(invalid().into());
-                }
-                wreq::Proxy::all(proxy).map_err(backend_error)
+                check_proxy(proxy)?;
+                wreq::Proxy::all(proxy).map_err(|_| ConfigError::InvalidProxy("rejected by wreq"))
             })
             .transpose()?;
         Ok(self)
