@@ -92,7 +92,11 @@ impl<C: Handle> Store<C> {
     /// unindexable digest costs its record rather than the whole file. A digest under an algorithm
     /// this build cannot compute is trusted as declared.
     ///
-    /// This method does not resolve linked request records. A response declaring `Vary` therefore
+    /// This method assumes response captures are suitable as GET representations; it does not
+    /// resolve linked request records to check their methods. Callers indexing other request
+    /// methods should manage resource state through the lower-level methods instead.
+    ///
+    /// A response declaring `Vary` therefore
     /// yields state that cannot be reused for revalidation; see
     /// [`Variance::declared_without_request`](crate::resource::Variance::declared_without_request).
     /// Its payload remains eligible for deduplication.

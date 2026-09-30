@@ -1,8 +1,9 @@
 //! Archiving web pages over HTTP into WARC files.
 //!
-//! This client captures the wire bytes of every HTTP/1.1 request and response, redirect hops
-//! included. Eligible duplicate payloads become `revisit` records referring to the original when
-//! they meet the configured minimum length.
+//! The built-in recorder captures the wire bytes of HTTP/1.1 requests and responses, redirect hops
+//! included. Other backends may reconstruct HTTP messages from framed protocols. Eligible duplicate
+//! payloads become `revisit` records referring to the original when they meet the configured minimum
+//! length.
 //!
 //! The client recognizes Sucuri `CloudProxy`, Varnish hexadecimal-prefix, and Simply.com
 //! interstitial challenges. It derives answers from the challenge page without executing its
@@ -32,9 +33,9 @@
 //!
 //! Capture uses the built-in [`Recorder`](recorder::Recorder) by default. Another transport can
 //! be supplied instead by implementing [`backend::Backend`] and passing it to
-//! [`Archiver::with_backend`]. Backends exist to change how bytes reach the wire, not what is
-//! recorded: driving [`ResponseCapture`](backend::ResponseCapture) keeps every backend's framing,
-//! truncation, and bytes identical to the recorder's.
+//! [`Archiver::with_backend`]. Backends declare the original network protocols and document any
+//! reconstruction. [`ResponseCapture`](backend::ResponseCapture) applies common framing and
+//! truncation rules to their stored HTTP/1 representations.
 //!
 //! # Modules
 //!
@@ -65,7 +66,7 @@ use crate::backend::Backend;
 
 /// An HTTP client that captures lists of URLs in WARC files.
 ///
-/// Each fetch synchronously captures one HTTP/1.1 exchange; one-shot runs can use multiple worker
+/// Each fetch synchronously captures one HTTP exchange; one-shot runs can use multiple worker
 /// threads. Redirects and capture metadata are recorded. One-shot runs request URLs
 /// unconditionally; crawl sessions can revalidate earlier captures.
 #[derive(Clone, Debug)]

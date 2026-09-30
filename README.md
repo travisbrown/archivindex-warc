@@ -18,6 +18,59 @@ longer maintained][warc-unmaintained]. It now has a substantially different API 
 including WARC 1.1 support, layered validation, semantic record builders, and record framing for
 indexed access.
 
+## Usage
+
+Add the library to your project:
+
+```toml
+[dependencies]
+archivindex-warc = "0.1"
+```
+
+Read an uncompressed archive with semantic validation:
+
+```rust,no_run
+use archivindex_warc::io::read::WarcReader;
+use archivindex_warc::record::extension::NoExtension;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let reader = WarcReader::from_path("archive.warc")?;
+    for record in reader.iter_records::<NoExtension>().records() {
+        let record = record?;
+        println!("{} {}", record.type_name(), record.core().record_id);
+    }
+    Ok(())
+}
+```
+
+Use `WarcReader::from_path_gzip` for gzip input; the library does not infer compression from a
+filename. Use `iter_raw_records` to preserve records exactly as written, or `iter_untyped_records`
+to check field grammars without enforcing record-type rules. Omit `.records()` to retain each
+record's location for indexed access.
+
+New records are built through `record::Record` and converted with `into_raw()` for
+`io::write::WarcWriter`. See the [builder documentation][builders] and [examples](examples/).
+`WarcWriter::from_path` appends to an existing file. Call `finish()` on a buffered writer to
+report final write errors.
+
+Readers buffer each selected record's complete body and reject header blocks larger than 1 MiB.
+The `filter_*_records` methods inspect headers and skip unwanted bodies without buffering them.
+Raw records preserve bytes; semantic rendering normalizes headers and checks supported digests.
+Unsupported digest algorithms are preserved without verification.
+
+## Features
+
+| Feature                  | Purpose                                                           | Default |
+| ------------------------ | ----------------------------------------------------------------- | ------- |
+| `gzip`                   | Read gzip members and write one member per record                 | Yes     |
+| `http`                   | Parse HTTP metadata and reconstruct HTTP message blocks           | No      |
+| `payload-identification` | Identify payload media types from their contents                  | No      |
+| `serde`                  | Serialize supported values and convert typed `warc-fields` bodies | No      |
+| `all-digests`            | Enable every supported digest algorithm                           | No      |
+
+MD5, SHA-1, and SHA-2 computation is always available through the digest dependency's defaults.
+Disabling this crate's default features removes gzip support.
+
 ## Repository
 
 The workspace's supporting library crates live under [`crates`](crates/), and the WARC
@@ -26,16 +79,21 @@ command-line application under [`tools`](tools/). The [`validator`](validator/) 
 trees do not constrain the workspace. The archiver's command-line tool and its alternative
 capture backends live in the latter.
 
+The [digest crate](crates/digest/) handles labelled digests independently of WARC records. The
+[revisit index](crates/revisit-index/) stores payload sources and conditional-request state in
+SQLite.
+
 The [`archivindex-archiver` package](crates/archiver/) captures HTTP exchanges into WARC files. Its
 README describes usage and the [record ID scheme](crates/archiver/README.md#record-ids) its records
 use.
 
 ## Development
 
-The workspace requires Rust 1.88 or later and needs nothing extra. The archiver's command-line
-tool and its experimental capture backends build in their own workspace under
-[experimental/](experimental), so their dependency trees cannot constrain the library crates.
-Those members need Rust 1.98 and a native BoringSSL toolchain; see
+The workspace requires Rust 1.88 or later. Its SQLite dependency can use a system library or compile
+from source with the revisit index's `bundled` feature, as in the commands below. The archiver's
+command-line tool and its experimental capture backends build in their own workspace under
+[experimental/](experimental), so their dependency trees cannot constrain the library crates. Those
+members need Rust 1.98 and a native BoringSSL toolchain; see
 [the backend notes](experimental/wreq/README.md).
 
 Run the workspace tests and build its documentation with:
@@ -92,3 +150,5 @@ specifies the stored block format. For example, an HTTP/2 message can be reconst
 Another field can record an observed TLS version, such as `WARC-Protocol: tls/1.3`.
 A writer must not infer a TLS version from an HTTPS URL. Request and response protocols can differ;
 a revisit records the protocols of the current capture rather than copying the original's.
+
+[builders]: https://docs.rs/archivindex-warc/latest/archivindex_warc/record/builder/

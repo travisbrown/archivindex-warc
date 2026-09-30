@@ -15,6 +15,25 @@
 //! inspecting their headers. With the default `gzip` feature, it also tracks records across gzip
 //! members. [`io::write::WarcWriter`] writes each compressed record as an independent member.
 //!
+//! # Example
+//!
+//! Read an uncompressed archive with semantic validation. Use `WarcReader::from_path_gzip` for
+//! gzip input when the `gzip` feature is enabled.
+//!
+//! ```no_run
+//! use archivindex_warc::io::read::WarcReader;
+//! use archivindex_warc::record::extension::NoExtension;
+//!
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let reader = WarcReader::from_path("archive.warc")?;
+//!     for record in reader.iter_records::<NoExtension>().records() {
+//!         let record = record?;
+//!         println!("{} {}", record.type_name(), record.core().record_id);
+//!     }
+//!     Ok(())
+//! }
+//! ```
+//!
 //! Errors are reported at the level that finds them. [`value::Error`] reports field-value grammar
 //! violations through [`value::TextError`], [`value::MediaTypeError`], and [`value::DigestError`].
 //! [`parse::untyped::Error`] adds the field that carried the value. [`record::Error`] reports

@@ -1,5 +1,5 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
-//! The `labelled-digest` value carried by `WARC-Block-Digest` and `WARC-Payload-Digest`.
+#![doc = include_str!("../README.md")]
 
 pub mod algorithm;
 mod label;

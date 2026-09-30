@@ -1,8 +1,9 @@
 //! Reading records from an optionally gzip-compressed WARC file.
 //!
 //! [`WarcReader`] returns records at any of the crate's three representation levels. Record bodies
-//! are read fully into memory. The three `filter` iterators can inspect a header block and skip its
-//! body without buffering it.
+//! are read fully into memory; there is no configurable body-size limit. Header blocks are limited
+//! to 1 MiB. The three `filter` iterators can inspect a header block and skip its body without
+//! buffering it.
 //!
 //! Each iterator yields [`Located`] items containing a [`Location`] and the number of extra blank
 //! lines skipped before the record. Plain streams use byte [`Frame`]s; gzip streams use member

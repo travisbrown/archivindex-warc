@@ -1,40 +1,4 @@
-//! A revisit index derived from WARC records.
-//!
-//! Two SQLite tables support payload deduplication and conditional requests:
-//!
-//! - The payload table maps a digest to the canonical payload-bearing WARC record: the
-//!   `WARC-Refers-To` target of any revisit, whether an `identical-payload-digest` revisit found
-//!   the digest again or a `server-not-modified` revisit confirmed it unchanged.
-//! - The resource-state table maps a resource/request identity to its HTTP validators and the
-//!   digest of its prior representation. The validators drive conditional requests; the digest
-//!   leads, through the payload table, to the record a `server-not-modified` revisit refers to.
-//!
-//! The index can be rebuilt from WARC records. Ingestion skips mismatched payload digests when
-//! their algorithm is enabled; disabled algorithms are trusted as declared. Incompatible schema
-//! versions require rebuilding the database. Callers supply WARC records directly, including
-//! records extracted from containers such as WACZ.
-//!
-//! The index stores one resource state per target URI. [`resource::Variance`] records
-//! `Vary`-selected request fields to prevent revalidation across variants, but multiple variants
-//! are not stored concurrently. Callers must isolate authorization and cookie identities; see
-//! [`resource::ResourceKey`].
-//!
-//! # Example
-//!
-//! ```
-//! use archivindex_warc::value::{Algorithm, LabelledDigest};
-//! use archivindex_warc_revisit_index::Index;
-//! use archivindex_warc_revisit_index::resource::ResourceKey;
-//! use fluent_uri::Uri;
-//!
-//! let index = Index::open_in_memory()?;
-//! let key = ResourceKey::new(Uri::parse("https://example.com/")?.to_owned());
-//! let digest = LabelledDigest::from_digest(Algorithm::Sha256, &[0; 32]);
-//!
-//! assert!(index.lookup_payload(&digest)?.is_none());
-//! assert!(index.lookup_resource(&key)?.is_none());
-//! # Ok::<(), Box<dyn std::error::Error>>(())
-//! ```
+#![doc = include_str!("../README.md")]
 //!
 //! # Modules
 //!
