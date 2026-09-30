@@ -350,12 +350,11 @@ mod tests {
     use proptest::property_test;
 
     use super::{WarcDate, WarcDatePrecision};
-    use crate::strategies;
+    use crate::prop;
     use crate::version::WarcVersion;
 
     fn version_and_date() -> impl Strategy<Value = (WarcVersion, WarcDate)> {
-        strategies::warc_version()
-            .prop_flat_map(|version| (Just(version), strategies::warc_date(version)))
+        prop::warc_version().prop_flat_map(|version| (Just(version), prop::warc_date(version)))
     }
 
     /// An instant with nonzero values at every supported precision.

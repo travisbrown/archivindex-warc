@@ -47,7 +47,7 @@ pub mod payload;
 pub mod resource;
 
 #[cfg(test)]
-mod strategies;
+mod prop;
 
 use archivindex_warc::io::read::Location;
 use rusqlite::Connection;

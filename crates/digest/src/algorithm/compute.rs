@@ -340,7 +340,7 @@ mod tests {
     use proptest::property_test;
 
     use super::{Algorithm, LabelledDigest};
-    use crate::strategies;
+    use crate::prop;
 
     /// Reference values come from `hashlib`, OpenSSL, and published XXH3 and BLAKE3 vectors.
     static REFERENCE_DIGESTS: &[(Algorithm, &[u8], &str)] = &[
@@ -459,7 +459,7 @@ mod tests {
     /// A digest is available exactly when its algorithm is enabled.
     #[property_test]
     fn computes_a_digest_exactly_when_supported(
-        #[strategy = strategies::algorithm()] algorithm: Algorithm,
+        #[strategy = prop::algorithm()] algorithm: Algorithm,
     ) {
         prop_assert_eq!(
             algorithm.digest(b"content").is_some(),
@@ -470,7 +470,7 @@ mod tests {
     /// A computed digest always has the algorithm's reported length.
     #[property_test]
     fn computes_a_digest_of_the_reported_length(
-        #[strategy = strategies::algorithm()] algorithm: Algorithm,
+        #[strategy = prop::algorithm()] algorithm: Algorithm,
         #[strategy = proptest::collection::vec(any::<u8>(), 0..=64)] content: Vec<u8>,
     ) {
         if let Some(digest) = algorithm.digest(&content) {
@@ -481,7 +481,7 @@ mod tests {
     /// Incremental hashing agrees with one-shot hashing for any chunking.
     #[property_test]
     fn hashes_incrementally_in_any_chunking(
-        #[strategy = strategies::algorithm()] algorithm: Algorithm,
+        #[strategy = prop::algorithm()] algorithm: Algorithm,
         #[strategy = proptest::collection::vec(
             proptest::collection::vec(any::<u8>(), 0..=16),
             0..=8,
@@ -505,7 +505,7 @@ mod tests {
     /// Incremental and one-shot hashing produce the same labelled digest.
     #[property_test]
     fn finalizes_the_labelled_digest_computing_writes(
-        #[strategy = strategies::algorithm()] algorithm: Algorithm,
+        #[strategy = prop::algorithm()] algorithm: Algorithm,
         #[strategy = proptest::collection::vec(any::<u8>(), 0..=64)] content: Vec<u8>,
     ) {
         if let Some(mut hasher) = algorithm.hasher() {
@@ -543,7 +543,7 @@ mod tests {
     /// A computed labelled digest decodes to the computed bytes.
     #[property_test]
     fn writes_a_computed_digest_that_reads_back(
-        #[strategy = strategies::algorithm()] algorithm: Algorithm,
+        #[strategy = prop::algorithm()] algorithm: Algorithm,
         #[strategy = proptest::collection::vec(any::<u8>(), 0..=64)] content: Vec<u8>,
     ) {
         if let Some(labelled) = LabelledDigest::compute(algorithm, &content) {

@@ -148,7 +148,7 @@ mod tests {
     use proptest::property_test;
 
     use super::{Error, QuotedStringError, Text};
-    use crate::strategies;
+    use crate::prop;
 
     #[test]
     fn parses_text_and_quoted_strings() {
@@ -237,7 +237,7 @@ mod tests {
 
     /// Generated `TEXT` values round-trip with their quoting and necessary escapes.
     #[property_test]
-    fn round_trips_a_text_value(#[strategy = strategies::text()] text: Text) {
+    fn round_trips_a_text_value(#[strategy = prop::text()] text: Text) {
         let written = text.to_bytes().into_owned();
 
         prop_assert_eq!(Text::parse(&written), Ok(text));

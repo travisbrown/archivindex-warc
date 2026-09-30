@@ -39,7 +39,7 @@
 
 mod parsing;
 #[cfg(test)]
-mod strategies;
+mod prop;
 
 pub mod io;
 pub mod parse;

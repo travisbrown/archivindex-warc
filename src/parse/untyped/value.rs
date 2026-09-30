@@ -292,7 +292,7 @@ mod tests {
     use proptest::property_test;
 
     use super::{Error, Field, HeaderValue, TextError, ValueForm};
-    use crate::strategies;
+    use crate::prop;
 
     /// A value keeps every byte it was written with, whatever its grammar makes of them.
     #[test]
@@ -474,7 +474,7 @@ mod tests {
     /// A form reads back from the value that spells it.
     #[property_test]
     fn round_trips_a_form_through_the_value_spelling_it(
-        #[strategy = strategies::field_and_form()] input: (Field, ValueForm),
+        #[strategy = prop::field_and_form()] input: (Field, ValueForm),
     ) {
         let (field, form) = input;
         let written = HeaderValue::from(form.clone());

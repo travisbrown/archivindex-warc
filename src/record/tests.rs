@@ -4,9 +4,9 @@ use proptest::prelude::*;
 use proptest::property_test;
 
 use super::*;
+use crate::prop;
 use crate::record::extension::{ExtensionFields, ExtensionTruncatedReason, Never, Unclaimed};
 use crate::record::header::SegmentNumber;
-use crate::strategies;
 use crate::value::{Encoding, Text, marker};
 
 const RECORD_ID: &str = "urn:uuid:00000000-0000-0000-0000-000000000001";
@@ -2195,7 +2195,7 @@ fn lift_bytes(bytes: &[u8]) -> Record {
 /// Compare parsed records because rendering fills in the generated record's missing length and
 /// requested digests.
 #[property_test]
-fn round_trips_a_record_through_its_rendering(#[strategy = strategies::record()] record: Record) {
+fn round_trips_a_record_through_its_rendering(#[strategy = prop::record()] record: Record) {
     let written = render_bytes(record);
     let lifted = lift_bytes(&written);
 

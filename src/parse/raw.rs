@@ -375,7 +375,7 @@ mod tests {
 
     use super::{Error, Record, RecordHeader};
     use crate::io::read::WarcReader;
-    use crate::strategies;
+    use crate::prop;
     use crate::version::WarcVersion;
 
     /// A header block with the given field lines, terminated as the standard requires.
@@ -760,9 +760,7 @@ mod tests {
 
     /// A record reads back from the bytes it writes, byte for byte.
     #[property_test]
-    fn round_trips_a_record_through_its_rendering(
-        #[strategy = strategies::raw_record()] record: Record,
-    ) {
+    fn round_trips_a_record_through_its_rendering(#[strategy = prop::raw_record()] record: Record) {
         let written = record.to_bytes().expect("a rendered record");
 
         let read = WarcReader::new(written.as_slice())
