@@ -5,7 +5,7 @@ use super::*;
 
 /// The derived identifier of the scheme's fixed test vector, which the archiver assigns to a
 /// `response` record with this date, target URI, and content block.
-const FIXED_VECTOR: &str = "https://archivindex.org/record/c70e0fa2a227bc36cbdb869f44904ad134ded72475c117ddf0e2e19fdc822bc7";
+const FIXED_VECTOR: &str = "https://archivindex.org/record/9054bd499b56c7c96dfd5beb9ad3635490a65ac3e82bd32bf63846ed6dd43f98";
 
 /// A record of the given type and identifier, with the given further fields.
 fn record(record_type: &str, id: &str, fields: &[(&str, &str)], body: &str) -> Vec<u8> {
@@ -72,7 +72,7 @@ fn derives_the_identifier_the_scheme_fixes() {
         &[
             ("WARC-Type", "response"),
             ("WARC-Record-ID", "<urn:uuid:1>"),
-            ("WARC-Date", "1969-12-31T23:59:58.766Z"),
+            ("WARC-Date", "1970-01-01T00:00:01.234Z"),
             ("WARC-Target-URI", "https://example.org/a%2Fb?q=1"),
         ],
         "abc",
@@ -90,7 +90,7 @@ fn derives_the_identifier_the_scheme_fixes() {
 fn reads_a_bracketed_target_uri_as_the_uri_it_spells() {
     let contents = [
         b"WARC/1.0\r\nWARC-Type: response\r\nWARC-Record-ID: <urn:uuid:1>\r\n".to_vec(),
-        b"WARC-Date: 1969-12-31T23:59:58Z\r\n".to_vec(),
+        b"WARC-Date: 1970-01-01T00:00:01Z\r\n".to_vec(),
         b"WARC-Target-URI: <https://example.org/a%2Fb?q=1>\r\nContent-Length: 3\r\n\r\n".to_vec(),
         b"abc\r\n\r\n".to_vec(),
     ]

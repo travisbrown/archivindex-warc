@@ -30,7 +30,12 @@ pub(super) fn identity(record: &raw::Record) -> Result<Identity, Error> {
     identity.optional(1, uri(header, Field::TargetURI)?.map(str::as_bytes));
     identity.optional(2, uri(header, Field::Profile)?.map(str::as_bytes));
     identity.optional(3, uri(header, Field::RefersToTargetURI)?.map(str::as_bytes));
-    identity.optional(4, date(header, Field::RefersToDate)?.map(date_bytes));
+    identity.optional(
+        4,
+        date(header, Field::RefersToDate)?
+            .map(|date| date_bytes(date, Field::RefersToDate))
+            .transpose()?,
+    );
     identity.refers_to = uri(header, Field::RefersTo)?.map(str::to_owned);
     Ok(identity)
 }

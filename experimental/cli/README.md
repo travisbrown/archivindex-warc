@@ -104,8 +104,8 @@ of that kind contributes its existing ID to identity.
 
 A record carrying no `WARC-Record-ID` is given one. A segmented record (a `continuation` record or
 any record with a segment field), a record with an extension type, or one with an unreadable or
-repeated identity field keeps its ID with a warning. References in these records are still updated.
-Every other field, every body, and the record order are preserved.
+repeated identity field or a date before 1970 keeps its ID with a warning. References in these
+records are still updated. Every other field, every body, and the record order are preserved.
 
 The input is read twice and must remain unchanged during the operation; it cannot be standard input.
 The first pass retains identity data and reference dependencies, not content blocks. A `.gz`

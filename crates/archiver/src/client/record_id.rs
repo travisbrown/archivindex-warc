@@ -36,16 +36,16 @@ mod tests {
     /// read from the record reach the hash in the order and spelling the scheme defines.
     #[test]
     fn fixed_vector_and_repeatability() {
-        let mut record = response(-1234, "https://example.org/a%2Fb?q=1", b"abc");
+        let mut record = response(1234, "https://example.org/a%2Fb?q=1", b"abc");
         assign_record_id(&mut record).unwrap();
         assert_eq!(
             record.core().record_id.as_str(),
-            "https://archivindex.org/record/c70e0fa2a227bc36cbdb869f44904ad134ded72475c117ddf0e2e19fdc822bc7"
+            "https://archivindex.org/record/9054bd499b56c7c96dfd5beb9ad3635490a65ac3e82bd32bf63846ed6dd43f98"
         );
         let id = record.core().record_id.clone();
         assign_record_id(&mut record).unwrap();
         assert_eq!(record.core().record_id, id);
-        let mut same = response(-1234, "https://example.org/a%2Fb?q=1", b"abc");
+        let mut same = response(1234, "https://example.org/a%2Fb?q=1", b"abc");
         assign_record_id(&mut same).unwrap();
         assert_eq!(same.core().record_id, id);
     }

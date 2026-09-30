@@ -70,10 +70,11 @@ A record's identity includes its type, capture date, stored content block, and t
 revisit's profile and original capture (its URI, date, and `WARC-Refers-To` ID) distinguish what its
 stored block represents.
 
-Dates use signed Unix **microseconds**, matching the archiver's capture precision. Finer input
-precision is truncated toward the earlier microsecond. Date spelling and declared precision do not
-affect identity: `.123Z` and `.123000Z` identify the same instant, and a reduced-precision date uses
-the beginning of its period. The same rule applies to `WARC-Refers-To-Date`.
+Dates use unsigned Unix **microseconds**, matching the archiver's capture precision. The archiver
+never writes a date before 1970, so such dates are refused. Finer input precision is truncated
+toward the earlier microsecond. Date spelling and declared precision do not affect identity: `.123Z`
+and `.123000Z` identify the same instant, and a reduced-precision date uses the beginning of its
+period. The same rules apply to `WARC-Refers-To-Date`.
 
 `WARC-Refers-To` contributes the final ID of the record it names. The archiver writes a revisit only
 after the original it refers to, so no ID it assigns depends on a later record. External references
@@ -102,7 +103,7 @@ big-endian byte order, without padding between fields.
 | ---------------- | ----------------------------------------- |
 | Version          | `u8`, currently 1                         |
 | Record type      | `u8`, canonical rank plus one             |
-| Capture date     | `i64`, Unix microseconds from `WARC-Date` |
+| Capture date     | `u64`, Unix microseconds from `WARC-Date` |
 | Block hash       | 32 bytes, SHA-256 of the stored block     |
 
 Record type bytes are `warcinfo` = 1, `request` = 2, `response` = 3, `metadata` = 4, `revisit` = 5,
@@ -119,7 +120,7 @@ terminator is added.
 | 1   | `WARC-Target-URI`           | Exact URI bytes           |
 | 2   | `WARC-Profile`              | Exact URI bytes           |
 | 3   | `WARC-Refers-To-Target-URI` | Exact URI bytes           |
-| 4   | `WARC-Refers-To-Date`       | `i64`, Unix microseconds  |
+| 4   | `WARC-Refers-To-Date`       | `u64`, Unix microseconds  |
 | 5   | `WARC-Refers-To`            | Final record ID URI bytes |
 
 URI brackets and surrounding header whitespace are excluded. URI spelling is otherwise exact,

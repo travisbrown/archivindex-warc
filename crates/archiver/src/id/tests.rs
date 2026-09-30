@@ -34,11 +34,11 @@ fn id(record: &raw::Record) -> Uri<String> {
 fn fixed_vectors() {
     assert_eq!(
         id(&record(
-            "1969-12-31T23:59:58.766Z",
+            "1970-01-01T00:00:01.234Z",
             &[("WARC-Target-URI", "https://example.org/a%2Fb?q=1")]
         ))
         .as_str(),
-        "https://archivindex.org/record/c70e0fa2a227bc36cbdb869f44904ad134ded72475c117ddf0e2e19fdc822bc7"
+        "https://archivindex.org/record/9054bd499b56c7c96dfd5beb9ad3635490a65ac3e82bd32bf63846ed6dd43f98"
     );
     assert_eq!(
         id(&raw(
@@ -53,11 +53,11 @@ fn fixed_vectors() {
     );
 }
 
-/// The archiver records microseconds, including before the Unix epoch. Finer precision in input
-/// files is deliberately truncated to that resolution, and date spelling is not identity.
+/// The archiver records microseconds. Finer precision in input files is deliberately truncated to
+/// that resolution, and date spelling is not identity.
 #[test]
 fn dates_use_archiver_precision() {
-    for second in ["1969-12-31T23:59:59", "2026-01-01T00:00:00"] {
+    for second in ["1970-01-01T00:00:00", "2026-01-01T00:00:00"] {
         let first = id(&record(&format!("{second}.123001Z"), &[]));
         assert_ne!(first, id(&record(&format!("{second}.123999Z"), &[])));
         assert_eq!(first, id(&record(&format!("{second}.123001999Z"), &[])));
@@ -67,8 +67,26 @@ fn dates_use_archiver_precision() {
         id(&record("2026-01-01T00:00:00Z", &[])),
         id(&record("2026-01-01T00:00:00.000000Z", &[]))
     );
-    for date in ["0000-01-01T00:00:00Z", "9999-12-31T23:59:59.999999Z"] {
+    for date in ["1970-01-01T00:00:00Z", "9999-12-31T23:59:59.999999Z"] {
         assert!(Identity::from_raw(&record(date, &[])).is_ok());
+    }
+}
+
+/// Dates are unsigned Unix microseconds, since the archiver never writes a date before 1970.
+#[test]
+fn rejects_dates_before_1970() {
+    for date in ["1969-12-31T23:59:59.999999Z", "0000-01-01T00:00:00Z"] {
+        assert!(matches!(
+            Identity::from_raw(&record(date, &[])),
+            Err(Error::InvalidField(Field::Date))
+        ));
+        assert!(matches!(
+            Identity::from_raw(&record(
+                "2026-01-01T00:00:00Z",
+                &[("WARC-Refers-To-Date", date)]
+            )),
+            Err(Error::InvalidField(Field::RefersToDate))
+        ));
     }
 }
 
@@ -220,7 +238,7 @@ fn rejects_segmented_records() {
 /// Typed capture properties and their serialized representation must give the same ID.
 #[test]
 fn typed_and_raw_records_agree() {
-    let date = WarcDate::from(DateTime::from_timestamp_micros(-1_234_001).unwrap());
+    let date = WarcDate::from(DateTime::from_timestamp_micros(1_234_001).unwrap());
     let record = Record::response("https://example.org/", date)
         .unwrap()
         .warcinfo_id(Uri::parse("urn:uuid:info".to_owned()).unwrap())
@@ -242,7 +260,7 @@ fn context_fixed_vector() {
     let revisit = raw(
         &[
             ("WARC-Type", "revisit"),
-            ("WARC-Date", "1969-12-31T23:59:58.765999Z"),
+            ("WARC-Date", "1970-01-01T00:00:01.234001Z"),
             ("WARC-Target-URI", "https://example.org/"),
             (
                 "WARC-Profile",
@@ -256,7 +274,7 @@ fn context_fixed_vector() {
     );
     assert_eq!(
         id(&revisit).as_str(),
-        "https://archivindex.org/record/5ab6792ea30512afa07a8832de346e7a96b742b812d03fc443188b00d410d12a"
+        "https://archivindex.org/record/f83a58716fcd2dcec26731a773eb8af94083727b73f9d35197368a9484a33b92"
     );
 }
 

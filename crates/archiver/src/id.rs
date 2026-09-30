@@ -24,7 +24,8 @@ pub enum Error {
     /// Continuation and extension record types have no assigned type byte.
     #[error("record type {0} has no type byte in version {VERSION} of the scheme")]
     UnsupportedRecordType(String),
-    /// A required identity field is absent or an identity field cannot be parsed.
+    /// A required identity field is absent, an identity field cannot be parsed, or an identity date
+    /// is before 1970.
     #[error("missing or invalid {0}")]
     InvalidField(Field),
     /// An identity field appears more than once.
@@ -77,7 +78,13 @@ impl Identity {
                     .as_ref()
                     .map(|uri| uri.as_str().as_bytes()),
             );
-            identity.optional(4, header.refers_to_date.map(date_bytes));
+            identity.optional(
+                4,
+                header
+                    .refers_to_date
+                    .map(|date| date_bytes(date, Field::RefersToDate))
+                    .transpose()?,
+            );
         }
         identity.refers_to = record.refers_to().map(|uri| uri.as_str().to_owned());
         Ok(identity)
@@ -126,7 +133,7 @@ impl Identity {
         }
         let mut hash = Sha256::new();
         hash.update([VERSION, record_type.canonical_rank() + 1]);
-        hash.update(date_bytes(date));
+        hash.update(date_bytes(date, Field::Date)?);
         hash.update(Sha256::digest(block));
         Ok(Self {
             hash,
@@ -151,8 +158,11 @@ fn field(hash: &mut Sha256, tag: u8, value: &[u8]) {
     hash.update(value);
 }
 
-const fn date_bytes(date: WarcDate) -> [u8; 8] {
-    date.date_time().timestamp_micros().to_be_bytes()
+/// Encode a date as unsigned Unix microseconds, refusing dates before 1970.
+fn date_bytes(date: WarcDate, field: Field) -> Result<[u8; 8], Error> {
+    u64::try_from(date.date_time().timestamp_micros())
+        .map(u64::to_be_bytes)
+        .map_err(|_| Error::InvalidField(field))
 }
 
 #[cfg(test)]
