@@ -21,7 +21,7 @@ pub const VERSION: u8 = 1;
 /// A record could not be identified under this scheme.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
-    /// Continuation and extension record types have no assigned type byte.
+    /// Record types the archiver never writes have no assigned type byte.
     #[error("record type {0} has no type byte in version {VERSION} of the scheme")]
     UnsupportedRecordType(String),
     /// A required identity field is absent, an identity field cannot be parsed, or an identity date
@@ -125,9 +125,13 @@ impl Identity {
     }
 
     fn new(record_type: &RecordType, date: WarcDate, block: &[u8]) -> Result<Self, Error> {
-        if matches!(
+        if !matches!(
             record_type,
-            RecordType::Continuation | RecordType::Unknown(_)
+            RecordType::Warcinfo
+                | RecordType::Request
+                | RecordType::Response
+                | RecordType::Metadata
+                | RecordType::Revisit
         ) {
             return Err(Error::UnsupportedRecordType(record_type.to_string()));
         }

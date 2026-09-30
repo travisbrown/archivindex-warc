@@ -226,7 +226,7 @@ fn refuses_records_sharing_an_identifier_that_derive_different_ones() {
 /// A retained ID must not be redirected to another record, whichever record is read first.
 #[test]
 fn refuses_a_shared_identifier_when_one_record_keeps_it() {
-    let identified = record("resource", "<urn:uuid:1>", &[], "body");
+    let identified = record("metadata", "<urn:uuid:1>", &[], "body");
     let retained = record("extension", "<urn:uuid:1>", &[], "body");
 
     for contents in [
@@ -243,7 +243,7 @@ fn refuses_a_shared_identifier_when_one_record_keeps_it() {
 /// A new identifier must not collide with one a record the scheme cannot identify retains.
 #[test]
 fn refuses_a_derived_identifier_that_another_record_retains() {
-    let identified = record("resource", "<urn:uuid:1>", &[], "body");
+    let identified = record("metadata", "<urn:uuid:1>", &[], "body");
     let (_, _, output) = reidentified(&identified).unwrap();
     let retained = record("extension", id_of(&output[0]).trim(), &[], "body");
 
@@ -263,7 +263,7 @@ fn refuses_a_derived_identifier_that_another_record_retains() {
 fn refuses_colliding_records_without_identifiers() {
     let anonymous = render(
         &[
-            ("WARC-Type", "resource"),
+            ("WARC-Type", "metadata"),
             ("WARC-Date", "2026-01-01T00:00:00Z"),
         ],
         "body",
@@ -279,7 +279,7 @@ fn refuses_colliding_records_without_identifiers() {
 #[test]
 fn redirects_references_in_an_unidentifiable_record() {
     let contents = [
-        record("resource", "<urn:uuid:1>", &[], "body"),
+        record("metadata", "<urn:uuid:1>", &[], "body"),
         record(
             "extension",
             "<urn:uuid:2>",
@@ -302,7 +302,7 @@ fn collision_leaves_existing_files_untouched() {
     let input = directory.path().join("input.warc");
     let output = directory.path().join("output.warc");
     let contents = [
-        record("resource", "<urn:uuid:1>", &[], "body"),
+        record("metadata", "<urn:uuid:1>", &[], "body"),
         record("extension", "<urn:uuid:1>", &[], "body"),
     ]
     .concat();
@@ -321,7 +321,7 @@ fn collision_leaves_existing_files_untouched() {
 fn gives_a_record_without_an_identifier_one() {
     let contents = render(
         &[
-            ("WARC-Type", "resource"),
+            ("WARC-Type", "metadata"),
             ("WARC-Target-URI", "https://example.org/"),
             ("WARC-Date", "2026-01-01T00:00:00Z"),
         ],
@@ -349,7 +349,7 @@ fn gives_a_record_without_an_identifier_one() {
 #[test]
 fn copies_a_record_it_cannot_identify_and_keeps_references_to_it() {
     let contents = [
-        // Extension and continuation types have no type byte.
+        // Types the archiver never writes have no type byte.
         record(
             "extension",
             "<urn:uuid:1>",
@@ -366,10 +366,16 @@ fn copies_a_record_it_cannot_identify_and_keeps_references_to_it() {
             ],
             "body",
         ),
+        record(
+            "resource",
+            "<urn:uuid:6>",
+            &[("WARC-Target-URI", "https://example.org/")],
+            "body",
+        ),
         // A date outside the grammar cannot be read.
         render(
             &[
-                ("WARC-Type", "resource"),
+                ("WARC-Type", "metadata"),
                 ("WARC-Record-ID", "<urn:uuid:2>"),
                 ("WARC-Date", "yesterday"),
             ],
@@ -377,7 +383,7 @@ fn copies_a_record_it_cannot_identify_and_keeps_references_to_it() {
         ),
         // A target URI that is not a URI cannot be read.
         record(
-            "resource",
+            "metadata",
             "<urn:uuid:3>",
             &[("WARC-Target-URI", "not a uri")],
             "body",
@@ -397,13 +403,13 @@ fn copies_a_record_it_cannot_identify_and_keeps_references_to_it() {
 
     let (summary, input, output) = reidentified(&contents).unwrap();
 
-    assert_eq!(summary.records, 5);
+    assert_eq!(summary.records, 6);
     assert_eq!(summary.reidentified, 1);
-    assert_eq!(summary.unidentifiable, 4);
-    assert_eq!(output[..4], input[..4]);
-    assert!(id_of(&output[4]).starts_with(" <https://archivindex.org/record/"));
-    assert_eq!(field(&output[4], "WARC-Refers-To"), " <urn:uuid:1>");
-    assert_eq!(field(&output[4], "WARC-Concurrent-To"), " <urn:uuid:2>");
+    assert_eq!(summary.unidentifiable, 5);
+    assert_eq!(output[..5], input[..5]);
+    assert!(id_of(&output[5]).starts_with(" <https://archivindex.org/record/"));
+    assert_eq!(field(&output[5], "WARC-Refers-To"), " <urn:uuid:1>");
+    assert_eq!(field(&output[5], "WARC-Concurrent-To"), " <urn:uuid:2>");
 }
 
 /// Identifiers are determined by the records themselves, so reidentifying an already
@@ -519,7 +525,7 @@ fn source_identifier_spelling_does_not_affect_final_ids() {
     let contents = |first: &str, second: &str| {
         [
             record("metadata", first, &[("WARC-Refers-To", second)], "note"),
-            record("resource", second, &[], "body"),
+            record("metadata", second, &[], "body"),
         ]
         .concat()
     };

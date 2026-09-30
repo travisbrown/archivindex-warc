@@ -211,9 +211,9 @@ enum Command {
     ///
     /// Identity includes the capture date at microsecond precision, content block, target URI,
     /// and revisit context. References within the file are resolved to final IDs before hashing.
-    /// External references are kept. Segmented and extension records and unreadable identity
-    /// fields retain their IDs with a warning. Duplicate IDs, output collisions, and cyclic
-    /// dependencies are refused before writing.
+    /// External references are kept. Records of types the archiver never writes, segmented
+    /// records, and unreadable identity fields retain their IDs with a warning. Duplicate IDs,
+    /// output collisions, and cyclic dependencies are refused before writing.
     Reidentify {
         /// The WARC file to read, which is read twice, so it cannot be standard input. A .gz
         /// extension selects gzip decompression.

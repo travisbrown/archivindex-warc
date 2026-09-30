@@ -191,7 +191,7 @@ fn rejects_unreadable_identity_fields() {
         )),
         Err(Error::RepeatedField(Field::RefersTo))
     ));
-    for record_type in ["continuation", "extension"] {
+    for record_type in ["resource", "conversion", "continuation", "extension"] {
         assert!(matches!(
             Identity::from_raw(&raw(
                 &[
