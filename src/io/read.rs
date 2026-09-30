@@ -2161,8 +2161,10 @@ mod filter_tests {
 
 #[cfg(test)]
 mod iter_records_tests {
+    use std::convert::Infallible;
+
     use super::{Error, WarcReader};
-    use crate::record::extension::{Extension, ExtensionRecordType, Never, NoExtension};
+    use crate::record::extension::{Extension, ExtensionRecordType, NoExtension};
     use crate::record::{BlockError, Record};
 
     /// A record of a type the standard does not name, which only an extension can lift.
@@ -2196,7 +2198,7 @@ mod iter_records_tests {
 
     impl Extension for Sitemaps {
         type Types = SitemapType;
-        type TruncatedReasons = Never;
+        type TruncatedReasons = Infallible;
         type WarcinfoFields = ();
         type ResponseFields = ();
         type ResourceFields = ();

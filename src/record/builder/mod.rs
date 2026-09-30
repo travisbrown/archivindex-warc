@@ -1131,8 +1131,10 @@ impl<E: Extension> Record<E> {
 
     /// A builder for a record type defined by the extension.
     ///
-    /// This is unavailable under [`NoExtension`] because its
-    /// [`Never`](crate::record::extension::Never) type has no values.
+    /// This is unavailable under [`NoExtension`] because its record type is [`Infallible`], which
+    /// has no values.
+    ///
+    /// [`Infallible`]: std::convert::Infallible
     #[must_use]
     pub fn other(date: impl Into<WarcDate>, extension: E::Types) -> OtherBuilder<E> {
         OtherBuilder::new(date, extension)
@@ -1144,10 +1146,12 @@ pub mod v1_0;
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
+
     use super::*;
     use crate::parse::{raw, untyped};
     use crate::record::digest::added_digest;
-    use crate::record::extension::{ExtensionRecordType, Never};
+    use crate::record::extension::ExtensionRecordType;
     use crate::value::marker;
 
     const RECORD_ID: &str = "urn:uuid:00000000-0000-0000-0000-000000000001";
@@ -1695,7 +1699,7 @@ mod tests {
 
     impl Extension for Sitemaps {
         type Types = SitemapType;
-        type TruncatedReasons = Never;
+        type TruncatedReasons = Infallible;
         type WarcinfoFields = ();
         type ResponseFields = ();
         type ResourceFields = ();
