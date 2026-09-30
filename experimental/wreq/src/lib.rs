@@ -25,8 +25,7 @@ use archivindex_archiver::recorder::check_proxy;
 use http::{HeaderMap, Method, Uri};
 use serde::de::Deserialize;
 use serde::de::value::StrDeserializer;
-/// A versioned browser/client profile supplied by wreq-util.
-pub use wreq_util::Profile;
+use wreq_util::Profile;
 
 /// An isolated HTTP/1 and HTTP/2 backend using `BoringSSL` and browser emulation.
 #[derive(Clone)]

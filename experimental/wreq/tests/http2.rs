@@ -6,13 +6,14 @@ use std::time::Duration;
 
 use archivindex_archiver::backend::Backend as _;
 use archivindex_archiver::{Archiver, Config};
-use archivindex_archiver_wreq::{Profile, WreqBackend};
+use archivindex_archiver_wreq::WreqBackend;
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::extension::NoExtension;
 use archivindex_warc::record::header::protocol::Protocol;
 use archivindex_warc::record::header::truncated_type::TruncatedType;
 use http::{HeaderMap, Method, Response, StatusCode, Uri, Version};
 use tokio_rustls::TlsAcceptor;
+use wreq_util::Profile;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Finish {

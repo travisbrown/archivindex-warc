@@ -20,7 +20,7 @@ doc = false
 
 [features]
 # Browser-derived TLS emulation with HTTP/2 support. Compiles BoringSSL from source.
-wreq = ["dep:archivindex-archiver-wreq"]
+wreq = ["dep:archivindex-archiver-wreq", "dep:wreq-util"]
 # Compile SQLite from source rather than linking the system library.
 bundled = ["archivindex-archiver/bundled"]
 
@@ -35,6 +35,7 @@ clap.workspace = true
 fluent-uri.workspace = true
 log.workspace = true
 thiserror.workspace = true
+wreq-util = { workspace = true, optional = true, features = ["emulation"] }
 
 [dev-dependencies]
 archivindex-test-support.workspace = true

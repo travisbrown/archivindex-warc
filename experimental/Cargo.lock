@@ -135,6 +135,7 @@ dependencies = [
  "log",
  "tempfile",
  "thiserror 2.0.21",
+ "wreq-util",
 ]
 
 [[package]]

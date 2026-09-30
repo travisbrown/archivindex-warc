@@ -31,10 +31,7 @@ wreq = { version = "=0.16.1", default-features = false, features = [
 ] }
 # The finalized-header callback used by wreq itself.
 wreq-proto = "=0.2.6"
-wreq-util = { version = "=0.2.0", default-features = false, features = [
-  "emulation",
-  "emulation-serde",
-] }
+wreq-util = { workspace = true, features = ["emulation", "emulation-serde"] }
 
 [dev-dependencies]
 tempfile.workspace = true

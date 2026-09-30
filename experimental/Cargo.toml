@@ -37,6 +37,7 @@ http = "1"
 log = "0.4"
 tempfile = "3"
 thiserror = "2"
+wreq-util = { version = "=0.2.0", default-features = false }
 
 [workspace.lints.rust]
 missing_docs = "deny"

@@ -79,9 +79,7 @@ fn build_archiver(
         }
         Backend::Recorder => Archiver::new(config).map_err(Into::into),
         Backend::Wreq => {
-            let profile = options
-                .profile
-                .unwrap_or(archivindex_archiver_wreq::Profile::Chrome136);
+            let profile = options.profile.unwrap_or(wreq_util::Profile::Chrome136);
             let backend = archivindex_archiver_wreq::WreqBackend::new(profile)
                 .proxy(config.proxy.as_deref())?
                 .connect_timeout(Some(config.timeout))
@@ -254,7 +252,7 @@ struct ArchiveOptions {
     /// valid with `--backend wreq`.
     #[cfg(feature = "wreq")]
     #[arg(long, value_name = "NAME", value_parser = archivindex_archiver_wreq::parse_profile)]
-    profile: Option<archivindex_archiver_wreq::Profile>,
+    profile: Option<wreq_util::Profile>,
 }
 
 #[cfg(test)]

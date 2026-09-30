@@ -7,10 +7,11 @@ use std::thread;
 use std::time::Duration;
 
 use archivindex_archiver::{Archiver, Config};
-use archivindex_archiver_wreq::{Profile, WreqBackend};
+use archivindex_archiver_wreq::WreqBackend;
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::extension::NoExtension;
 use archivindex_warc::record::header::protocol::Protocol;
+use wreq_util::Profile;
 
 const RESPONSE: &[u8] = b"HTTP/1.1 200 Captured\r\nX-MiXeD: Kept\r\nContent-Length: 5\r\n\r\nhello";
 

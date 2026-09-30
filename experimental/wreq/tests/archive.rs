@@ -2,12 +2,13 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use archivindex_archiver::{Archiver, Config};
-use archivindex_archiver_wreq::{Profile, WreqBackend};
+use archivindex_archiver_wreq::WreqBackend;
 use archivindex_test_support::http::proxy::RecordingProxy;
 use archivindex_test_support::http::{RequestExt as _, response, serve_with};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::extension::NoExtension;
 use data_encoding::BASE64;
+use wreq_util::Profile;
 
 #[test]
 fn redirects_and_challenge_answers_are_archived_exactly_once() {

@@ -10,11 +10,15 @@ native BoringSSL toolchain: a C and C++ compiler, CMake, and libclang for bindge
 use std::sync::Arc;
 
 use archivindex_archiver::{Archiver, Config};
-use archivindex_archiver_wreq::{Profile, WreqBackend};
+use archivindex_archiver_wreq::WreqBackend;
+use wreq_util::Profile;
 
 let backend = WreqBackend::new(Profile::Chrome136);
 let archiver = Archiver::with_backend(Config::default(), Arc::new(backend))?;
 ```
+
+Profiles are wreq-util's `Profile` type, so applications also depend on `wreq-util` at the exact
+version this crate pins.
 
 All existing limits, headers, cookies, redirects, challenges, digests, and session settings still
 apply. The archiver's `Backend` trait also provides standalone `fetch` and `fetch_by` methods, and
