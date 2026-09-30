@@ -191,7 +191,7 @@ struct Head<'a> {
 /// Accept `CRLF` and bare `LF` line endings. RFC 9112 section 2.2 permits recipients to accept a
 /// bare `LF`.
 ///
-/// Returns `None` when the section is unterminated or a field line has no name.
+/// Returns `None` when the section is unterminated or a field name is not an HTTP token.
 fn parse_head(message: &[u8]) -> Option<Head<'_>> {
     let start_line = next_line(message, 0)?;
     let mut offset = start_line.next;
@@ -218,7 +218,11 @@ fn parse_head(message: &[u8]) -> Option<Head<'_>> {
         }
 
         let colon = content.iter().position(|&byte| byte == b':')?;
-        let name = std::str::from_utf8(&content[..colon]).ok()?.to_owned();
+        let name = &content[..colon];
+        if !is_token(name) {
+            return None;
+        }
+        let name = std::str::from_utf8(name).ok()?.to_owned();
         headers.push((name, trim_ascii(&content[colon + 1..]).to_vec()));
     }
 }
@@ -814,5 +818,22 @@ mod tests {
               \r\n\
               hello"
         );
+    }
+    /// Invalid field names must not turn malformed heads into reusable HTTP metadata.
+    #[test]
+    fn metadata_rejects_invalid_field_names() {
+        for name in ["", "Bad Name", "ETag ", "Bad\tName", "Bäd", "Bad(Name)"] {
+            for start in ["GET / HTTP/1.1", "HTTP/1.1 200 OK"] {
+                let message = format!("{start}\r\n{name}: value\r\n\r\n");
+                assert!(
+                    RequestMetadata::parse(message.as_bytes()).is_none(),
+                    "{message:?}"
+                );
+                assert!(
+                    ResponseMetadata::parse(message.as_bytes()).is_none(),
+                    "{message:?}"
+                );
+            }
+        }
     }
 }
