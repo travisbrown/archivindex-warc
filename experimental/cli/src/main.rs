@@ -74,16 +74,19 @@ fn build_archiver(
     }
     #[cfg(feature = "wreq")]
     match options.backend {
+        Backend::Recorder if options.profile.is_some() => {
+            anyhow::bail!("--profile applies only to --backend wreq")
+        }
         Backend::Recorder => Archiver::new(config).map_err(Into::into),
         Backend::Wreq => {
-            let profile = archivindex_archiver_wreq::parse_profile(&options.profile)?;
-            let timeout = config.timeout;
-            let max_response_length = config.max_response_length;
+            let profile = options
+                .profile
+                .unwrap_or(archivindex_archiver_wreq::Profile::Chrome136);
             let backend = archivindex_archiver_wreq::WreqBackend::new(profile)
                 .proxy(config.proxy.as_deref())?
-                .connect_timeout(Some(timeout))
-                .io_timeout(Some(timeout))
-                .max_response_length(max_response_length);
+                .connect_timeout(Some(config.timeout))
+                .io_timeout(Some(config.timeout))
+                .max_response_length(config.max_response_length);
             Archiver::with_backend(config, std::sync::Arc::new(backend)).map_err(Into::into)
         }
     }
@@ -247,10 +250,11 @@ struct ArchiveOptions {
     #[arg(long, value_enum, default_value_t = Backend::Recorder)]
     backend: Backend,
 
-    /// The browser profile the `wreq` backend emulates, such as `chrome_136`.
+    /// The browser profile the `wreq` backend emulates, such as `chrome_136`, the default. Only
+    /// valid with `--backend wreq`.
     #[cfg(feature = "wreq")]
-    #[arg(long, value_name = "NAME", default_value = "chrome_136")]
-    profile: String,
+    #[arg(long, value_name = "NAME", value_parser = archivindex_archiver_wreq::parse_profile)]
+    profile: Option<archivindex_archiver_wreq::Profile>,
 }
 
 #[cfg(test)]
@@ -342,6 +346,41 @@ mod tests {
                     proxy.is_some()
                 );
             }
+        }
+    }
+
+    /// A profile is checked as the command line is parsed, and it applies only to the wreq backend.
+    #[cfg(feature = "wreq")]
+    #[test]
+    fn a_profile_is_validated_and_requires_the_wreq_backend() {
+        let parse = |extra: &[&str]| {
+            Cli::try_parse_from(
+                [
+                    &[
+                        "archivindex-archiver",
+                        "archive",
+                        "--output",
+                        "capture.warc",
+                    ][..],
+                    extra,
+                ]
+                .concat(),
+            )
+        };
+        assert!(parse(&["--backend", "wreq", "--profile", "no_such_browser"]).is_err());
+        for (extra, valid) in [
+            (&["--backend", "wreq", "--profile", "chrome_136"][..], true),
+            (&["--backend", "wreq"][..], true),
+            (&["--profile", "chrome_136"][..], false),
+        ] {
+            let Command::Archive(options) = parse(extra).unwrap().command else {
+                panic!("archive command")
+            };
+            assert_eq!(
+                super::build_archiver(Config::default(), &options).is_ok(),
+                valid,
+                "{extra:?}"
+            );
         }
     }
 

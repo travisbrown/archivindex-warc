@@ -24,6 +24,9 @@ archivindex-archiver archive --backend wreq --profile chrome_136 \
   --output capture.warc < urls.txt
 ```
 
+`--profile` names the browser the backend emulates and defaults to `chrome_136`. It is refused
+without `--backend wreq`.
+
 Every other setting applies to whichever backend is chosen. Both record HTTP/1
 exchanges exactly. The `wreq` backend also negotiates HTTP/2, which it records as
 reconstructed HTTP/1.1 messages marked with `WARC-Protocol: h2`. It compiles
