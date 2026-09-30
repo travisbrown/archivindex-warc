@@ -127,8 +127,14 @@ dependencies = [
  "archivindex-archiver",
  "archivindex-archiver-wreq",
  "archivindex-cli-support",
+ "archivindex-test-support",
+ "archivindex-warc",
+ "archivindex-warc-ops",
  "clap",
+ "fluent-uri",
  "log",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -219,6 +225,19 @@ dependencies = [
  "serde",
  "sha1",
  "sha2",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "archivindex-warc-ops"
+version = "0.1.0"
+dependencies = [
+ "archivindex-publication",
+ "archivindex-warc",
+ "flate2",
+ "fluent-uri",
+ "log",
+ "serde",
  "thiserror 2.0.21",
 ]
 

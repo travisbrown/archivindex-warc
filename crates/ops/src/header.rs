@@ -1,9 +1,11 @@
 //! Header fields read by more than one operation.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use archivindex_warc::parse::raw;
-use archivindex_warc::value::Text;
+use archivindex_warc::parse::untyped::name::Field;
+use archivindex_warc::value::{Text, WarcDate};
 
 /// Fields whose values are the identifiers of other records.
 pub const REFERENCE_FIELDS: [&str; 4] = [
@@ -88,11 +90,63 @@ pub(crate) fn set_filename(header: &mut raw::RecordHeader, filename: Option<&[u8
     });
 }
 
+/// Add `field` to a header block before the first field that follows it in conventional order.
+///
+/// A header whose fields are already in that order stays in it. Extension fields follow every
+/// standard field.
+pub fn insert_field(header: &mut raw::RecordHeader, field: Field, value: Vec<u8>) {
+    let rank = field.canonical_rank();
+    let position = header
+        .headers
+        .iter()
+        .position(|(name, _)| {
+            Field::from_name(name).is_none_or(|existing| existing.canonical_rank() > rank)
+        })
+        .unwrap_or(header.headers.len());
+
+    header
+        .headers
+        .insert(position, (field.standard_name().to_owned(), value));
+}
+
+/// Replace each reference to a record named in `redirects` with the value it maps to.
+///
+/// Keys are normalized identifiers, as [`normalize_id`] writes them, and values are complete field
+/// values, written as read. A reference to a record `redirects` does not name is left as it is.
+pub fn redirect_references<S: std::hash::BuildHasher>(
+    header: &mut raw::RecordHeader,
+    redirects: &HashMap<Vec<u8>, Vec<u8>, S>,
+) {
+    if redirects.is_empty() {
+        return;
+    }
+
+    for (name, value) in &mut header.headers {
+        if REFERENCE_FIELDS
+            .iter()
+            .any(|field| name.eq_ignore_ascii_case(field))
+            && let Some(replacement) = redirects.get(normalize_id(value))
+        {
+            value.clone_from(replacement);
+        }
+    }
+}
+
+/// The instant a record's `WARC-Date` declares, read under the version its header declares, when it
+/// can be read.
+#[must_use]
+pub fn record_date(header: &raw::RecordHeader) -> Option<WarcDate> {
+    let value = header.get("WARC-Date")?;
+    let value = std::str::from_utf8(value.trim_ascii()).ok()?;
+
+    WarcDate::parse(value, header.version)
+}
+
 #[cfg(test)]
 mod tests {
     use archivindex_warc::parse::raw;
 
-    use super::{is_response, is_revisit, is_warcinfo, normalize_id};
+    use super::{Field, insert_field, is_response, is_revisit, is_warcinfo, normalize_id};
 
     #[test]
     fn strips_brackets_and_white_space() {
@@ -111,5 +165,35 @@ mod tests {
         assert!(is_warcinfo(&header));
         assert!(!is_response(&header));
         assert!(!is_revisit(&header));
+    }
+
+    #[test]
+    fn places_the_field_before_the_first_that_follows_it_in_conventional_order() {
+        let mut header = raw::RecordHeader::parse(
+            b"WARC/1.1\r\nContent-Length: 0\r\nWARC-Type: revisit\r\n\
+              WARC-Refers-To: <urn:uuid:1>\r\n\r\n",
+        )
+        .unwrap()
+        .0;
+
+        insert_field(
+            &mut header,
+            Field::IdentifiedPayloadType,
+            b" text/plain".to_vec(),
+        );
+
+        assert_eq!(
+            header
+                .headers
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "WARC-Identified-Payload-Type",
+                "Content-Length",
+                "WARC-Type",
+                "WARC-Refers-To",
+            ]
+        );
     }
 }

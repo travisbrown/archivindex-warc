@@ -29,5 +29,13 @@ anyhow = "1"
 archivindex-archiver.workspace = true
 archivindex-archiver-wreq = { workspace = true, optional = true }
 archivindex-cli-support.workspace = true
+archivindex-warc.workspace = true
+archivindex-warc-ops = { path = "../../crates/ops" }
 clap.workspace = true
+fluent-uri.workspace = true
 log.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+archivindex-test-support.workspace = true
+tempfile.workspace = true

@@ -101,7 +101,7 @@ pub fn is_gzip(path: &Path) -> bool {
 
 /// What a transform wrote.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct TransformSummary {
+pub struct TransformSummary {
     /// The number of records written.
     pub records: usize,
     /// The number of bytes written, after any compression.
@@ -123,7 +123,7 @@ pub(crate) struct TransformSummary {
 /// already exists fails without writing, so concurrent runs cannot share one, a link or an input at
 /// that path is left as it was, and a partial file left by an interrupted run must be removed
 /// first.
-pub(crate) fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Record>>>(
+pub fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Record>>>(
     inputs: &[&Path],
     output: &Path,
     compression: Compression,
