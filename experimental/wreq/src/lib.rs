@@ -23,6 +23,8 @@ use archivindex_archiver::backend::{
 };
 use archivindex_archiver::recorder::check_proxy;
 use http::{HeaderMap, Method, Uri};
+use serde::de::Deserialize;
+use serde::de::value::StrDeserializer;
 /// A versioned browser/client profile supplied by wreq-util.
 pub use wreq_util::Profile;
 
@@ -127,10 +129,8 @@ pub struct UnknownProfile(pub String);
 ///
 /// Fails when no profile has that name.
 pub fn parse_profile(name: &str) -> Result<Profile, UnknownProfile> {
-    use serde::de::IntoDeserializer;
-    let deserializer: serde::de::value::StrDeserializer<'_, serde::de::value::Error> =
-        name.into_deserializer();
-    serde::Deserialize::deserialize(deserializer).map_err(|_| UnknownProfile(name.to_owned()))
+    Profile::deserialize(StrDeserializer::<serde::de::value::Error>::new(name))
+        .map_err(|_| UnknownProfile(name.to_owned()))
 }
 
 /// Report a wreq failure through the archiver's catch-all backend error variant.
