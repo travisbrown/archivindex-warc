@@ -52,10 +52,11 @@ as `archivindex-proxy`, with username and password removed. This custom field pr
 scheme, host, and port when specified, and is absent when no proxy is configured. It describes the
 configured endpoint, not the proxy's public exit address.
 
-For standalone captures, use `Recorder::proxy`. When supplying another backend with
-`Archiver::with_backend`, apply the same proxy to that backend and `Config::proxy` so the recorded
-configuration matches the transport. The experimental CLI applies its configuration and `--proxy`
-option to either supported backend.
+For standalone captures, set `Recorder::proxy` and call the `Backend` trait's `fetch` or
+`fetch_by`. When supplying another backend with `Archiver::with_backend`, apply the same proxy to
+that backend and `Config::proxy` so the recorded configuration matches the transport. A backend can
+validate proxy URIs with `recorder::check_proxy` to accept exactly the URIs the recorder accepts.
+The experimental CLI applies its configuration and `--proxy` option to either supported backend.
 
 ## Record IDs
 
@@ -75,10 +76,11 @@ precision is truncated toward the earlier microsecond. Date spelling and declare
 affect identity: `.123Z` and `.123000Z` identify the same instant, and a reduced-precision date uses
 the beginning of its period. The same rule applies to `WARC-Refers-To-Date`.
 
-`WARC-Refers-To` and `WARC-Segment-Origin-ID` use the final IDs of the records they name, which the
-archiver always writes first. External references are taken as supplied.
-Renaming the old IDs within a file does not change the IDs derived when all their targets are
-reidentified together.
+`WARC-Refers-To` and `WARC-Segment-Origin-ID` contribute the final IDs of the records they name. The
+archiver writes no segmented records, and it writes a revisit only after the original it refers to,
+so no ID it assigns depends on a later record. External references are taken as supplied. Renaming
+the old IDs within a file does not change the IDs derived when all their targets are reidentified
+together.
 
 `WARC-Warcinfo-ID` and `WARC-Concurrent-To` are excluded. The capture date, target URI, and block
 already distinguish captures, so these fields would add no uniqueness. Excluding them means a record
@@ -112,16 +114,16 @@ Each present field is encoded as its `u8` tag, a `u64` byte length, and that man
 Absent fields contribute no bytes. Fields appear in ascending tag order. No field count or
 terminator is added.
 
-| Tag | Field                       | Value encoding                                     |
-| --- | --------------------------- | -------------------------------------------------- |
-| 1   | `WARC-Target-URI`           | Exact URI bytes                                    |
-| 2   | `WARC-Segment-Number`       | `u64`                                              |
-| 3   | `WARC-Segment-Total-Length` | `u64`                                              |
-| 4   | `WARC-Profile`              | Exact URI bytes                                    |
-| 5   | `WARC-Refers-To-Target-URI` | Exact URI bytes                                    |
-| 6   | `WARC-Refers-To-Date`       | `i64`, Unix microseconds                           |
-| 7   | `WARC-Refers-To`            | Final record ID URI bytes                          |
-| 8   | `WARC-Segment-Origin-ID`    | Final record ID URI bytes                          |
+| Tag | Field                       | Value encoding            |
+| --- | --------------------------- | ------------------------- |
+| 1   | `WARC-Target-URI`           | Exact URI bytes           |
+| 2   | `WARC-Segment-Number`       | `u64`                     |
+| 3   | `WARC-Segment-Total-Length` | `u64`                     |
+| 4   | `WARC-Profile`              | Exact URI bytes           |
+| 5   | `WARC-Refers-To-Target-URI` | Exact URI bytes           |
+| 6   | `WARC-Refers-To-Date`       | `i64`, Unix microseconds  |
+| 7   | `WARC-Refers-To`            | Final record ID URI bytes |
+| 8   | `WARC-Segment-Origin-ID`    | Final record ID URI bytes |
 
 URI brackets and surrounding header whitespace are excluded. URI spelling is otherwise exact,
 including percent escapes. Decimal leading zeros in segment fields are insignificant. Header name
