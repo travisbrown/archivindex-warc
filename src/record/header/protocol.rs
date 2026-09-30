@@ -27,6 +27,14 @@ impl Protocol {
     pub const H2: Self = Self(Cow::Borrowed("h2"));
     /// HTTP/2 over cleartext TCP.
     pub const H2C: Self = Self(Cow::Borrowed("h2c"));
+    /// TLS 1.0.
+    pub const TLS_1_0: Self = Self(Cow::Borrowed("tls/1.0"));
+    /// TLS 1.1.
+    pub const TLS_1_1: Self = Self(Cow::Borrowed("tls/1.1"));
+    /// TLS 1.2.
+    pub const TLS_1_2: Self = Self(Cow::Borrowed("tls/1.2"));
+    /// TLS 1.3.
+    pub const TLS_1_3: Self = Self(Cow::Borrowed("tls/1.3"));
 
     /// The identifier as recorded.
     #[must_use]
@@ -78,6 +86,22 @@ mod tests {
             "tls/1.1", "tls/1.2", "tls/1.3", "future/9",
         ] {
             assert_eq!(value.parse::<Protocol>().unwrap().as_str(), value);
+        }
+    }
+
+    #[test]
+    fn named_identifiers_are_valid() {
+        for protocol in [
+            Protocol::HTTP_1_0,
+            Protocol::HTTP_1_1,
+            Protocol::H2,
+            Protocol::H2C,
+            Protocol::TLS_1_0,
+            Protocol::TLS_1_1,
+            Protocol::TLS_1_2,
+            Protocol::TLS_1_3,
+        ] {
+            assert_eq!(protocol.as_str().parse::<Protocol>(), Ok(protocol));
         }
     }
 
