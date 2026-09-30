@@ -554,7 +554,7 @@ fn next_location(current: &Url, status: u16, location: Option<&str>) -> Option<U
     .then_some(next)
 }
 
-/// Render a URL with credentials removed so errors are safe to log.
+/// Render a URL with credentials removed for error messages and capture metadata.
 pub fn redact_credentials(url: &Url) -> String {
     let mut redacted = url.clone();
     let _ = redacted.set_username("");

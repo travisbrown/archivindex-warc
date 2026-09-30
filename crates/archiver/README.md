@@ -47,12 +47,16 @@ bound SOCKS negotiation; local DNS resolution remains outside those bounds.
 
 Proxied captures omit `WARC-IP-Address`: the socket peer is the proxy, and SOCKS does not reliably
 identify the origin IP. `CapturedExchange::ip_address` is therefore optional. HTTP capture bytes
-exclude proxy negotiation and authentication.
+exclude proxy negotiation and authentication. The `warcinfo` body records the configured proxy URI
+as `archivindex-proxy`, with username and password removed. This custom field preserves the proxy
+scheme, host, and port when specified, and is absent when no proxy is configured. It describes the
+configured endpoint, not the proxy's public exit address.
 
 For standalone captures, set `Recorder::proxy` and call the `Backend` trait's `fetch` or
-`fetch_by`. When supplying another backend with `Archiver::with_backend`, apply the proxy to that
-backend yourself. A backend can validate proxy URIs with `recorder::check_proxy` to accept exactly
-the URIs the recorder accepts. The CLI applies its configuration and `--proxy` option.
+`fetch_by`. When supplying another backend with `Archiver::with_backend`, apply the same proxy to
+that backend and `Config::proxy` so the recorded configuration matches the transport. A backend can
+validate proxy URIs with `recorder::check_proxy` to accept exactly the URIs the recorder accepts.
+The CLI applies its configuration and `--proxy` option.
 
 ## Benchmarks
 
