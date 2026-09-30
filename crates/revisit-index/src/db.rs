@@ -401,6 +401,7 @@ pub fn update_resource(
             .map_err(DatabaseError::during("update resource representation"))?
         }
         ResourceStateUpdate::NotModified {
+            variance,
             etag,
             last_modified,
             observed_at,
@@ -413,7 +414,8 @@ pub fn update_resource(
                  last_modified = COALESCE(?3, last_modified),
                  observed_at = ?4,
                  observed_seconds = ?5,
-                 observed_nanos = ?6
+                 observed_nanos = ?6,
+                 variance = CASE WHEN ?7 THEN ?8 ELSE variance END
              WHERE target_uri = ?1
                AND (?5 > observed_seconds OR (?5 = observed_seconds AND ?6 >= observed_nanos))",
                 "update not-modified resource state",
@@ -425,6 +427,8 @@ pub fn update_resource(
                 observed_at,
                 observed_seconds,
                 observed_nanos,
+                variance.is_some(),
+                variance.as_ref().and_then(Variance::encode),
             ])
             .map_err(DatabaseError::during("update not-modified resource state"))?
         }
@@ -609,6 +613,7 @@ mod tests {
                     }
                 }
                 ResourceStateUpdate::NotModified {
+                    variance,
                     etag,
                     last_modified,
                     observed_at,
@@ -622,6 +627,9 @@ mod tests {
                         state.etag = etag.or_else(|| state.etag.take());
                         state.last_modified = last_modified.or_else(|| state.last_modified.take());
                         state.observed_at = observed_at;
+                        if let Some(variance) = variance {
+                            state.variance = variance;
+                        }
                     }
                 }
             }

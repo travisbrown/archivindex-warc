@@ -2383,3 +2383,32 @@ fn recording_acknowledgment_identifies_partial_occurrences_of_a_repeated_url()
     );
     Ok(())
 }
+
+/// A confirmation that changes Vary to `*` prevents another conditional request, even when the
+/// request headers themselves remain unchanged.
+#[test]
+fn a_not_modified_response_can_change_vary() -> Result<(), Box<dyn std::error::Error>> {
+    let server = serve_with(3, |request| {
+        let reply = if request.header("if-none-match").is_some() {
+            response(304, &[("vary", "*")], "")
+        } else {
+            response(200, &[("etag", "\"a\"")], "body")
+        };
+        (reply, request.clone())
+    })?;
+    let url = format!("http://127.0.0.1:{}/page", server.port());
+    let directory = tempfile::tempdir()?;
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "vary-confirmation",
+        Crawl::seeds([&url, &url, &url]),
+        directory.path().join("capture.warc.gz"),
+    )?
+    .run()?;
+    let requests = server.finish();
+    assert!(summary.is_complete());
+    assert_eq!(requests[0].header("if-none-match"), None);
+    assert_eq!(requests[1].header("if-none-match"), Some("\"a\""));
+    assert_eq!(requests[2].header("if-none-match"), None);
+    Ok(())
+}

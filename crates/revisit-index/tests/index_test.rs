@@ -259,6 +259,7 @@ fn not_modified_merges_validators_and_preserves_representation_identity()
     index.update_resource(
         &resource_key,
         ResourceStateUpdate::NotModified {
+            variance: None,
             etag: Some("\"new\"".to_owned()),
             last_modified: None,
             observed_at: date("2025-01-02T00:00:00Z"),
@@ -274,6 +275,7 @@ fn not_modified_merges_validators_and_preserves_representation_identity()
     assert!(!index.update_resource(
         &key(URI_B),
         ResourceStateUpdate::NotModified {
+            variance: None,
             etag: None,
             last_modified: None,
             observed_at: date("2025-01-02T00:00:00Z"),
@@ -314,6 +316,7 @@ fn older_resource_updates_are_ignored() -> Result<(), Box<dyn StdError>> {
     assert!(!index.update_resource(
         &resource_key,
         ResourceStateUpdate::NotModified {
+            variance: None,
             etag: Some("\"stale\"".to_owned()),
             last_modified: None,
             observed_at: date("2025-02-15T00:00:00Z"),
@@ -1122,5 +1125,31 @@ fn not_modified_revisit_respects_its_explicit_original() -> Result<(), Box<dyn S
     assert_eq!(state.record_id, Some(uri(RECORD_A)));
     assert_eq!(state.payload_digest, Some(sha256(b"original")));
     assert_eq!(state.etag.as_deref(), Some("\"a\""));
+    Ok(())
+}
+
+/// A 304 can change which request fields select the confirmed representation.
+#[test]
+fn not_modified_revisit_updates_vary() -> Result<(), Box<dyn StdError>> {
+    let index = Index::open_in_memory()?;
+    index.index_record(&response(
+        URI_A,
+        RECORD_A,
+        "2025-01-01T00:00:00Z",
+        "ETag: \"a\"\r\n",
+        b"same",
+    )?)?;
+    let revisit = Record::<NoExtension>::revisit(
+        URI_A,
+        date("2025-01-02T00:00:00Z"),
+        RevisitProfile::SERVER_NOT_MODIFIED,
+    )?
+    .refers_to(uri(RECORD_A))
+    .body(b"HTTP/1.1 304 Not Modified\r\nVary: *\r\n\r\n".to_vec())?;
+    index.index_record(&revisit)?;
+    assert_eq!(
+        index.lookup_resource(&key(URI_A))?.unwrap().variance,
+        Variance::Unselectable
+    );
     Ok(())
 }

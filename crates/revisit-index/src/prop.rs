@@ -183,12 +183,19 @@ pub fn resource_state_update() -> impl Strategy<Value = ResourceStateUpdate> {
                     }
                 }
             ),
-        (validator(), validator(), warc_date()).prop_map(|(etag, last_modified, observed_at)| {
-            ResourceStateUpdate::NotModified {
-                etag,
-                last_modified,
-                observed_at,
-            }
-        }),
+        (
+            validator(),
+            validator(),
+            warc_date(),
+            proptest::option::of(variance())
+        )
+            .prop_map(|(etag, last_modified, observed_at, variance)| {
+                ResourceStateUpdate::NotModified {
+                    variance,
+                    etag,
+                    last_modified,
+                    observed_at,
+                }
+            }),
     ]
 }

@@ -285,52 +285,7 @@ fn index_revisit<E: Extension>(
             )?
         }
         RevisitProfile::ServerNotModified(_) => {
-            let stored = lookup_resource(connection, &key)?;
-            // Archives may be loaded out of capture order or include different representations
-            // of one URI. A confirmation applies only to the original it names.
-            let confirms_stored = stored.as_ref().is_some_and(|stored| {
-                header
-                    .payload
-                    .payload_digest
-                    .as_ref()
-                    .is_none_or(|digest| stored.payload_digest.as_ref() == Some(digest))
-                    && header
-                        .refers_to
-                        .as_ref()
-                        .is_none_or(|id| stored.record_id.as_ref() == Some(id))
-                    && header.refers_to_date.is_none_or(|date| {
-                        stored
-                            .warc_date
-                            .is_some_and(|stored| stored.date_time() == date.date_time())
-                    })
-            });
-            if confirms_stored {
-                update_resource(
-                    connection,
-                    &key,
-                    ResourceStateUpdate::NotModified {
-                        etag: metadata.etag,
-                        last_modified: metadata.last_modified,
-                        observed_at: header.core.date,
-                    },
-                )?
-            } else if header.refers_to.is_some() && header.refers_to_date.is_some() {
-                update_resource(
-                    connection,
-                    &key,
-                    ResourceStateUpdate::Representation {
-                        etag: metadata.etag,
-                        last_modified: metadata.last_modified,
-                        payload_digest: header.payload.payload_digest.clone(),
-                        record_id: header.refers_to.clone(),
-                        warc_date: header.refers_to_date,
-                        observed_at: header.core.date,
-                        variance: Variance::declared_without_request(metadata.vary.as_deref()),
-                    },
-                )?
-            } else {
-                false
-            }
+            index_confirmation(connection, &key, header, metadata)?
         }
         RevisitProfile::Other(_) => false,
     };
@@ -338,6 +293,65 @@ fn index_revisit<E: Extension>(
     Ok(IndexRecordOutcome {
         payload_inserted: false,
         resource_updated,
+    })
+}
+
+/// Apply a confirmation to its original representation, without mixing different captures.
+fn index_confirmation<E: Extension>(
+    connection: &Connection,
+    key: &ResourceKey,
+    header: &RevisitHeader<E>,
+    metadata: HttpMetadata,
+) -> Result<bool, IngestError> {
+    let stored = lookup_resource(connection, key)?;
+    // Archives may be loaded out of capture order or include different representations
+    // of one URI. A confirmation applies only to the original it names.
+    let confirms_stored = stored.as_ref().is_some_and(|stored| {
+        header
+            .payload
+            .payload_digest
+            .as_ref()
+            .is_none_or(|digest| stored.payload_digest.as_ref() == Some(digest))
+            && header
+                .refers_to
+                .as_ref()
+                .is_none_or(|id| stored.record_id.as_ref() == Some(id))
+            && header.refers_to_date.is_none_or(|date| {
+                stored
+                    .warc_date
+                    .is_some_and(|stored| stored.date_time() == date.date_time())
+            })
+    });
+    Ok(if confirms_stored {
+        update_resource(
+            connection,
+            key,
+            ResourceStateUpdate::NotModified {
+                variance: metadata
+                    .vary
+                    .as_deref()
+                    .map(|vary| Variance::declared_without_request(Some(vary))),
+                etag: metadata.etag,
+                last_modified: metadata.last_modified,
+                observed_at: header.core.date,
+            },
+        )?
+    } else if header.refers_to.is_some() && header.refers_to_date.is_some() {
+        update_resource(
+            connection,
+            key,
+            ResourceStateUpdate::Representation {
+                etag: metadata.etag,
+                last_modified: metadata.last_modified,
+                payload_digest: header.payload.payload_digest.clone(),
+                record_id: header.refers_to.clone(),
+                warc_date: header.refers_to_date,
+                observed_at: header.core.date,
+                variance: Variance::declared_without_request(metadata.vary.as_deref()),
+            },
+        )?
+    } else {
+        false
     })
 }
 

@@ -304,8 +304,8 @@ pub enum ResourceStateUpdate {
     /// A `304 Not Modified` or `server-not-modified` revisit confirmed the prior representation.
     ///
     /// Present validators replace their stored counterparts; omitted validators and all payload and
-    /// WARC identity fields are retained. The stored variance is retained too: a `304` answers for
-    /// the representation the request already selected.
+    /// WARC identity fields are retained. A supplied variance replaces the previous selection;
+    /// omitting it retains the stored variance.
     NotModified {
         /// A replacement `ETag`, if the 304 supplies one.
         etag: Option<String>,
@@ -313,6 +313,10 @@ pub enum ResourceStateUpdate {
         last_modified: Option<String>,
         /// When the unchanged representation was confirmed.
         observed_at: WarcDate,
+        /// The selection declared by a supplied `Vary` field, or `None` if the 304 omitted it.
+        ///
+        /// `Some(Variance::Invariant)` clears the stored selection for an empty `Vary` value.
+        variance: Option<Variance>,
     },
 }
 

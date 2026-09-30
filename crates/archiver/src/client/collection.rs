@@ -306,11 +306,11 @@ impl Collection {
             // The request as sent carries fields the configuration does not, in particular the
             // cookie a challenge issued, so a declared `Vary` is resolved against it.
             let sent = RequestMetadata::parse(&exchange.captured.request);
-            let variance =
-                Variance::declared(exchange.response_vary().as_deref(), |name| match &sent {
-                    Some(sent) => sent.combined_header(name),
-                    None => request_field(&self.request_headers, name),
-                });
+            let vary = exchange.response_vary();
+            let variance = Variance::declared(vary.as_deref(), |name| match &sent {
+                Some(sent) => sent.combined_header(name),
+                None => request_field(&self.request_headers, name),
+            });
             let status = exchange.status;
             let revalidated = exchange.revalidated.is_some();
             // A short payload is repeated rather than referred to, and is still indexed below so
@@ -345,6 +345,7 @@ impl Collection {
                     self.session_index.update_resource(
                         resource_key,
                         ResourceStateUpdate::NotModified {
+                            variance: vary.is_some().then_some(variance),
                             etag,
                             last_modified,
                             observed_at,
