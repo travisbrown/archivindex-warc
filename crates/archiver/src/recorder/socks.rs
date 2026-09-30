@@ -276,7 +276,7 @@ mod tests {
             if succeeds {
                 let mut remaining = Vec::new();
                 stream.read_to_end(&mut remaining).unwrap();
-                assert!(remaining.is_empty());
+                assert_eq!(remaining, b"");
                 assert_eq!(
                     stream.sent,
                     b"\x05\x01\x00\x05\x01\x00\x03\x0eorigin.invalid\x00\x50"

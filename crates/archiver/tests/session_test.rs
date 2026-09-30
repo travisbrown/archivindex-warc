@@ -1383,7 +1383,11 @@ fn session_skips_discoveries_that_repeat_a_given_url() -> Result<(), Box<dyn std
     assert_eq!(request_paths, ["/", "/", "/about"]);
     assert!(summary.is_complete());
     assert_eq!(summary.seed_captures.len(), 3);
-    assert!(summary.extra_captures.is_empty());
+    assert!(
+        summary.extra_captures.is_empty(),
+        "{:?}",
+        summary.extra_captures
+    );
 
     // An operator override without an email replaces the configured operator and is recorded by
     // name alone; the software defaults to this crate.
@@ -1842,7 +1846,11 @@ fn session_cancelled_during_a_retry_keeps_the_completed_attempt()
     // The cancelled capture is neither a capture nor a failure, but its 503 exchange is archived,
     // and the URL is left to request again.
     assert!(summary.cancelled);
-    assert!(summary.seed_captures.is_empty());
+    assert!(
+        summary.seed_captures.is_empty(),
+        "{:?}",
+        summary.seed_captures
+    );
     assert!(summary.failures.is_empty());
     assert_eq!(
         crawl.unrequested().cloned().collect::<Vec<_>>(),
@@ -2071,7 +2079,11 @@ fn session_with_no_seeds_writes_an_empty_collection() -> Result<(), Box<dyn std:
         Session::new(archiver(gzip_config()), "empty", Crawl::seeds(seeds), &path)?.run()?;
 
     assert!(summary.is_complete());
-    assert!(summary.seed_captures.is_empty());
+    assert!(
+        summary.seed_captures.is_empty(),
+        "{:?}",
+        summary.seed_captures
+    );
 
     // The WARC holds only its warcinfo record.
     assert_eq!(records(&std::fs::read(&path)?)?.len(), 1);
@@ -2279,7 +2291,11 @@ fn recording_acknowledgment_respects_cancellation_and_failures()
         assert_eq!(driver.inspected, usize::from(mode != "started"), "{mode}");
         match mode {
             "record-error" => {
-                assert!(driver.acknowledgments.is_empty());
+                assert!(
+                    driver.acknowledgments.is_empty(),
+                    "{:?}",
+                    driver.acknowledgments
+                );
                 assert!(
                     result.is_err()
                         || result
@@ -2288,7 +2304,11 @@ fn recording_acknowledgment_respects_cancellation_and_failures()
                 );
             }
             "started" => {
-                assert!(driver.acknowledgments.is_empty());
+                assert!(
+                    driver.acknowledgments.is_empty(),
+                    "{:?}",
+                    driver.acknowledgments
+                );
                 assert!(result?.cancelled);
             }
             "publish-error" => {

@@ -304,6 +304,6 @@ mod tests {
             .fill_buf()
             .expect_err("the trailing octets are not a member");
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert!(reader.fill_buf().expect("the stream has ended").is_empty());
+        assert_eq!(reader.fill_buf().expect("the stream has ended"), b"");
     }
 }

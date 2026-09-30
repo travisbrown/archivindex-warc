@@ -255,7 +255,11 @@ fn archive_and_read_back() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(response.warcinfo_id(), Some(&warcinfo.core.record_id));
 
     assert_eq!(request.type_name(), "request");
-    assert!(request.concurrent_to().is_empty());
+    assert!(
+        request.concurrent_to().is_empty(),
+        "{:?}",
+        request.concurrent_to()
+    );
     assert_eq!(response.concurrent_to(), [request.core().record_id.clone()]);
     assert!(
         request
@@ -699,7 +703,7 @@ fn event_sink_can_cancel_before_the_first_dispatch() -> Result<(), Box<dyn std::
     let _ = server.finish();
 
     assert!(summary.cancelled);
-    assert!(summary.captures.is_empty());
+    assert!(summary.captures.is_empty(), "{:?}", summary.captures);
     assert_eq!(events, ["started"]);
 
     Ok(())
@@ -738,7 +742,7 @@ fn archive_records_unreachable_urls_as_failures() -> Result<(), Box<dyn std::err
     let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
 
     assert!(!summary.is_complete());
-    assert!(summary.captures.is_empty());
+    assert!(summary.captures.is_empty(), "{:?}", summary.captures);
     assert_eq!(summary.failures.len(), 1);
     assert_eq!(summary.failures[0].url, url);
 
@@ -955,7 +959,7 @@ fn archive_records_hops_captured_before_a_failure() -> Result<(), Box<dyn std::e
     let _ = server.finish();
 
     assert!(!summary.is_complete());
-    assert!(summary.captures.is_empty());
+    assert!(summary.captures.is_empty(), "{:?}", summary.captures);
     assert_eq!(summary.failures[0].url, url);
 
     // The completed redirect hop is recorded even though the following request failed.

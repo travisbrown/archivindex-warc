@@ -169,6 +169,6 @@ mod tests {
         let (count, output) = export_string(&input).unwrap();
 
         assert_eq!(count, 0);
-        assert!(output.is_empty());
+        assert_eq!(output, "");
     }
 }

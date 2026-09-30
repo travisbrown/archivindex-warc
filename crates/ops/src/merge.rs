@@ -668,7 +668,11 @@ mod tests {
         .unwrap();
         assert_eq!(merged.merged, 1);
         assert_eq!(merged.distinct_warcinfo, 1);
-        assert!(merged.warcinfo_differences.is_empty());
+        assert!(
+            merged.warcinfo_differences.is_empty(),
+            "{:?}",
+            merged.warcinfo_differences
+        );
         assert_eq!(read_records(&merged_output).len(), 1);
     }
 
