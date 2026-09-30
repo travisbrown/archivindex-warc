@@ -239,7 +239,7 @@ mod tests {
                 bytes: 0
             }
         );
-        assert!(output.is_empty());
+        assert_eq!(output, b"");
     }
 
     #[test]
@@ -252,7 +252,7 @@ mod tests {
             error,
             Error::Write(write::Error::InvalidGzipCompressionLevel(10))
         ));
-        assert!(output.is_empty());
+        assert_eq!(output, b"");
     }
 
     #[test]

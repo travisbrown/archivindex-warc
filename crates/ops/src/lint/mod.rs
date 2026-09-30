@@ -433,7 +433,7 @@ mod tests {
             ]
         );
         assert_eq!(rule.records, 4);
-        assert!(rule.skipped.is_empty());
+        assert!(rule.skipped.is_empty(), "{:?}", rule.skipped);
     }
 
     /// The end of the file settles once, however often an exhausted pass is polled, so a rule

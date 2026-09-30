@@ -215,12 +215,10 @@ mod tests {
     /// A record rejected only by semantic rules passes the lower layers.
     #[test]
     fn each_layer_refuses_only_what_it_checks() {
-        assert!(outcome_of(UNNAMED_RESOURCE, Layer::Raw).errors.is_empty());
-        assert!(
-            outcome_of(UNNAMED_RESOURCE, Layer::Untyped)
-                .errors
-                .is_empty()
-        );
+        for layer in [Layer::Raw, Layer::Untyped] {
+            let errors = outcome_of(UNNAMED_RESOURCE, layer).errors;
+            assert!(errors.is_empty(), "{layer:?}: {errors:?}");
+        }
 
         let refused = outcome_of(UNNAMED_RESOURCE, Layer::Record);
         assert_eq!(refused.records, 0);
@@ -233,7 +231,8 @@ mod tests {
     /// Invalid field grammar is reported by both layers that parse values.
     #[test]
     fn a_malformed_value_is_reported_with_the_field_that_carried_it() {
-        assert!(outcome_of(MALFORMED_DATE, Layer::Raw).errors.is_empty());
+        let errors = outcome_of(MALFORMED_DATE, Layer::Raw).errors;
+        assert!(errors.is_empty(), "{errors:?}");
 
         for layer in [Layer::Untyped, Layer::Record] {
             let refused = outcome_of(MALFORMED_DATE, layer);
