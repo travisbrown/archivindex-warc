@@ -11,7 +11,7 @@ use url::Url;
 
 use super::script::parse_string;
 use super::{Challenge, StoredCookie};
-use crate::recorder::CapturedExchange;
+use crate::backend::CapturedExchange;
 
 const CHALLENGE_STATUS: u16 = 202;
 /// The maximum accepted difficulty in leading hexadecimal digits. Each additional digit multiplies

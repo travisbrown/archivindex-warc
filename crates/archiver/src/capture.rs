@@ -1,4 +1,4 @@
-//! Capture outcomes, lifecycle events, and cancellation.
+//! Capture outcomes, progress notifications, and cancellation.
 //!
 //! One-shot archiving and crawl sessions both report their work in these types.
 
@@ -14,7 +14,7 @@ pub struct ArchiveSummary {
     pub captures: Vec<CaptureSummary>,
     /// URLs that could not be captured.
     pub failures: Vec<Failure>,
-    /// Whether an event sink requested a clean stop before all input was dispatched.
+    /// Whether a progress sink requested a clean stop before all input was dispatched.
     pub cancelled: bool,
 }
 
@@ -112,7 +112,7 @@ pub struct Failure {
 
 /// A live capture lifecycle notification.
 #[derive(Clone, Copy, Debug)]
-pub enum CaptureEvent<'a> {
+pub enum ProgressEvent<'a> {
     /// A URL capture attempt is starting.
     Started {
         /// Requested URL.
@@ -150,9 +150,9 @@ pub enum CaptureEvent<'a> {
     },
 }
 
-/// Decision returned by a [`CaptureEventSink`].
+/// Decision returned by a [`ProgressSink`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CaptureControl {
+pub enum ProgressControl {
     /// Continue capturing.
     Continue,
     /// Stop dispatching work and finalize what has already completed.
@@ -160,21 +160,21 @@ pub enum CaptureControl {
 }
 
 /// An observer that reports progress or requests clean cancellation.
-pub trait CaptureEventSink {
+pub trait ProgressSink {
     /// Observe one event and decide whether capture should continue.
-    fn event(&mut self, event: CaptureEvent<'_>) -> CaptureControl;
+    fn event(&mut self, event: ProgressEvent<'_>) -> ProgressControl;
 
     /// Report that a URL capture attempt is starting, returning whether the sink asked to stop.
     fn started(&mut self, url: &str, attempt: usize) -> bool {
-        self.event(CaptureEvent::Started { url, attempt }) == CaptureControl::Cancel
+        self.event(ProgressEvent::Started { url, attempt }) == ProgressControl::Cancel
     }
 }
 
-impl<F> CaptureEventSink for F
+impl<F> ProgressSink for F
 where
-    F: for<'a> FnMut(CaptureEvent<'a>) -> CaptureControl,
+    F: for<'a> FnMut(ProgressEvent<'a>) -> ProgressControl,
 {
-    fn event(&mut self, event: CaptureEvent<'_>) -> CaptureControl {
+    fn event(&mut self, event: ProgressEvent<'_>) -> ProgressControl {
         self(event)
     }
 }

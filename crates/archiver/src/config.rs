@@ -1,16 +1,45 @@
 //! Configuration types and defaults for the archiving client.
 
+// Deriving `Deserialize` for `BuiltinBackend::Recorder {}` generates an empty field enum, which
+// the lint cannot see past from the enum itself. A unit variant would avoid it, but serde does not
+// refuse unknown keys for unit variants. Only nightly Clippy reports the generated enum, so this
+// cannot be an expectation.
+#![allow(
+    clippy::empty_enums,
+    reason = "serde generates an empty field enum for a fieldless struct variant"
+)]
+
 use std::path::PathBuf;
 use std::time::Duration;
 
 use archivindex_warc::value::{Algorithm, DigestFormat, Encoding};
 
 use crate::Config;
-use crate::recorder::{DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT};
+use crate::backend::{DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT};
 use crate::session::RetryConfig;
 
 /// The spelling that lifts a limit in a serialized configuration.
 const UNBOUNDED: &str = "unbounded";
+
+/// Select one of the capture backends this crate builds itself.
+///
+/// A backend from another crate is supplied directly with
+/// [`Archiver::with_backend`](crate::Archiver::with_backend) rather than named here, so an
+/// application that offers a choice of backends owns that part of its own configuration. This
+/// type is non-exhaustive because further built-in backends may be added.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+#[non_exhaustive]
+pub enum BuiltinBackend {
+    /// The synchronous Rustls recorder.
+    Recorder {},
+}
+
+impl Default for BuiltinBackend {
+    fn default() -> Self {
+        Self::Recorder {}
+    }
+}
 
 impl Config {
     /// The default `User-Agent` header value, identifying this crate and its version.
@@ -28,6 +57,7 @@ impl Default for Config {
     /// The defaults listed as TOML in the [`Config`] documentation.
     fn default() -> Self {
         Self {
+            backend: BuiltinBackend::default(),
             user_agent: Self::DEFAULT_USER_AGENT.to_owned(),
             timeout: DEFAULT_TIMEOUT,
             max_capture_time: Some(Self::DEFAULT_MAX_CAPTURE_TIME),
@@ -284,9 +314,9 @@ mod tests {
 
     use archivindex_warc::value::{Algorithm, DigestFormat, Encoding};
 
-    use super::{DigestConfig, DigestFormats, DigestOverride, Operator, Software};
+    use super::{BuiltinBackend, DigestConfig, DigestFormats, DigestOverride, Operator, Software};
     use crate::Config;
-    use crate::recorder::{DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT};
+    use crate::backend::{DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT};
 
     #[test]
     fn warc_is_uncompressed_by_default() {
@@ -383,6 +413,26 @@ mod tests {
         };
 
         assert_eq!(config.formats().block.encoding, Encoding::Base32);
+    }
+
+    /// A backend is named by its `type`, and a key the named backend does not define is refused.
+    #[test]
+    fn a_document_names_a_builtin_backend() {
+        let config = serde_json::from_str::<Config>(r#"{"backend": {"type": "recorder"}}"#)
+            .expect("a configuration");
+        assert_eq!(config.backend, BuiltinBackend::Recorder {});
+        for document in [
+            r#"{"backend": {"type": "recorder", "unknown": 1}}"#,
+            r#"{"backend": {"type": "unknown"}}"#,
+            r#"{"backend": {}}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Config>(document).is_err(),
+                "{document}"
+            );
+        }
+        let written = serde_json::to_value(Config::default()).expect("a serialized configuration");
+        assert_eq!(written["backend"], serde_json::json!({"type": "recorder"}));
     }
 
     #[test]

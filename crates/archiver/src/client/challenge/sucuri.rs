@@ -11,7 +11,7 @@ use url::Url;
 
 use super::script::parse_string;
 use super::{Challenge, StoredCookie};
-use crate::recorder::CapturedExchange;
+use crate::backend::CapturedExchange;
 
 /// Decode the cookie from Sucuri's JavaScript reload challenge without evaluating its script.
 pub fn recognize(captured: &CapturedExchange, _: &Url) -> Option<Challenge> {

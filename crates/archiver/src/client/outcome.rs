@@ -18,7 +18,7 @@ use url::{Position, Url};
 
 use super::challenge::{self, Challenge};
 use super::collection::Collection;
-use crate::recorder::CapturedExchange;
+use crate::backend::CapturedExchange;
 use crate::session::Request;
 use crate::{Archiver, Error};
 
@@ -420,7 +420,7 @@ impl Archiver {
             .flatten()
             .map(|collection| {
                 let target_uri = Uri::parse(request_target.as_ref())
-                    .map_err(crate::recorder::Error::TargetUri)?
+                    .map_err(crate::backend::Error::TargetUri)?
                     .to_owned();
 
                 collection.original(target_uri, &headers)
@@ -431,7 +431,7 @@ impl Archiver {
             headers = original.conditional_headers(&headers);
         }
         let captured = self
-            .recorder
+            .backend
             .fetch_within(method, &target, &headers, body, deadline)?;
         let status = captured.response_metadata.status;
         let location = captured

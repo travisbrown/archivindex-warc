@@ -13,8 +13,8 @@ use fluent_uri::Uri;
 use super::outcome::Exchange;
 use super::warc_fields::{MetadataValues, metadata_record};
 use crate::Error;
+use crate::backend::CapturedExchange;
 use crate::config::DigestFormats;
-use crate::recorder::CapturedExchange;
 
 /// Optional fields added to the metadata record accompanying an exchange.
 #[derive(Clone, Copy)]

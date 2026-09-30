@@ -8,11 +8,40 @@ use std::io::{ErrorKind, Read};
 
 use archivindex_warc::record::header::truncated_type::TruncatedType;
 
-use super::{Error, ResponseError};
+use super::Error;
 
 const MAX_HEADER_LENGTH: usize = 64 * 1024;
 
 const READ_LENGTH: usize = 8 * 1024;
+
+/// Malformed responses whose message boundary cannot be determined.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ResponseError {
+    /// The response does not begin with an HTTP status line.
+    #[error("the response does not begin with an HTTP status line")]
+    MalformedStatusLine,
+    /// The server switched protocols with a `101` the request did not ask for.
+    #[error("the server switched protocols with a `101` the request did not ask for")]
+    UnsolicitedUpgrade,
+    /// The connection ended before a complete header section arrived.
+    #[error("the connection ended before a complete response header section arrived")]
+    IncompleteHeaderSection,
+    /// The header section exceeds the limit on stored head bytes.
+    #[error("the response header section exceeds the limit on stored head bytes")]
+    OversizedHeaderSection,
+    /// The response declares `Content-Length` values that disagree.
+    #[error("the response declares `Content-Length` values that disagree")]
+    ConflictingContentLength,
+    /// A declared `Content-Length` is not a valid decimal length.
+    #[error("the declared `Content-Length` `{0}` is not a valid decimal length")]
+    MalformedContentLength(String),
+    /// A declared chunk size is not a valid hexadecimal length.
+    #[error("the declared chunk size `{0}` is not a hexadecimal length")]
+    MalformedChunkSize(String),
+    /// A chunk's data is not followed by the terminating CRLF.
+    #[error("a chunk's data is not followed by CRLF")]
+    UnterminatedChunk,
+}
 
 enum BodyFraming {
     /// The message ends with its header section.
