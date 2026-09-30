@@ -17,6 +17,7 @@ use tokio::sync::Notify;
 use wreq::IntoEmulation;
 use wreq::connection_observer::{ConnectionEvent, ConnectionObserver};
 use wreq::header::OrigHeaderMap;
+use wreq::tls::TlsVersion;
 
 use super::{WreqBackend, backend_error};
 
@@ -113,11 +114,7 @@ impl WreqBackend {
             return Err(error);
         }
         let request = state.recorded_request(method, &sent_target, body)?;
-        let protocols = if state.http2 {
-            vec![Protocol::H2]
-        } else {
-            Vec::new()
-        };
+        let protocols = state.protocols();
         let (response, truncated) = state.response.into_parts();
         let response_metadata =
             ResponseMetadata::parse(&response).ok_or(ResponseError::MalformedStatusLine)?;
@@ -157,6 +154,7 @@ struct State {
     ip_address: Option<IpAddr>,
     last_activity: Option<Instant>,
     http2: bool,
+    tls_version: Option<TlsVersion>,
     request_headers: Option<HeaderMap>,
     h2_request: http2::RequestCapture,
 }
@@ -171,6 +169,7 @@ impl State {
             ip_address: None,
             last_activity: None,
             http2: false,
+            tls_version: None,
             request_headers: None,
             h2_request: http2::RequestCapture::default(),
         }
@@ -190,6 +189,22 @@ impl State {
         if !self.response.is_done() && self.error.is_none() {
             self.error = Some(error);
         }
+    }
+
+    fn protocols(&self) -> Vec<Protocol> {
+        let tls = match self.tls_version {
+            Some(TlsVersion::TLS_1_0) => Some(Protocol::TLS_1_0),
+            Some(TlsVersion::TLS_1_1) => Some(Protocol::TLS_1_1),
+            Some(TlsVersion::TLS_1_2) => Some(Protocol::TLS_1_2),
+            Some(TlsVersion::TLS_1_3) => Some(Protocol::TLS_1_3),
+            // Omit unavailable or unrecognized versions rather than infer one from the profile.
+            _ => None,
+        };
+        self.http2
+            .then_some(Protocol::H2)
+            .into_iter()
+            .chain(tls)
+            .collect()
     }
 
     fn recorded_request(
@@ -353,11 +368,13 @@ impl ConnectionObserver for Tap {
                 id,
                 remote_addr,
                 http2,
+                tls_version,
                 ..
             } => {
                 // Connecting starts the idle clock for both protocols.
                 self.progress(&mut state);
                 state.http2 = http2;
+                state.tls_version = tls_version;
                 if state.id.replace(id).is_some() {
                     state.error = Some(io::Error::other("unexpected additional connection").into());
                 }

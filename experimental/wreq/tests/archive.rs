@@ -72,6 +72,7 @@ fn redirects_and_challenge_answers_are_archived_exactly_once() {
         .iter()
         .filter(|r| r.type_name() == "response")
         .collect();
+    assert!(records.iter().all(|record| record.protocols().is_empty()));
     assert_eq!(requests.len(), 3);
     assert_eq!(responses.len(), 3);
     for ((request, response), exchange) in requests.iter().zip(responses).zip(observed) {
