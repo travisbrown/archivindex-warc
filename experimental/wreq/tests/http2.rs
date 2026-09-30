@@ -130,6 +130,11 @@ fn serve_with_versions(
                             tokio::time::sleep(Duration::from_millis(30)).await;
                             stream.send_reset(h2::Reason::CANCEL);
                         }
+                        if reply.finish == Finish::Stall {
+                            // Hold the stream open until the client's own timeout closes the
+                            // connection, however long connecting took.
+                            std::future::pending::<()>().await;
+                        }
                     }
                     tokio::time::sleep(Duration::from_millis(300)).await;
                 };
@@ -383,6 +388,8 @@ fn response_head_must_fit_the_capture_limit() {
     server.join().unwrap();
 }
 
+/// The deadline also covers connecting and the TLS handshake, so it is generous enough for a loaded
+/// machine. The server stalls until the client closes the connection, so it cannot end first.
 #[test]
 fn absolute_deadline_truncates_an_http2_response() {
     let (target, backend, server) = serve(
@@ -399,7 +406,7 @@ fn absolute_deadline_truncates_an_http2_response() {
             &target,
             &HeaderMap::new(),
             None,
-            std::time::Instant::now() + Duration::from_millis(100),
+            std::time::Instant::now() + Duration::from_secs(1),
         )
         .unwrap();
     server.join().unwrap();
