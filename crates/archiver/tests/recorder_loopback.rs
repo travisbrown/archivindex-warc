@@ -13,3 +13,11 @@ fn trusted_backend(certificate: &rustls::pki_types::CertificateDer<'static>) -> 
     backend().tls_config(std::sync::Arc::new(config))
 }
 include!("support/backend_conformance.rs");
+fn proxied_archiver(proxy: &str) -> archivindex_archiver::Archiver {
+    archivindex_archiver::Archiver::new(archivindex_archiver::Config {
+        proxy: Some(proxy.to_owned()),
+        ..archivindex_archiver::Config::default()
+    })
+    .unwrap()
+}
+include!("support/proxy_conformance.rs");

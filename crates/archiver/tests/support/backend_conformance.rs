@@ -108,7 +108,7 @@ fn records_the_request_and_response_bytes_exactly() {
     assert!(request.contains("connection: close\r\n"), "{request}");
 
     assert_eq!(captured.response, response);
-    assert_eq!(captured.ip_address.to_string(), "127.0.0.1");
+    assert_eq!(captured.ip_address.unwrap().to_string(), "127.0.0.1");
     assert_eq!(captured.target_uri.as_str(), target.to_string());
     assert_eq!(captured.truncated, None);
 }

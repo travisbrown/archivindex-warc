@@ -29,10 +29,21 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
     }
 }
 
+/// Build an archiver, applying the proxy given on the command line.
+fn build_archiver(
+    mut config: archivindex_archiver::Config,
+    options: &ArchiveOptions,
+) -> Result<Archiver> {
+    if let Some(proxy) = &options.proxy {
+        config.proxy = Some(proxy.clone());
+    }
+    Archiver::new(config).map_err(Into::into)
+}
+
 /// Archive a list of URLs read from standard input.
 fn archive(options: &ArchiveOptions, quiet: bool) -> Result<CommandOutcome> {
     let config = config::load(options.config.as_deref())?;
-    let archiver = Archiver::new(config).context("cannot configure the archiver")?;
+    let archiver = build_archiver(config, options).context("cannot configure the archiver")?;
     let mut input_error = None;
     let urls = read_urls(std::io::stdin().lock(), &mut input_error);
     let progress = spinner("Archiving", Some("URLs"));
@@ -145,6 +156,10 @@ struct ArchiveOptions {
     #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
     config: Option<PathBuf>,
 
+    /// Proxy URI, overriding the config file (use socks5h://host:port for proxy DNS).
+    #[arg(long, value_name = "URI")]
+    proxy: Option<String>,
+
     /// The WARC file to write; an existing file is not overwritten.
     #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
     output: PathBuf,
@@ -200,6 +215,44 @@ mod tests {
 
         assert_eq!(without.config, None);
         assert_eq!(with.config.as_deref(), Some(Path::new("capture.toml")));
+    }
+
+    #[test]
+    fn proxy_is_optional_and_overrides_the_configuration() {
+        for proxy in [None, Some("socks5h://127.0.0.1:1080")] {
+            let mut args = vec![
+                "archivindex-archiver",
+                "archive",
+                "--output",
+                "capture.warc",
+            ];
+            if let Some(proxy) = proxy {
+                args.extend(["--proxy", proxy]);
+            }
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Command::Archive(options) = cli.command;
+            assert_eq!(options.proxy.as_deref(), proxy);
+            let config = Config {
+                proxy: Some("socks5h://127.0.0.1:invalid".to_owned()),
+                ..Config::default()
+            };
+            assert_eq!(
+                super::build_archiver(config, &options).is_ok(),
+                proxy.is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn configuration_files_accept_a_proxy() {
+        for (format, document) in [
+            (Format::Toml, "proxy = \"socks5h://127.0.0.1:1080\""),
+            (Format::Json, r#"{"proxy":"socks5h://127.0.0.1:1080"}"#),
+        ] {
+            let config = format.parse::<Config>(document).unwrap();
+            assert_eq!(config.proxy.as_deref(), Some("socks5h://127.0.0.1:1080"));
+        }
+        assert_eq!(Config::default().proxy, None);
     }
 
     #[test]
