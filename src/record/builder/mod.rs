@@ -320,6 +320,19 @@ macro_rules! shared_setters {
         shared_setters!($($rest)*);
     };
 
+    (protocols, $($rest:tt)*) => {
+        /// Append a `WARC-Protocol` identifier for the original network message.
+        ///
+        /// Repeated calls describe layered protocols; this does not change the block format.
+        #[must_use]
+        pub fn protocol(mut self, protocol: crate::record::header::protocol::Protocol) -> Self {
+            self.header.protocols.push(protocol);
+            self
+        }
+
+        shared_setters!($($rest)*);
+    };
+
     (ip_address, $($rest:tt)*) => {
         /// `WARC-IP-Address`: the address the record's content was retrieved from.
         #[must_use]
@@ -463,6 +476,7 @@ macro_rules! capture_builder {
                         target_uri: parse_target_uri(target_uri)?,
                         warcinfo_id: None,
                         ip_address: None,
+                        protocols: Vec::new(),
                         concurrent_to: Vec::new(),
                         segment_origin: false,
                         other: Default::default(),
@@ -477,6 +491,7 @@ macro_rules! capture_builder {
                 payload,
                 warcinfo_id,
                 ip_address,
+                protocols,
                 concurrent_to,
                 segment_origin,
                 extension($fields),
@@ -702,6 +717,7 @@ impl<E: Extension> MetadataBuilder<E> {
                 target_uri: None,
                 warcinfo_id: None,
                 ip_address: None,
+                protocols: Vec::new(),
                 concurrent_to: Vec::new(),
                 refers_to: None,
                 segment_origin: false,
@@ -721,6 +737,7 @@ impl<E: Extension> MetadataBuilder<E> {
         target_uri,
         warcinfo_id,
         ip_address,
+        protocols,
         concurrent_to,
         refers_to,
         extension(MetadataFields),
@@ -796,6 +813,7 @@ macro_rules! revisit_builder {
                         warcinfo_id: None,
                         profile,
                         ip_address: None,
+                        protocols: Vec::new(),
                         concurrent_to: Vec::new(),
                         refers_to: None,
                         refers_to_target_uri: None,
@@ -812,6 +830,7 @@ macro_rules! revisit_builder {
                 payload,
                 warcinfo_id,
                 ip_address,
+                protocols,
                 concurrent_to,
                 refers_to,
                 segment_origin,
