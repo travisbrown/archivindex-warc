@@ -106,8 +106,9 @@ big-endian byte order, without padding between fields.
 | Block hash       | 32 bytes, SHA-256 of the stored block     |
 
 Record type bytes are `warcinfo` = 1, `request` = 2, `response` = 3, `metadata` = 4, `revisit` = 5,
-`resource` = 6, `conversion` = 7. The archiver never writes `continuation` records, so they are
-refused along with extension record types.
+`resource` = 6, `conversion` = 7. Extension record types are refused. The archiver never writes
+segmented records, so `continuation` records are also refused, as is any record carrying
+`WARC-Segment-Number`, `WARC-Segment-Origin-ID`, or `WARC-Segment-Total-Length`.
 
 Each present field is encoded as its `u8` tag, a `u64` byte length, and that many value bytes.
 Absent fields contribute no bytes. Fields appear in ascending tag order. No field count or

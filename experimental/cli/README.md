@@ -102,10 +102,10 @@ The command resolves dependencies before writing, so the new IDs describe the re
 written. A reference to a record outside the file remains unchanged. A `WARC-Refers-To` reference
 of that kind contributes its existing ID to identity.
 
-A record carrying no `WARC-Record-ID` is given one. A `continuation` record, a record with an
-extension type, or one with an unreadable or repeated identity field keeps its ID with a warning.
-References in these records are still updated. Every other field, every body, and the record order
-are preserved.
+A record carrying no `WARC-Record-ID` is given one. A segmented record (a `continuation` record or
+any record with a segment field), a record with an extension type, or one with an unreadable or
+repeated identity field keeps its ID with a warning. References in these records are still updated.
+Every other field, every body, and the record order are preserved.
 
 The input is read twice and must remain unchanged during the operation; it cannot be standard input.
 The first pass retains identity data and reference dependencies, not content blocks. A `.gz`

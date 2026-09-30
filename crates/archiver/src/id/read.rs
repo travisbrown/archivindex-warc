@@ -12,6 +12,20 @@ pub(super) fn identity(record: &raw::Record) -> Result<Identity, Error> {
     let header = &record.header;
     let record_type = text(header, Field::WarcType)?.ok_or(Error::InvalidField(Field::WarcType))?;
     let record_date = date(header, Field::Date)?.ok_or(Error::InvalidField(Field::Date))?;
+    if let Some(field) = [
+        Field::SegmentNumber,
+        Field::SegmentOriginID,
+        Field::SegmentTotalLength,
+    ]
+    .into_iter()
+    .find(|field| {
+        header
+            .headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case(field.standard_name()))
+    }) {
+        return Err(Error::Segmented(field));
+    }
     let mut identity = Identity::new(&RecordType::from(record_type), record_date, &record.body)?;
     identity.optional(1, uri(header, Field::TargetURI)?.map(str::as_bytes));
     identity.optional(2, uri(header, Field::Profile)?.map(str::as_bytes));

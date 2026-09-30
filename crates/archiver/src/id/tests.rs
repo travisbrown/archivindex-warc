@@ -187,6 +187,36 @@ fn rejects_unreadable_identity_fields() {
     }
 }
 
+/// Segmented records are not identified, so any segment field refuses the record, including the
+/// segment number that marks the first segment of a record.
+#[test]
+fn rejects_segmented_records() {
+    for (field, name, value) in [
+        (Field::SegmentNumber, "WARC-Segment-Number", "1"),
+        (
+            Field::SegmentOriginID,
+            "WARC-Segment-Origin-ID",
+            "urn:uuid:1",
+        ),
+        (Field::SegmentTotalLength, "warc-segment-total-length", "3"),
+    ] {
+        assert!(matches!(
+            Identity::from_raw(&record("2026-01-01T00:00:00Z", &[(name, value)])),
+            Err(Error::Segmented(found)) if found == field
+        ));
+    }
+    let date = WarcDate::from(DateTime::UNIX_EPOCH);
+    let record = Record::response("https://example.org/", date)
+        .unwrap()
+        .segment_origin()
+        .body(b"abc".to_vec())
+        .unwrap();
+    assert!(matches!(
+        Identity::from_record(&record),
+        Err(Error::Segmented(Field::SegmentNumber))
+    ));
+}
+
 /// Typed capture properties and their serialized representation must give the same ID.
 #[test]
 fn typed_and_raw_records_agree() {

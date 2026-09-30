@@ -63,9 +63,9 @@ pub struct Summary {
 /// every record to `output`.
 ///
 /// References to records in the input use their final IDs, including forward references. External
-/// references retain their IDs. Records with an unsupported type or unreadable identity fields keep
-/// their own IDs with a warning; their references are still updated. All other fields and blocks
-/// are preserved, in input order.
+/// references retain their IDs. Segmented records and records with an unsupported type or
+/// unreadable identity fields keep their own IDs with a warning; their references are still
+/// updated. All other fields and blocks are preserved, in input order.
 ///
 /// The input must remain unchanged across both passes. A `.gz` path selects gzip; compressed
 /// output holds one member per record. Output is published only after every record is written.

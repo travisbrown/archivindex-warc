@@ -30,6 +30,9 @@ pub enum Error {
     /// An identity field appears more than once.
     #[error("repeated {0}")]
     RepeatedField(Field),
+    /// The record is part of a segmented record, which the scheme does not identify.
+    #[error("segmented records are not supported, but the record has {0}")]
+    Segmented(Field),
 }
 
 /// A record's identity properties, retaining its block hash rather than its block.
@@ -45,16 +48,20 @@ pub struct Identity {
 impl Identity {
     /// Read identity properties from a raw record without validating unrelated header fields.
     ///
-    /// Returns an error for an unsupported type, a missing type or date, or a malformed or repeated
-    /// identity field. URI brackets and surrounding whitespace are not part of identity.
+    /// Returns an error for an unsupported type, a segment field, a missing type or date, or a
+    /// malformed or repeated identity field. URI brackets and surrounding whitespace are not part
+    /// of identity.
     pub fn from_raw(record: &raw::Record) -> Result<Self, Error> {
         read::identity(record)
     }
 
     /// Read identity properties from a typed record without copying its content block.
     ///
-    /// Returns an error for an unsupported record type.
+    /// Returns an error for an unsupported record type or a segment number.
     pub fn from_record(record: &Record) -> Result<Self, Error> {
+        if record.segment_number().is_some() {
+            return Err(Error::Segmented(Field::SegmentNumber));
+        }
         let mut identity = Self::new(
             &record.record_type(),
             record.core().date,
