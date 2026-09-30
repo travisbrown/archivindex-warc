@@ -34,7 +34,6 @@ archivindex-warc-ops = { path = "../../crates/ops" }
 clap.workspace = true
 fluent-uri.workspace = true
 log.workspace = true
-serde = { version = "1", features = ["derive"] }
 thiserror.workspace = true
 
 [dev-dependencies]

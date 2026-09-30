@@ -133,7 +133,6 @@ dependencies = [
  "clap",
  "fluent-uri",
  "log",
- "serde",
  "tempfile",
  "thiserror 2.0.21",
 ]
