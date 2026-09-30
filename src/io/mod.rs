@@ -1,8 +1,9 @@
 //! Reading and writing WARC files.
 //!
 //! [`read::WarcReader`] reads a byte stream at any record representation level.
-//! [`write::WarcWriter`] writes records back to a byte stream. [`gzip::MemberReader`] reads a gzip
-//! file member by member, and [`read::WarcReader::from_gzip`] places records by member.
+//! [`write::WarcWriter`] writes records back to a byte stream. With the `gzip` feature,
+//! `gzip::MemberReader` reads a gzip file member by member, and `read::WarcReader::from_gzip`
+//! places records by member.
 
 use std::io::{self, BufRead, Read};
 

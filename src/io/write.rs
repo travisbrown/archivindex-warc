@@ -24,8 +24,8 @@ pub const MAX_GZIP_COMPRESSION_LEVEL: u32 = 9;
 /// The ways writing a record can fail.
 ///
 /// Writes can fail because of invalid records or I/O errors. [`Self::Raw`] indicates validation
-/// failed before any bytes were written. Compression settings can also fail validation with
-/// [`Self::InvalidGzipCompressionLevel`].
+/// failed before any bytes were written. With the `gzip` feature, compression settings can also
+/// fail validation with `Error::InvalidGzipCompressionLevel`.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The underlying write to the output stream failed.
@@ -213,7 +213,7 @@ impl<W: Write> WarcWriter<W> {
 
     /// Write a single record.
     ///
-    /// Under a gzip [`Compression`] setting the record becomes a complete, independently
+    /// With gzip compression enabled, the record becomes a complete, independently
     /// decompressible member, finished before this method returns, and the returned [`Written`]
     /// frames the compressed member.
     ///
