@@ -1,15 +1,16 @@
 //! The reason a record reports for holding less of a resource than was captured.
 
+use std::convert::Infallible;
 use std::fmt::{Display, Formatter};
 
-use crate::record::extension::{ExtensionTruncatedReason, Never};
+use crate::record::extension::ExtensionTruncatedReason;
 
 /// Why a record contains less data than the captured resource.
 ///
-/// The type parameter supplies reasons defined by an extension and defaults to [`Never`]. Tokens
+/// The type parameter supplies reasons defined by an extension and defaults to [`Infallible`]. Tokens
 /// recognized by neither the standard nor the extension are preserved in [`Self::Unknown`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TruncatedType<R = Never> {
+pub enum TruncatedType<R = Infallible> {
     /// `length`: the capture exceeded a configured maximum length.
     Length,
     /// `time`: the capture exceeded a configured maximum time.
@@ -68,8 +69,10 @@ impl<R: ExtensionTruncatedReason, S: AsRef<str>> From<S> for TruncatedType<R> {
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
+
     use super::TruncatedType;
-    use crate::record::extension::{ExtensionTruncatedReason, Never};
+    use crate::record::extension::ExtensionTruncatedReason;
 
     /// An extension reason used to test recognition and attempted redefinition.
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -93,7 +96,7 @@ mod tests {
     /// Standard reasons are parsed without regard to case.
     #[test]
     fn every_standard_reason_round_trips_through_its_token() {
-        for truncated_type in TruncatedType::<Never>::KNOWN_TYPES {
+        for truncated_type in TruncatedType::<Infallible>::KNOWN_TYPES {
             assert_eq!(
                 TruncatedType::from(truncated_type.as_str().to_uppercase()),
                 truncated_type
@@ -121,7 +124,7 @@ mod tests {
     /// Unrecognized reasons are preserved in normalized form.
     #[test]
     fn an_unrecognized_reason_is_kept() {
-        let truncated_type = TruncatedType::<Never>::from("Refused");
+        let truncated_type = TruncatedType::<Infallible>::from("Refused");
         assert_eq!(truncated_type, TruncatedType::Unknown("refused".to_owned()));
         assert_eq!(truncated_type.to_string(), "refused");
     }

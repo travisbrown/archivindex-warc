@@ -4,6 +4,7 @@
 //! reasons. [`Extension`] describes such a vocabulary at compile time. Use [`NoExtension`] for the
 //! core format alone.
 
+use std::convert::Infallible;
 use std::fmt::Debug;
 
 /// A vocabulary of record types and named fields layered on top of the core WARC format.
@@ -13,13 +14,13 @@ use std::fmt::Debug;
 pub trait Extension: Clone + Debug + Eq {
     /// The record types the extension defines.
     ///
-    /// Use [`Never`] if it defines none. Fields on extension record types remain untyped in
+    /// Use [`Infallible`] if it defines none. Fields on extension record types remain untyped in
     /// [`CoreHeaders::unrecognized`](crate::record::header::CoreHeaders::unrecognized).
     type Types: ExtensionRecordType;
 
     /// The truncation reasons the extension defines.
     ///
-    /// Use [`Never`] if it defines none.
+    /// Use [`Infallible`] if it defines none.
     type TruncatedReasons: ExtensionTruncatedReason;
 
     /// The fields the extension adds to a `warcinfo` record.
@@ -160,16 +161,11 @@ pub trait ExtensionTruncatedReason: Clone + Debug + Eq {
     fn from_reason_token(token: &str) -> Option<Self>;
 }
 
-/// An uninhabited type for extensions that define no values of an associated type.
-///
-/// This stands in for `!`, which is not yet stable as an ordinary type.
-#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
-pub enum Never {}
-
-impl ExtensionRecordType for Never {
+/// No record types, for an extension that defines none. `Infallible` stands in for `!`.
+impl ExtensionRecordType for Infallible {
     #[expect(
         clippy::uninhabited_references,
-        reason = "dereferencing proves the method unreachable, since `Never` has no values"
+        reason = "dereferencing proves the method unreachable, since `Infallible` has no values"
     )]
     fn type_name(&self) -> &str {
         match *self {}
@@ -180,10 +176,11 @@ impl ExtensionRecordType for Never {
     }
 }
 
-impl ExtensionTruncatedReason for Never {
+/// No truncation reasons, for an extension that defines none.
+impl ExtensionTruncatedReason for Infallible {
     #[expect(
         clippy::uninhabited_references,
-        reason = "dereferencing proves the method unreachable, since `Never` has no values"
+        reason = "dereferencing proves the method unreachable, since `Infallible` has no values"
     )]
     fn reason_token(&self) -> &str {
         match *self {}
@@ -199,8 +196,8 @@ impl ExtensionTruncatedReason for Never {
 pub struct NoExtension;
 
 impl Extension for NoExtension {
-    type Types = Never;
-    type TruncatedReasons = Never;
+    type Types = Infallible;
+    type TruncatedReasons = Infallible;
     type WarcinfoFields = ();
     type ResponseFields = ();
     type ResourceFields = ();

@@ -178,8 +178,10 @@ where
 
 /// A builder for a record type defined by the extension.
 ///
-/// This is unavailable under [`NoExtension`] because its [`Never`](crate::record::extension::Never)
-/// type has no values.
+/// This is unavailable under [`NoExtension`] because its record type is [`Infallible`], which has no
+/// values.
+///
+/// [`Infallible`]: std::convert::Infallible
 #[must_use]
 pub fn other<E: Extension>(date: impl Into<WarcDate>, extension: E::Types) -> OtherBuilder<E> {
     OtherBuilder::new(date, extension).into_v1_0()

@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::net::Ipv4Addr;
 
 use proptest::prelude::*;
@@ -5,7 +6,7 @@ use proptest::property_test;
 
 use super::*;
 use crate::prop;
-use crate::record::extension::{ExtensionFields, ExtensionTruncatedReason, Never, Unclaimed};
+use crate::record::extension::{ExtensionFields, ExtensionTruncatedReason, Unclaimed};
 use crate::record::header::SegmentNumber;
 use crate::value::{Encoding, Text, marker};
 
@@ -194,8 +195,8 @@ impl ExtensionFields for FileNamer {
 }
 
 impl Extension for Renaming {
-    type Types = Never;
-    type TruncatedReasons = Never;
+    type Types = Infallible;
+    type TruncatedReasons = Infallible;
     type WarcinfoFields = FileNamer;
     type ResponseFields = ();
     type ResourceFields = ();
@@ -207,8 +208,8 @@ impl Extension for Renaming {
 }
 
 impl Extension for Impersonating {
-    type Types = Never;
-    type TruncatedReasons = Never;
+    type Types = Infallible;
+    type TruncatedReasons = Infallible;
     type WarcinfoFields = SecondRecordId;
     type ResponseFields = ();
     type ResourceFields = ();
