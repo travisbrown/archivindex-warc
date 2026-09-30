@@ -459,22 +459,21 @@ fn refuses_standard_input() {
     assert!(!output.exists());
 }
 
-/// Forward references are resolved to final IDs without changing record order. Two records whose
-/// bodies agree but whose originals differ must no longer collide.
+/// Forward references are rewritten to final IDs without changing record order.
 #[test]
-fn resolves_forward_references_before_deriving_dependent_ids() {
+fn redirects_forward_references() {
     let contents = [
         record(
             "metadata",
             "urn:uuid:meta1",
             &[("WARC-Refers-To", "urn:uuid:first")],
-            "note",
+            "first note",
         ),
         record(
             "metadata",
             "urn:uuid:meta2",
             &[("WARC-Refers-To", "urn:uuid:second")],
-            "note",
+            "second note",
         ),
         record(
             "response",
@@ -514,7 +513,7 @@ fn resolves_forward_references_before_deriving_dependent_ids() {
     for record in output {
         assert_eq!(
             id_of(&record).trim(),
-            format!("<{}>", Identity::from_raw(&record).unwrap().record_id())
+            format!("<{}>", raw_record_id(&record).unwrap())
         );
     }
 }
@@ -534,46 +533,36 @@ fn source_identifier_spelling_does_not_affect_final_ids() {
     assert_eq!(left, right);
 }
 
-/// A cycle has no starting point for content-derived references. Refuse it before publication,
-/// including a self-reference, rather than emitting IDs that change on the next run.
+/// IDs never depend on references, so records that name each other, or themselves, are
+/// reidentified like any others.
 #[test]
-fn refuses_reference_cycles_without_touching_output() {
-    let directory = tempfile::tempdir().unwrap();
-    let input = directory.path().join("input.warc");
-    let output = directory.path().join("output.warc");
-    for contents in [
+fn reidentifies_reference_cycles() {
+    let contents = [
         record(
             "metadata",
             "urn:uuid:1",
             &[("WARC-Refers-To", "urn:uuid:1")],
-            "note",
+            "self",
         ),
-        [
-            record(
-                "metadata",
-                "urn:uuid:1",
-                &[("WARC-Refers-To", "urn:uuid:2")],
-                "first",
-            ),
-            record(
-                "metadata",
-                "urn:uuid:2",
-                &[("WARC-Refers-To", "urn:uuid:1")],
-                "second",
-            ),
-        ]
-        .concat(),
-    ] {
-        std::fs::write(&input, &contents).unwrap();
-        std::fs::write(&output, b"previous").unwrap();
-        assert!(matches!(
-            record_ids(&input, &output),
-            Err(Error::CyclicReferences { .. })
-        ));
-        assert_eq!(std::fs::read(&input).unwrap(), contents);
-        assert_eq!(std::fs::read(&output).unwrap(), b"previous");
-        assert!(!directory.path().join("output.warc.partial").exists());
-    }
+        record(
+            "metadata",
+            "urn:uuid:2",
+            &[("WARC-Refers-To", "urn:uuid:3")],
+            "first",
+        ),
+        record(
+            "metadata",
+            "urn:uuid:3",
+            &[("WARC-Refers-To", "urn:uuid:2")],
+            "second",
+        ),
+    ]
+    .concat();
+    let (summary, _, output) = reidentified(&contents).unwrap();
+    assert_eq!(summary.reidentified, 3);
+    assert_eq!(field(&output[0], "WARC-Refers-To"), id_of(&output[0]));
+    assert_eq!(field(&output[1], "WARC-Refers-To"), id_of(&output[2]));
+    assert_eq!(field(&output[2], "WARC-Refers-To"), id_of(&output[1]));
 }
 
 /// Concurrent records may name each other, since those links are rewritten but do not identify
@@ -599,32 +588,4 @@ fn reidentifies_records_that_name_each_other_as_concurrent() {
     assert!(id_of(&output[0]).starts_with(" <https://archivindex.org/record/"));
     assert_eq!(field(&output[0], "WARC-Concurrent-To"), id_of(&output[1]));
     assert_eq!(field(&output[1], "WARC-Concurrent-To"), id_of(&output[0]));
-}
-
-/// References to records whose IDs are retained are fixed inputs to dependent identities, even
-/// when those records point back.
-#[test]
-fn retained_ids_are_fixed_reference_targets() {
-    let contents = [
-        record(
-            "metadata",
-            "urn:uuid:1",
-            &[("WARC-Refers-To", "urn:uuid:2")],
-            "note",
-        ),
-        record(
-            "extension",
-            "urn:uuid:2",
-            &[("WARC-Refers-To", "urn:uuid:1")],
-            "body",
-        ),
-    ]
-    .concat();
-    let (_, _, output) = reidentified(&contents).unwrap();
-    assert_eq!(id_of(&output[1]), " urn:uuid:2");
-    assert_eq!(field(&output[1], "WARC-Refers-To"), id_of(&output[0]));
-    assert_eq!(
-        id_of(&output[0]).trim(),
-        format!("<{}>", Identity::from_raw(&output[0]).unwrap().record_id())
-    );
 }

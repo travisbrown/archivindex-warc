@@ -26,7 +26,7 @@ fn record(date: &str, fields: &[(&str, &str)]) -> raw::Record {
 }
 
 fn id(record: &raw::Record) -> Uri<String> {
-    Identity::from_raw(record).unwrap().record_id()
+    raw_record_id(record).unwrap()
 }
 
 /// Fixed vectors also check agreement with the typed adapter and the reidentify command.
@@ -68,7 +68,7 @@ fn dates_use_archiver_precision() {
         id(&record("2026-01-01T00:00:00.000000Z", &[]))
     );
     for date in ["1970-01-01T00:00:00Z", "9999-12-31T23:59:59.999999Z"] {
-        assert!(Identity::from_raw(&record(date, &[])).is_ok());
+        assert!(raw_record_id(&record(date, &[])).is_ok());
     }
 }
 
@@ -77,11 +77,11 @@ fn dates_use_archiver_precision() {
 fn rejects_dates_before_1970() {
     for date in ["1969-12-31T23:59:59.999999Z", "0000-01-01T00:00:00Z"] {
         assert!(matches!(
-            Identity::from_raw(&record(date, &[])),
+            raw_record_id(&record(date, &[])),
             Err(Error::InvalidField(Field::Date))
         ));
         assert!(matches!(
-            Identity::from_raw(&record(
+            raw_record_id(&record(
                 "2026-01-01T00:00:00Z",
                 &[("WARC-Refers-To-Date", date)]
             )),
@@ -102,7 +102,6 @@ fn context_fields_distinguish_records() {
             "https://example.org/a",
             "https://example.org/b",
         ),
-        ("WARC-Refers-To", "urn:uuid:1", "urn:uuid:2"),
         (
             "WARC-Profile",
             "https://example.org/a",
@@ -134,7 +133,7 @@ fn normalizes_only_incidental_spelling() {
     let first = record(
         "2026-01-01T00:00:00Z",
         &[
-            ("WARC-Refers-To", "urn:uuid:1"),
+            ("WARC-Refers-To-Target-URI", "https://example.org/original"),
             ("WARC-Target-URI", "https://example.org/"),
         ],
     );
@@ -142,15 +141,18 @@ fn normalizes_only_incidental_spelling() {
         "2026-01-01T00:00:00Z",
         &[
             ("warc-target-uri", "<https://example.org/>"),
-            ("warc-refers-to", "<urn:uuid:1>"),
+            (
+                "warc-refers-to-target-uri",
+                "<https://example.org/original>",
+            ),
         ],
     );
     assert_eq!(id(&first), id(&second));
 }
 
 /// The source record ID, packaging, and digest configuration do not identify a capture. Neither
-/// do the collection context and concurrent records, so rewriting a file under a new `warcinfo`
-/// record keeps its IDs, and concurrent records may name each other without forming a cycle.
+/// do references to other records, so an ID never waits on another record's ID, and rewriting a
+/// file under a new `warcinfo` record keeps its IDs.
 #[test]
 fn ignores_fields_outside_archivindex_identity() {
     assert_eq!(
@@ -164,6 +166,7 @@ fn ignores_fields_outside_archivindex_identity() {
                 ("WARC-Payload-Digest", "sha256:BBBB"),
                 ("WARC-IP-Address", "127.0.0.1"),
                 ("WARC-Warcinfo-ID", "urn:uuid:2"),
+                ("WARC-Refers-To", "urn:uuid:5"),
                 ("WARC-Concurrent-To", "urn:uuid:3"),
                 ("WARC-Concurrent-To", "urn:uuid:4"),
                 ("X-Annotation", "one"),
@@ -176,24 +179,24 @@ fn ignores_fields_outside_archivindex_identity() {
 #[test]
 fn rejects_unreadable_identity_fields() {
     for (field, value) in [
-        ("WARC-Refers-To", "not a uri"),
+        ("WARC-Target-URI", "not a uri"),
         ("WARC-Refers-To-Date", "yesterday"),
     ] {
-        assert!(Identity::from_raw(&record("2026-01-01T00:00:00Z", &[(field, value)])).is_err());
+        assert!(raw_record_id(&record("2026-01-01T00:00:00Z", &[(field, value)])).is_err());
     }
     assert!(matches!(
-        Identity::from_raw(&record(
+        raw_record_id(&record(
             "2026-01-01T00:00:00Z",
             &[
-                ("WARC-Refers-To", "urn:uuid:1"),
-                ("WARC-Refers-To", "urn:uuid:2"),
+                ("WARC-Target-URI", "https://example.org/a"),
+                ("WARC-Target-URI", "https://example.org/b"),
             ]
         )),
-        Err(Error::RepeatedField(Field::RefersTo))
+        Err(Error::RepeatedField(Field::TargetURI))
     ));
     for record_type in ["resource", "conversion", "continuation", "extension"] {
         assert!(matches!(
-            Identity::from_raw(&raw(
+            raw_record_id(&raw(
                 &[
                     ("WARC-Type", record_type),
                     ("WARC-Date", "2026-01-01T00:00:00Z")
@@ -219,7 +222,7 @@ fn rejects_segmented_records() {
         (Field::SegmentTotalLength, "warc-segment-total-length", "3"),
     ] {
         assert!(matches!(
-            Identity::from_raw(&record("2026-01-01T00:00:00Z", &[(name, value)])),
+            raw_record_id(&record("2026-01-01T00:00:00Z", &[(name, value)])),
             Err(Error::Segmented(found)) if found == field
         ));
     }
@@ -230,7 +233,7 @@ fn rejects_segmented_records() {
         .body(b"abc".to_vec())
         .unwrap();
     assert!(matches!(
-        Identity::from_record(&record),
+        record_id(&record),
         Err(Error::Segmented(Field::SegmentNumber))
     ));
 }
@@ -245,7 +248,7 @@ fn typed_and_raw_records_agree() {
         .concurrent_to(Uri::parse("urn:uuid:request".to_owned()).unwrap())
         .body(b"abc".to_vec())
         .unwrap();
-    let typed = Identity::from_record(&record).unwrap().record_id();
+    let typed = record_id(&record).unwrap();
     assert_eq!(typed, id(&record.into_raw().unwrap()));
     assert_eq!(
         WarcDate::parse("2026-01-01T00:00:00Z", WarcVersion::V1_0),
@@ -274,7 +277,7 @@ fn context_fixed_vector() {
     );
     assert_eq!(
         id(&revisit).as_str(),
-        "https://archivindex.org/record/f83a58716fcd2dcec26731a773eb8af94083727b73f9d35197368a9484a33b92"
+        "https://archivindex.org/record/4602eb3148722334faa2aad12bc9b5f51dc21c1eeaaa08eaad0ab4c1eec392cf"
     );
 }
 

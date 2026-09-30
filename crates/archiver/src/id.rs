@@ -1,9 +1,9 @@
 //! Content-derived record IDs.
 //!
 //! Version 1 hashes the record type, date at microsecond precision, SHA-256 of its stored block,
-//! target URI, revisit profile and original capture coordinates, and the `WARC-Refers-To`
-//! reference, which must name its final identifier. See the crate README for the byte format and
-//! the fields intentionally excluded from identity.
+//! target URI, and a revisit's profile and original capture coordinates. An ID depends only on its
+//! own record. See the crate README for the byte format and the fields intentionally excluded from
+//! identity.
 
 use archivindex_warc::parse::raw;
 use archivindex_warc::parse::untyped::name::Field;
@@ -36,94 +36,57 @@ pub enum Error {
     Segmented(Field),
 }
 
-/// A record's identity properties, retaining its block hash rather than its block.
+/// Derive the ID of a typed record.
 ///
-/// This permits planning reference updates without keeping content blocks in memory. Construct
-/// from a typed or raw record, then derive its identifier after the referenced IDs are known.
-#[derive(Clone, Debug)]
-pub struct Identity {
-    hash: Sha256,
-    refers_to: Option<String>,
+/// # Errors
+///
+/// Fails for an unsupported record type, a segment number, or a date before 1970.
+pub fn record_id(record: &Record) -> Result<Uri<String>, Error> {
+    if record.segment_number().is_some() {
+        return Err(Error::Segmented(Field::SegmentNumber));
+    }
+    let mut preimage = Preimage::new(
+        &record.record_type(),
+        record.core().date,
+        &record.body_bytes(),
+    )?;
+    preimage.optional(1, record.target_uri().map(|uri| uri.as_str().as_bytes()));
+    if let Record::Revisit { header, .. } = record {
+        preimage.field(2, header.profile.to_string().as_bytes());
+        preimage.optional(
+            3,
+            header
+                .refers_to_target_uri
+                .as_ref()
+                .map(|uri| uri.as_str().as_bytes()),
+        );
+        preimage.optional(
+            4,
+            header
+                .refers_to_date
+                .map(|date| date_bytes(date, Field::RefersToDate))
+                .transpose()?,
+        );
+    }
+    Ok(preimage.finish())
 }
 
-impl Identity {
-    /// Read identity properties from a raw record without validating unrelated header fields.
-    ///
-    /// Returns an error for an unsupported type, a segment field, a missing type or date, or a
-    /// malformed or repeated identity field. URI brackets and surrounding whitespace are not part
-    /// of identity.
-    pub fn from_raw(record: &raw::Record) -> Result<Self, Error> {
-        read::identity(record)
-    }
+/// Derive the ID of a raw record without validating unrelated header fields.
+///
+/// URI brackets and surrounding whitespace are not part of identity.
+///
+/// # Errors
+///
+/// Fails for an unsupported type, a segment field, a missing type or date, or a malformed or
+/// repeated identity field.
+pub fn raw_record_id(record: &raw::Record) -> Result<Uri<String>, Error> {
+    read::record_id(record)
+}
 
-    /// Read identity properties from a typed record without copying its content block.
-    ///
-    /// Returns an error for an unsupported record type or a segment number.
-    pub fn from_record(record: &Record) -> Result<Self, Error> {
-        if record.segment_number().is_some() {
-            return Err(Error::Segmented(Field::SegmentNumber));
-        }
-        let mut identity = Self::new(
-            &record.record_type(),
-            record.core().date,
-            &record.body_bytes(),
-        )?;
-        identity.optional(1, record.target_uri().map(|uri| uri.as_str().as_bytes()));
-        if let Record::Revisit { header, .. } = record {
-            identity.field(2, header.profile.to_string().as_bytes());
-            identity.optional(
-                3,
-                header
-                    .refers_to_target_uri
-                    .as_ref()
-                    .map(|uri| uri.as_str().as_bytes()),
-            );
-            identity.optional(
-                4,
-                header
-                    .refers_to_date
-                    .map(|date| date_bytes(date, Field::RefersToDate))
-                    .transpose()?,
-            );
-        }
-        identity.refers_to = record.refers_to().map(|uri| uri.as_str().to_owned());
-        Ok(identity)
-    }
+/// The hash of a record's identity properties, fed in the order the scheme defines.
+struct Preimage(Sha256);
 
-    /// The IDs this record's identity depends on.
-    pub fn references(&self) -> impl Iterator<Item = &str> {
-        self.refers_to.as_deref().into_iter()
-    }
-
-    /// Derive an ID using the references as read.
-    #[must_use]
-    pub fn record_id(&self) -> Uri<String> {
-        self.record_id_with_references(|_| None)
-    }
-
-    /// Derive an ID using final reference IDs supplied by `resolve`.
-    ///
-    /// Returning `None` keeps a reference as read, for example when its target is in another file.
-    #[must_use]
-    #[expect(
-        clippy::missing_panics_doc,
-        reason = "the ID is a hex path under a fixed HTTPS prefix"
-    )]
-    pub fn record_id_with_references<'a>(
-        &self,
-        mut resolve: impl FnMut(&str) -> Option<&'a str>,
-    ) -> Uri<String> {
-        let mut hash = self.hash.clone();
-        if let Some(id) = &self.refers_to {
-            field(&mut hash, 5, resolve(id).unwrap_or(id).as_bytes());
-        }
-        Uri::parse(format!(
-            "https://archivindex.org/record/{}",
-            data_encoding::HEXLOWER.encode(&hash.finalize())
-        ))
-        .expect("the record ID is a valid HTTPS URI")
-    }
-
+impl Preimage {
     fn new(record_type: &RecordType, date: WarcDate, block: &[u8]) -> Result<Self, Error> {
         if !matches!(
             record_type,
@@ -139,20 +102,25 @@ impl Identity {
         hash.update([VERSION, record_type.canonical_rank() + 1]);
         hash.update(date_bytes(date, Field::Date)?);
         hash.update(Sha256::digest(block));
-        Ok(Self {
-            hash,
-            refers_to: None,
-        })
+        Ok(Self(hash))
     }
 
     fn field(&mut self, tag: u8, value: &[u8]) {
-        field(&mut self.hash, tag, value);
+        field(&mut self.0, tag, value);
     }
 
     fn optional(&mut self, tag: u8, value: Option<impl AsRef<[u8]>>) {
         if let Some(value) = value {
             self.field(tag, value.as_ref());
         }
+    }
+
+    fn finish(self) -> Uri<String> {
+        Uri::parse(format!(
+            "https://archivindex.org/record/{}",
+            data_encoding::HEXLOWER.encode(&self.0.finalize())
+        ))
+        .expect("the record ID is a valid HTTPS URI")
     }
 }
 

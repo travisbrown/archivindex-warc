@@ -1,6 +1,6 @@
 //! Shared support for integration tests: WARC readback and payload digests.
 
-use archivindex_archiver::id::Identity;
+use archivindex_archiver::id::{raw_record_id, record_id};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::Record;
 use archivindex_warc::record::extension::NoExtension;
@@ -19,12 +19,10 @@ pub fn records(bytes: &[u8]) -> Result<Vec<Record>, archivindex_warc::io::read::
         .records()
         .collect::<Result<_, _>>()?;
     for record in &records {
-        let expected = Identity::from_record(record).unwrap().record_id();
+        let expected = record_id(record).unwrap();
         assert_eq!(record.core().record_id, expected);
         assert_eq!(
-            Identity::from_raw(&record.clone().into_raw().unwrap())
-                .unwrap()
-                .record_id(),
+            raw_record_id(&record.clone().into_raw().unwrap()).unwrap(),
             expected
         );
     }

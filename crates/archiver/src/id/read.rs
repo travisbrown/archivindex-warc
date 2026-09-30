@@ -6,9 +6,9 @@ use archivindex_warc::record::record_type::RecordType;
 use archivindex_warc::value::WarcDate;
 use fluent_uri::Uri;
 
-use super::{Error, Identity, date_bytes};
+use super::{Error, Preimage, date_bytes};
 
-pub(super) fn identity(record: &raw::Record) -> Result<Identity, Error> {
+pub(super) fn record_id(record: &raw::Record) -> Result<Uri<String>, Error> {
     let header = &record.header;
     let record_type = text(header, Field::WarcType)?.ok_or(Error::InvalidField(Field::WarcType))?;
     let record_date = date(header, Field::Date)?.ok_or(Error::InvalidField(Field::Date))?;
@@ -26,18 +26,17 @@ pub(super) fn identity(record: &raw::Record) -> Result<Identity, Error> {
     }) {
         return Err(Error::Segmented(field));
     }
-    let mut identity = Identity::new(&RecordType::from(record_type), record_date, &record.body)?;
-    identity.optional(1, uri(header, Field::TargetURI)?.map(str::as_bytes));
-    identity.optional(2, uri(header, Field::Profile)?.map(str::as_bytes));
-    identity.optional(3, uri(header, Field::RefersToTargetURI)?.map(str::as_bytes));
-    identity.optional(
+    let mut preimage = Preimage::new(&RecordType::from(record_type), record_date, &record.body)?;
+    preimage.optional(1, uri(header, Field::TargetURI)?.map(str::as_bytes));
+    preimage.optional(2, uri(header, Field::Profile)?.map(str::as_bytes));
+    preimage.optional(3, uri(header, Field::RefersToTargetURI)?.map(str::as_bytes));
+    preimage.optional(
         4,
         date(header, Field::RefersToDate)?
             .map(|date| date_bytes(date, Field::RefersToDate))
             .transpose()?,
     );
-    identity.refers_to = uri(header, Field::RefersTo)?.map(str::to_owned);
-    Ok(identity)
+    Ok(preimage.finish())
 }
 
 fn value(header: &raw::RecordHeader, field: Field) -> Result<Option<&[u8]>, Error> {

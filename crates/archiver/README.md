@@ -67,8 +67,8 @@ retain their UUID defaults.
 ### Identity policy
 
 A record's identity includes its type, capture date, stored content block, and target URI. A
-revisit's profile and original capture (its URI, date, and `WARC-Refers-To` ID) distinguish what its
-stored block represents.
+revisit's profile and original capture (its URI and date) distinguish what its stored block
+represents.
 
 Dates use unsigned Unix **microseconds**, matching the archiver's capture precision. The archiver
 never writes a date before 1970, so such dates are refused. Finer input precision is truncated
@@ -76,15 +76,12 @@ toward the earlier microsecond. Date spelling and declared precision do not affe
 and `.123000Z` identify the same instant, and a reduced-precision date uses the beginning of its
 period. The same rules apply to `WARC-Refers-To-Date`.
 
-`WARC-Refers-To` contributes the final ID of the record it names. The archiver writes a revisit only
-after the original it refers to, so no ID it assigns depends on a later record. External references
-are taken as supplied. Renaming the old IDs within a file does not change the IDs derived when all
-their targets are reidentified together.
-
-`WARC-Warcinfo-ID` and `WARC-Concurrent-To` are excluded. The capture date, target URI, and block
-already distinguish captures, so these fields would add no uniqueness. Excluding them means a record
-keeps its ID when it is rewritten under a different `warcinfo` record, and concurrent records may
-name each other in either direction without forming a cycle.
+An ID depends only on its own record. References to other records (`WARC-Refers-To`,
+`WARC-Warcinfo-ID`, and `WARC-Concurrent-To`) are excluded. The capture date, target URI, and block
+already distinguish captures, and a revisit names its original by capture date and target URI.
+Excluding references means IDs can be derived in any order, a record keeps its ID when it is
+rewritten under a different `warcinfo` record or when the records it names are reidentified, and
+records may name each other without forming a cycle.
 
 The block hash is always SHA-256 of the complete stored WARC content block. A revisit hashes its own
 stored block. Declared block and payload digests are excluded, so changing digest algorithms or
@@ -115,13 +112,12 @@ Each present field is encoded as its `u8` tag, a `u64` byte length, and that man
 Absent fields contribute no bytes. Fields appear in ascending tag order. No field count or
 terminator is added.
 
-| Tag | Field                       | Value encoding            |
-| --- | --------------------------- | ------------------------- |
-| 1   | `WARC-Target-URI`           | Exact URI bytes           |
-| 2   | `WARC-Profile`              | Exact URI bytes           |
-| 3   | `WARC-Refers-To-Target-URI` | Exact URI bytes           |
-| 4   | `WARC-Refers-To-Date`       | `u64`, Unix microseconds  |
-| 5   | `WARC-Refers-To`            | Final record ID URI bytes |
+| Tag | Field                       | Value encoding           |
+| --- | --------------------------- | ------------------------ |
+| 1   | `WARC-Target-URI`           | Exact URI bytes          |
+| 2   | `WARC-Profile`              | Exact URI bytes          |
+| 3   | `WARC-Refers-To-Target-URI` | Exact URI bytes          |
+| 4   | `WARC-Refers-To-Date`       | `u64`, Unix microseconds |
 
 URI brackets and surrounding header whitespace are excluded. URI spelling is otherwise exact,
 including percent escapes. Header name case and header order do not affect identity. A malformed or

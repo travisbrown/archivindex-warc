@@ -92,15 +92,13 @@ archivindex-archiver reidentify --input input.warc.gz --output output.warc.gz
 
 Replaces each identifiable record's `WARC-Record-ID` with the identifier the
 [Archivindex scheme](../../crates/archiver/README.md#record-ids) assigns. Identity includes the
-capture date at microsecond precision, stored block, target URI, and revisit context, including the
-record named by `WARC-Refers-To`. Applying the command to its own output preserves the record IDs
-and references.
+capture date at microsecond precision, stored block, target URI, and revisit context, and never
+depends on another record. Applying the command to its own output preserves the record IDs and
+references.
 
 Every `WARC-Warcinfo-ID`, `WARC-Refers-To`, `WARC-Concurrent-To`, and `WARC-Segment-Origin-ID`
-naming a record in the file is updated to that record's final ID. Forward references are supported.
-The command resolves dependencies before writing, so the new IDs describe the references actually
-written. A reference to a record outside the file remains unchanged. A `WARC-Refers-To` reference
-of that kind contributes its existing ID to identity.
+naming a record in the file is updated to that record's final ID. Forward references are supported,
+and records may name each other. A reference to a record outside the file remains unchanged.
 
 A record carrying no `WARC-Record-ID` is given one. A record of a type the archiver never writes
 (`resource`, `conversion`, `continuation`, or an extension type), a record with a segment field,
@@ -109,16 +107,11 @@ warning. References in these records are still updated. Every other field, every
 record order are preserved.
 
 The input is read twice and must remain unchanged during the operation; it cannot be standard input.
-The first pass retains identity data and reference dependencies, not content blocks. A `.gz`
-extension selects gzip compression for either path; output uses one gzip member per record.
+The first pass retains identifiers, not content blocks. A `.gz` extension selects gzip compression
+for either path; output uses one gzip member per record.
 
-The command refuses duplicate input IDs, colliding output IDs, and cycles among records whose IDs
-would be derived (including self-references). Hashing a cycle would require each ID to be known
-before itself, so these files cannot be reidentified under this scheme. The archiver writes
-dependencies without cycles. Records whose IDs are retained provide fixed reference targets. All
-these checks run before the output is created or replaced.
+The command refuses duplicate input IDs and colliding output IDs before the output is created or
+replaced.
 
-References from other files and entries in revisit indexes are not updated. Because reference IDs
-contribute to identity, changing an external reference also changes the referring record's ID and
-potentially its dependents. Process related records together where possible. Rebuild affected
-indexes and update external dependents before replacing archives they name.
+References from other files and entries in revisit indexes are not updated. Rebuild affected
+indexes and update external references before replacing archives they name.

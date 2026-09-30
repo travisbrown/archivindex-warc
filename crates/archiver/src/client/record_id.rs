@@ -2,13 +2,12 @@
 
 use archivindex_warc::record::Record;
 
-use crate::id::Identity;
+use crate::id;
 
 /// Assign an ID before creating links to this record or persisting its revisit target.
 pub(super) fn assign_record_id(record: &mut Record) -> std::io::Result<()> {
-    let id = Identity::from_record(record)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?
-        .record_id();
+    let id = id::record_id(record)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
 
     record.core_mut().record_id = id;
 

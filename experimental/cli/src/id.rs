@@ -1,11 +1,10 @@
 //! Rewrite the records of a WARC file to use content-derived identifiers.
 //!
-//! References are resolved before IDs are derived, so each ID describes the relationships written
-//! to the output. Records remain in input order; only their IDs and record references change.
+//! Records remain in input order; only their IDs and record references change.
 
 use std::path::Path;
 
-use archivindex_archiver::id::Identity;
+use archivindex_archiver::id::raw_record_id;
 use archivindex_warc::parse::raw;
 use archivindex_warc::parse::untyped::name::Field;
 use archivindex_warc_ops::file::{compression, is_stdin, transform};
@@ -33,15 +32,6 @@ pub enum Error {
     RepeatedRecordId {
         /// The identifier the records are written with.
         id: String,
-    },
-
-    /// References among identifiable records form a cycle.
-    #[error(
-        "cannot derive IDs for cyclic references (record {record} is in or depends on a cycle)"
-    )]
-    CyclicReferences {
-        /// The zero-based index of an unresolved record.
-        record: usize,
     },
 }
 
@@ -72,9 +62,9 @@ pub struct Summary {
 ///
 /// # Errors
 ///
-/// Refuses duplicate input IDs, colliding output IDs, and cyclic dependencies among identifiable
-/// records before creating output. Also fails for standard input, identical input and output paths,
-/// or an error reading, writing, or publishing a file.
+/// Refuses duplicate input IDs and colliding output IDs before creating output. Also fails for
+/// standard input, identical input and output paths, or an error reading, writing, or publishing a
+/// file.
 pub fn record_ids(input: &Path, output: &Path) -> Result<Summary> {
     if is_stdin(input) {
         return Err(archivindex_warc_ops::Error::StandardInputReadTwice.into());
@@ -89,9 +79,8 @@ pub fn record_ids(input: &Path, output: &Path) -> Result<Summary> {
         compression(output),
         |index, mut record| {
             redirect_references(&mut record.header, &redirects);
-            match Identity::from_raw(&record) {
-                Ok(identity) => {
-                    let id = identity.record_id();
+            match raw_record_id(&record) {
+                Ok(id) => {
                     set_record_id(&mut record.header, &id);
                     reidentified += 1;
                 }
