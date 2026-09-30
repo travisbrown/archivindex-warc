@@ -1093,3 +1093,34 @@ fn identical_revisit_with_a_head_clears_omitted_validators() -> Result<(), Box<d
     assert_eq!(state.record_id, Some(uri(RECORD_A)));
     Ok(())
 }
+
+/// A confirmation can refer to an earlier representation than the most recently loaded response.
+/// Its validators must never be attached to that unrelated response's payload.
+#[test]
+fn not_modified_revisit_respects_its_explicit_original() -> Result<(), Box<dyn StdError>> {
+    let index = Index::open_in_memory()?;
+    index.index_record(&response(
+        URI_A,
+        RECORD_B,
+        "2025-01-02T00:00:00Z",
+        "ETag: \"b\"\r\n",
+        b"different",
+    )?)?;
+    let revisit = Record::<NoExtension>::revisit(
+        URI_A,
+        date("2025-01-03T00:00:00Z"),
+        RevisitProfile::SERVER_NOT_MODIFIED,
+    )?
+    .payload_digest(sha256(b"original"))
+    .refers_to(uri(RECORD_A))
+    .refers_to_target_uri(uri(URI_A))
+    .refers_to_date(date("2025-01-01T00:00:00Z"))
+    .body(b"HTTP/1.1 304 Not Modified\r\nETag: \"a\"\r\n\r\n".to_vec())?;
+
+    assert!(index.index_record(&revisit)?.resource_updated);
+    let state = index.lookup_resource(&key(URI_A))?.unwrap();
+    assert_eq!(state.record_id, Some(uri(RECORD_A)));
+    assert_eq!(state.payload_digest, Some(sha256(b"original")));
+    assert_eq!(state.etag.as_deref(), Some("\"a\""));
+    Ok(())
+}

@@ -82,8 +82,8 @@ impl<C: Handle> Store<C> {
     /// explicit `WARC-Refers-To` fields. Only HTTP 200 or empty-block identical-payload revisits
     /// update resource state. An empty block retains metadata when the digest matches the stored
     /// representation; a complete head replaces its validators. `server-not-modified` revisits
-    /// retain the representation identity and
-    /// update only its validators.
+    /// retain matching representation state and update its validators. Explicit references to a
+    /// different original replace the stored identity without inheriting its validators.
     ///
     /// A record whose own `WARC-Payload-Digest` names an algorithm this crate does not know, holds
     /// a value that does not decode to that algorithm's digest length, or differs from the digest
@@ -285,7 +285,26 @@ fn index_revisit<E: Extension>(
             )?
         }
         RevisitProfile::ServerNotModified(_) => {
-            if lookup_resource(connection, &key)?.is_some() {
+            let stored = lookup_resource(connection, &key)?;
+            // Archives may be loaded out of capture order or include different representations
+            // of one URI. A confirmation applies only to the original it names.
+            let confirms_stored = stored.as_ref().is_some_and(|stored| {
+                header
+                    .payload
+                    .payload_digest
+                    .as_ref()
+                    .is_none_or(|digest| stored.payload_digest.as_ref() == Some(digest))
+                    && header
+                        .refers_to
+                        .as_ref()
+                        .is_none_or(|id| stored.record_id.as_ref() == Some(id))
+                    && header.refers_to_date.is_none_or(|date| {
+                        stored
+                            .warc_date
+                            .is_some_and(|stored| stored.date_time() == date.date_time())
+                    })
+            });
+            if confirms_stored {
                 update_resource(
                     connection,
                     &key,
