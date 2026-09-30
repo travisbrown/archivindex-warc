@@ -1,5 +1,13 @@
 //! Configuration types and defaults for the archiving client.
 
+// Deriving `Deserialize` for `BuiltinBackend::Recorder {}` generates an empty field enum, which
+// the lint cannot see past from the enum itself. A unit variant would avoid it, but serde does not
+// refuse unknown keys for unit variants.
+#![expect(
+    clippy::empty_enums,
+    reason = "serde generates an empty field enum for a fieldless struct variant"
+)]
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -306,7 +314,7 @@ mod tests {
 
     use archivindex_warc::value::{Algorithm, DigestFormat, Encoding};
 
-    use super::{DigestConfig, DigestFormats, DigestOverride, Operator, Software};
+    use super::{BuiltinBackend, DigestConfig, DigestFormats, DigestOverride, Operator, Software};
     use crate::Config;
     use crate::backend::{DEFAULT_MAX_RESPONSE_LENGTH, DEFAULT_TIMEOUT};
 
@@ -405,6 +413,26 @@ mod tests {
         };
 
         assert_eq!(config.formats().block.encoding, Encoding::Base32);
+    }
+
+    /// A backend is named by its `type`, and a key the named backend does not define is refused.
+    #[test]
+    fn a_document_names_a_builtin_backend() {
+        let config = serde_json::from_str::<Config>(r#"{"backend": {"type": "recorder"}}"#)
+            .expect("a configuration");
+        assert_eq!(config.backend, BuiltinBackend::Recorder {});
+        for document in [
+            r#"{"backend": {"type": "recorder", "unknown": 1}}"#,
+            r#"{"backend": {"type": "unknown"}}"#,
+            r#"{"backend": {}}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Config>(document).is_err(),
+                "{document}"
+            );
+        }
+        let written = serde_json::to_value(Config::default()).expect("a serialized configuration");
+        assert_eq!(written["backend"], serde_json::json!({"type": "recorder"}));
     }
 
     #[test]
