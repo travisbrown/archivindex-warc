@@ -26,6 +26,10 @@ command-line application under [`tools`](tools/). The [`validator`](validator/) 
 trees do not constrain the workspace. The archiver's command-line tool and its alternative
 capture backends live in the latter.
 
+The [`archivindex-archiver` package](crates/archiver/) captures HTTP exchanges into WARC files. Its
+README describes usage and the [record ID scheme](crates/archiver/README.md#record-ids) its records
+use.
+
 ## Development
 
 The workspace requires Rust 1.88 or later and needs nothing extra. The archiver's command-line

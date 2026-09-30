@@ -17,6 +17,7 @@ pub mod collection;
 pub mod cookies;
 pub mod outcome;
 mod pool;
+mod record_id;
 mod warc_fields;
 mod warc_mapping;
 

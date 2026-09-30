@@ -40,6 +40,7 @@
 //!
 //! * [`backend`]: the capture backend interface and the contract every backend shares
 //! * [`capture`]: what a capture run reports and observes
+//! * [`id`]: the content-derived record IDs assigned to captured records
 //! * [`recorder`]: the built-in backend, capturing live HTTP exchanges byte for byte
 //! * [`session`]: driver-steered crawl sessions
 
@@ -48,6 +49,7 @@ pub mod capture;
 mod client;
 pub mod config;
 mod http_date;
+pub mod id;
 pub mod recorder;
 pub mod session;
 

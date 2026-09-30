@@ -2001,7 +2001,8 @@ fn session_refuses_an_existing_output() -> Result<(), Box<dyn std::error::Error>
 
 #[test]
 fn warcinfo_records_the_proxy_without_credentials() -> Result<(), Box<dyn std::error::Error>> {
-    // Empty runs exercise both warcinfo construction paths without contacting a proxy.
+    // Empty runs exercise both warcinfo construction paths without contacting a proxy. Reading
+    // them back also checks that record identifiers cover the added field.
     for (proxy, expected) in [
         (None, None),
         (
