@@ -85,9 +85,6 @@ fn context_fields_distinguish_records() {
             "https://example.org/b",
         ),
         ("WARC-Refers-To", "urn:uuid:1", "urn:uuid:2"),
-        ("WARC-Segment-Origin-ID", "urn:uuid:1", "urn:uuid:2"),
-        ("WARC-Segment-Number", "1", "2"),
-        ("WARC-Segment-Total-Length", "12", "13"),
         (
             "WARC-Profile",
             "https://example.org/a",
@@ -112,21 +109,21 @@ fn context_fields_distinguish_records() {
     }
 }
 
-/// Header name case, header order, URI brackets, and decimal padding are incidental, and all
-/// header values remain unchanged in stored records.
+/// Header name case, header order, and URI brackets are incidental, and all header values remain
+/// unchanged in stored records.
 #[test]
 fn normalizes_only_incidental_spelling() {
     let first = record(
         "2026-01-01T00:00:00Z",
         &[
             ("WARC-Refers-To", "urn:uuid:1"),
-            ("WARC-Segment-Number", "2"),
+            ("WARC-Target-URI", "https://example.org/"),
         ],
     );
     let second = record(
         "2026-01-01T00:00:00Z",
         &[
-            ("warc-segment-number", "002"),
+            ("warc-target-uri", "<https://example.org/>"),
             ("warc-refers-to", "<urn:uuid:1>"),
         ],
     );
@@ -162,9 +159,6 @@ fn ignores_fields_outside_archivindex_identity() {
 fn rejects_unreadable_identity_fields() {
     for (field, value) in [
         ("WARC-Refers-To", "not a uri"),
-        ("WARC-Segment-Number", "+2"),
-        ("WARC-Segment-Number", "0"),
-        ("WARC-Segment-Total-Length", "18446744073709551616"),
         ("WARC-Refers-To-Date", "yesterday"),
     ] {
         assert!(Identity::from_raw(&record("2026-01-01T00:00:00Z", &[(field, value)])).is_err());
@@ -179,61 +173,47 @@ fn rejects_unreadable_identity_fields() {
         )),
         Err(Error::RepeatedField(Field::RefersTo))
     ));
-    assert!(matches!(
-        Identity::from_raw(&raw(
-            &[
-                ("WARC-Type", "extension"),
-                ("WARC-Date", "2026-01-01T00:00:00Z")
-            ],
-            ""
-        )),
-        Err(Error::UnknownRecordType(_))
-    ));
+    for record_type in ["continuation", "extension"] {
+        assert!(matches!(
+            Identity::from_raw(&raw(
+                &[
+                    ("WARC-Type", record_type),
+                    ("WARC-Date", "2026-01-01T00:00:00Z")
+                ],
+                ""
+            )),
+            Err(Error::UnsupportedRecordType(_))
+        ));
+    }
 }
 
 /// Typed capture properties and their serialized representation must give the same ID.
 #[test]
 fn typed_and_raw_records_agree() {
     let date = WarcDate::from(DateTime::from_timestamp_micros(-1_234_001).unwrap());
-    let records = [
-        Record::response("https://example.org/", date)
-            .unwrap()
-            .warcinfo_id(Uri::parse("urn:uuid:info".to_owned()).unwrap())
-            .concurrent_to(Uri::parse("urn:uuid:request".to_owned()).unwrap())
-            .segment_origin()
-            .body(b"abc".to_vec())
-            .unwrap(),
-        Record::continuation(
-            "https://example.org/",
-            date,
-            2,
-            Uri::parse("urn:uuid:origin".to_owned()).unwrap(),
-        )
+    let record = Record::response("https://example.org/", date)
         .unwrap()
-        .segment_total_length(6)
+        .warcinfo_id(Uri::parse("urn:uuid:info".to_owned()).unwrap())
+        .concurrent_to(Uri::parse("urn:uuid:request".to_owned()).unwrap())
         .body(b"abc".to_vec())
-        .unwrap(),
-    ];
-    for record in records {
-        let typed = Identity::from_record(&record).unwrap().record_id();
-        assert_eq!(typed, id(&record.into_raw().unwrap()));
-    }
+        .unwrap();
+    let typed = Identity::from_record(&record).unwrap().record_id();
+    assert_eq!(typed, id(&record.into_raw().unwrap()));
     assert_eq!(
         WarcDate::parse("2026-01-01T00:00:00Z", WarcVersion::V1_0),
         WarcDate::parse("2026-01-01T00:00:00Z", WarcVersion::V1_1)
     );
 }
 
-/// These vectors fix the context tags, numeric encodings, and reference suffix. Expected
-/// digests were computed independently with Python's hashlib and big-endian struct packing.
+/// This vector fixes the context tags, numeric encodings, and reference suffix. The expected
+/// digest was computed independently with Python's hashlib and big-endian struct packing.
 #[test]
-fn context_fixed_vectors() {
+fn context_fixed_vector() {
     let revisit = raw(
         &[
             ("WARC-Type", "revisit"),
             ("WARC-Date", "1969-12-31T23:59:58.765999Z"),
             ("WARC-Target-URI", "https://example.org/"),
-            ("WARC-Segment-Number", "1"),
             (
                 "WARC-Profile",
                 "http://netpreserve.org/warc/1.1/revisit/server-not-modified",
@@ -246,22 +226,7 @@ fn context_fixed_vectors() {
     );
     assert_eq!(
         id(&revisit).as_str(),
-        "https://archivindex.org/record/af01ad9c3365396c9252f7d7086f534e43a20ce0c646c77aa4400973c14ed64c"
-    );
-    let continuation = raw(
-        &[
-            ("WARC-Type", "continuation"),
-            ("WARC-Date", "1969-12-31T23:59:58.765999Z"),
-            ("WARC-Target-URI", "https://example.org/"),
-            ("WARC-Segment-Number", "2"),
-            ("WARC-Segment-Total-Length", "6"),
-            ("WARC-Segment-Origin-ID", "urn:uuid:origin"),
-        ],
-        "abc",
-    );
-    assert_eq!(
-        id(&continuation).as_str(),
-        "https://archivindex.org/record/c6b3f837074b9905977453fd71217107fd51772c0df46627973a824fb8c5a448"
+        "https://archivindex.org/record/5ab6792ea30512afa07a8832de346e7a96b742b812d03fc443188b00d410d12a"
     );
 }
 

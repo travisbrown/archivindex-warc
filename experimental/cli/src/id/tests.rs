@@ -136,7 +136,7 @@ fn redirects_every_reference_to_a_reidentified_record() {
             "<urn:uuid:4>",
             &[
                 ("WARC-Refers-To", "<urn:uuid:3>"),
-                ("WARC-Segment-Origin-ID", "<urn:uuid:9>"),
+                ("WARC-Concurrent-To", "<urn:uuid:9>"),
                 ("WARC-Target-URI", "https://example.org/again"),
             ],
             "",
@@ -157,7 +157,7 @@ fn redirects_every_reference_to_a_reidentified_record() {
     assert_eq!(field(&output[2], "WARC-Concurrent-To"), id_of(&output[1]));
     assert_eq!(field(&output[3], "WARC-Refers-To"), id_of(&output[2]));
     // Nothing in the file is written with this identifier, so it is left as read.
-    assert_eq!(field(&output[3], "WARC-Segment-Origin-ID"), " <urn:uuid:9>");
+    assert_eq!(field(&output[3], "WARC-Concurrent-To"), " <urn:uuid:9>");
     // Only the identifier and the references change.
     for (read, written) in input.iter().zip(&output) {
         assert_eq!(names(read), names(written));
@@ -349,11 +349,21 @@ fn gives_a_record_without_an_identifier_one() {
 #[test]
 fn copies_a_record_it_cannot_identify_and_keeps_references_to_it() {
     let contents = [
-        // The scheme gives every type it does not define the same type byte.
+        // Extension and continuation types have no type byte.
         record(
             "extension",
             "<urn:uuid:1>",
             &[("WARC-Target-URI", "https://example.org/")],
+            "body",
+        ),
+        record(
+            "continuation",
+            "<urn:uuid:5>",
+            &[
+                ("WARC-Segment-Number", "2"),
+                ("WARC-Segment-Origin-ID", "<urn:uuid:9>"),
+                ("WARC-Target-URI", "https://example.org/"),
+            ],
             "body",
         ),
         // A date outside the grammar cannot be read.
@@ -387,13 +397,13 @@ fn copies_a_record_it_cannot_identify_and_keeps_references_to_it() {
 
     let (summary, input, output) = reidentified(&contents).unwrap();
 
-    assert_eq!(summary.records, 4);
+    assert_eq!(summary.records, 5);
     assert_eq!(summary.reidentified, 1);
-    assert_eq!(summary.unidentifiable, 3);
-    assert_eq!(output[..3], input[..3]);
-    assert!(id_of(&output[3]).starts_with(" <https://archivindex.org/record/"));
-    assert_eq!(field(&output[3], "WARC-Refers-To"), " <urn:uuid:1>");
-    assert_eq!(field(&output[3], "WARC-Concurrent-To"), " <urn:uuid:2>");
+    assert_eq!(summary.unidentifiable, 4);
+    assert_eq!(output[..4], input[..4]);
+    assert!(id_of(&output[4]).starts_with(" <https://archivindex.org/record/"));
+    assert_eq!(field(&output[4], "WARC-Refers-To"), " <urn:uuid:1>");
+    assert_eq!(field(&output[4], "WARC-Concurrent-To"), " <urn:uuid:2>");
 }
 
 /// Identifiers are determined by the records themselves, so reidentifying an already
@@ -516,49 +526,6 @@ fn source_identifier_spelling_does_not_affect_final_ids() {
     let (_, _, left) = reidentified(&contents("urn:uuid:1", "urn:uuid:2")).unwrap();
     let (_, _, right) = reidentified(&contents("urn:uuid:3", "urn:uuid:4")).unwrap();
     assert_eq!(left, right);
-}
-
-/// Both the number and the origin distinguish segments holding the same bytes.
-#[test]
-fn distinguishes_segments_with_identical_blocks() {
-    let contents = [
-        record(
-            "continuation",
-            "urn:uuid:1",
-            &[
-                ("WARC-Segment-Number", "2"),
-                ("WARC-Segment-Origin-ID", "urn:uuid:origin1"),
-            ],
-            "same",
-        ),
-        record(
-            "continuation",
-            "urn:uuid:2",
-            &[
-                ("WARC-Segment-Number", "3"),
-                ("WARC-Segment-Origin-ID", "urn:uuid:origin1"),
-            ],
-            "same",
-        ),
-        record(
-            "continuation",
-            "urn:uuid:3",
-            &[
-                ("WARC-Segment-Number", "2"),
-                ("WARC-Segment-Origin-ID", "urn:uuid:origin2"),
-            ],
-            "same",
-        ),
-    ]
-    .concat();
-    let (_, _, output) = reidentified(&contents).unwrap();
-    for (index, record) in output.iter().enumerate() {
-        assert!(
-            output[..index]
-                .iter()
-                .all(|other| id_of(record) != id_of(other))
-        );
-    }
 }
 
 /// A cycle has no starting point for content-derived references. Refuse it before publication,

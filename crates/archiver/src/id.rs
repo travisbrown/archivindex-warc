@@ -1,10 +1,9 @@
-//! Content-derived record IDs, including capture relationships and segment identity.
+//! Content-derived record IDs.
 //!
 //! Version 1 hashes the record type, date at microsecond precision, SHA-256 of its stored block,
-//! target URI, segment fields, revisit profile and original capture coordinates, and the
-//! `WARC-Refers-To` and `WARC-Segment-Origin-ID` references, which must name their final
-//! identifiers. See the crate README for the byte format and the fields intentionally excluded
-//! from identity.
+//! target URI, revisit profile and original capture coordinates, and the `WARC-Refers-To`
+//! reference, which must name its final identifier. See the crate README for the byte format and
+//! the fields intentionally excluded from identity.
 
 use archivindex_warc::parse::raw;
 use archivindex_warc::parse::untyped::name::Field;
@@ -22,9 +21,9 @@ pub const VERSION: u8 = 1;
 /// A record could not be identified under this scheme.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
-    /// Extension record types have no assigned type byte.
+    /// Continuation and extension record types have no assigned type byte.
     #[error("record type {0} has no type byte in version {VERSION} of the scheme")]
-    UnknownRecordType(String),
+    UnsupportedRecordType(String),
     /// A required identity field is absent or an identity field cannot be parsed.
     #[error("missing or invalid {0}")]
     InvalidField(Field),
@@ -40,13 +39,13 @@ pub enum Error {
 #[derive(Clone, Debug)]
 pub struct Identity {
     hash: Sha256,
-    references: Vec<(u8, String)>,
+    refers_to: Option<String>,
 }
 
 impl Identity {
     /// Read identity properties from a raw record without validating unrelated header fields.
     ///
-    /// Returns an error for an unknown type, a missing type or date, or a malformed or repeated
+    /// Returns an error for an unsupported type, a missing type or date, or a malformed or repeated
     /// identity field. URI brackets and surrounding whitespace are not part of identity.
     pub fn from_raw(record: &raw::Record) -> Result<Self, Error> {
         read::identity(record)
@@ -54,7 +53,7 @@ impl Identity {
 
     /// Read identity properties from a typed record without copying its content block.
     ///
-    /// Returns an error for an unknown record type.
+    /// Returns an error for an unsupported record type.
     pub fn from_record(record: &Record) -> Result<Self, Error> {
         let mut identity = Self::new(
             &record.record_type(),
@@ -62,31 +61,24 @@ impl Identity {
             &record.body_bytes(),
         )?;
         identity.optional(1, record.target_uri().map(|uri| uri.as_str().as_bytes()));
-        identity.optional(2, record.segment_number().map(u64::to_be_bytes));
-        if let Record::Continuation { header, .. } = record {
-            identity.optional(3, header.segment_total_length.map(u64::to_be_bytes));
-            identity.reference(8, header.segment_origin_id.as_str());
-        }
         if let Record::Revisit { header, .. } = record {
-            identity.field(4, header.profile.to_string().as_bytes());
+            identity.field(2, header.profile.to_string().as_bytes());
             identity.optional(
-                5,
+                3,
                 header
                     .refers_to_target_uri
                     .as_ref()
                     .map(|uri| uri.as_str().as_bytes()),
             );
-            identity.optional(6, header.refers_to_date.map(date_bytes));
+            identity.optional(4, header.refers_to_date.map(date_bytes));
         }
-        if let Some(uri) = record.refers_to() {
-            identity.reference(7, uri.as_str());
-        }
+        identity.refers_to = record.refers_to().map(|uri| uri.as_str().to_owned());
         Ok(identity)
     }
 
     /// The IDs this record's identity depends on.
     pub fn references(&self) -> impl Iterator<Item = &str> {
-        self.references.iter().map(|(_, id)| id.as_str())
+        self.refers_to.as_deref().into_iter()
     }
 
     /// Derive an ID using the references as read.
@@ -107,15 +99,9 @@ impl Identity {
         &self,
         mut resolve: impl FnMut(&str) -> Option<&'a str>,
     ) -> Uri<String> {
-        let mut references = self
-            .references
-            .iter()
-            .map(|(tag, id)| (*tag, resolve(id).unwrap_or(id)))
-            .collect::<Vec<_>>();
-        references.sort_unstable();
         let mut hash = self.hash.clone();
-        for (tag, id) in references {
-            field(&mut hash, tag, id.as_bytes());
+        if let Some(id) = &self.refers_to {
+            field(&mut hash, 5, resolve(id).unwrap_or(id).as_bytes());
         }
         Uri::parse(format!(
             "https://archivindex.org/record/{}",
@@ -125,8 +111,11 @@ impl Identity {
     }
 
     fn new(record_type: &RecordType, date: WarcDate, block: &[u8]) -> Result<Self, Error> {
-        if let RecordType::Unknown(name) = record_type {
-            return Err(Error::UnknownRecordType(name.clone()));
+        if matches!(
+            record_type,
+            RecordType::Continuation | RecordType::Unknown(_)
+        ) {
+            return Err(Error::UnsupportedRecordType(record_type.to_string()));
         }
         let mut hash = Sha256::new();
         hash.update([VERSION, record_type.canonical_rank() + 1]);
@@ -134,7 +123,7 @@ impl Identity {
         hash.update(Sha256::digest(block));
         Ok(Self {
             hash,
-            references: Vec::new(),
+            refers_to: None,
         })
     }
 
@@ -146,10 +135,6 @@ impl Identity {
         if let Some(value) = value {
             self.field(tag, value.as_ref());
         }
-    }
-
-    fn reference(&mut self, tag: u8, value: &str) {
-        self.references.push((tag, value.to_owned()));
     }
 }
 

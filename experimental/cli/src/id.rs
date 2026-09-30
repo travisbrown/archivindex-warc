@@ -63,7 +63,7 @@ pub struct Summary {
 /// every record to `output`.
 ///
 /// References to records in the input use their final IDs, including forward references. External
-/// references retain their IDs. Records with an unknown type or unreadable identity fields keep
+/// references retain their IDs. Records with an unsupported type or unreadable identity fields keep
 /// their own IDs with a warning; their references are still updated. All other fields and blocks
 /// are preserved, in input order.
 ///

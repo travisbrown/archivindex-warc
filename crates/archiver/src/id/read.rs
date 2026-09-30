@@ -14,25 +14,10 @@ pub(super) fn identity(record: &raw::Record) -> Result<Identity, Error> {
     let record_date = date(header, Field::Date)?.ok_or(Error::InvalidField(Field::Date))?;
     let mut identity = Identity::new(&RecordType::from(record_type), record_date, &record.body)?;
     identity.optional(1, uri(header, Field::TargetURI)?.map(str::as_bytes));
-    for (tag, field) in [(2, Field::SegmentNumber), (3, Field::SegmentTotalLength)] {
-        if let Some(value) = text(header, field)? {
-            let number = value
-                .parse::<u64>()
-                .ok()
-                .filter(|_| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
-                .filter(|number| field != Field::SegmentNumber || *number > 0)
-                .ok_or(Error::InvalidField(field))?;
-            identity.field(tag, &number.to_be_bytes());
-        }
-    }
-    identity.optional(4, uri(header, Field::Profile)?.map(str::as_bytes));
-    identity.optional(5, uri(header, Field::RefersToTargetURI)?.map(str::as_bytes));
-    identity.optional(6, date(header, Field::RefersToDate)?.map(date_bytes));
-    for (tag, field) in [(7, Field::RefersTo), (8, Field::SegmentOriginID)] {
-        if let Some(value) = uri(header, field)? {
-            identity.reference(tag, value);
-        }
-    }
+    identity.optional(2, uri(header, Field::Profile)?.map(str::as_bytes));
+    identity.optional(3, uri(header, Field::RefersToTargetURI)?.map(str::as_bytes));
+    identity.optional(4, date(header, Field::RefersToDate)?.map(date_bytes));
+    identity.refers_to = uri(header, Field::RefersTo)?.map(str::to_owned);
     Ok(identity)
 }
 
