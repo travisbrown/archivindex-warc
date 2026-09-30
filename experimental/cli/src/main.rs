@@ -71,7 +71,7 @@ enum Backend {
     /// The built-in synchronous recorder.
     #[default]
     Recorder,
-    /// Browser-derived TLS emulation constrained to HTTP/1.
+    /// Browser-derived TLS emulation, negotiating HTTP/2 when the server supports it.
     Wreq,
 }
 

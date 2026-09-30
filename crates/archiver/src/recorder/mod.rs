@@ -276,6 +276,8 @@ impl Backend for Recorder {
         let fetch_time = clock.elapsed();
 
         Ok(CapturedExchange {
+            request_protocols: Vec::new(),
+            response_protocols: Vec::new(),
             request,
             response,
             response_metadata,

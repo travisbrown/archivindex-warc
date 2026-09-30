@@ -28,14 +28,16 @@ archivindex-archiver archive --backend wreq --profile chrome_136 \
 without `--backend wreq`.
 
 The configured `user-agent` replaces the profile's own `User-Agent` header. By default it names this
-tool, so the header contradicts the browser that the TLS settings imitate, which a site
+tool, so the header contradicts the browser that the TLS and HTTP/2 settings imitate, which a site
 checking for consistency may treat as suspicious. To send a browser's user agent, set `user-agent`
 in the configuration file to that value; the `warcinfo` record then also describes the request
 actually sent.
 
-Every other setting applies to whichever backend is chosen, and both record
-byte-identical HTTP framing. That backend compiles BoringSSL from source and
-needs an unpublished fork of `wreq`; see [its notes](../wreq/README.md).
+Every other setting applies to whichever backend is chosen. Both record HTTP/1
+exchanges exactly. The `wreq` backend also negotiates HTTP/2, which it records as
+reconstructed HTTP/1.1 messages marked with `WARC-Protocol: h2`. It compiles
+BoringSSL from source and needs an unpublished fork of `wreq`; see
+[its notes](../wreq/README.md).
 
 ## Configuration
 
