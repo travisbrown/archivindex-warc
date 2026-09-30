@@ -5,7 +5,7 @@ use super::*;
 
 /// The derived identifier of the scheme's fixed test vector, which the archiver assigns to a
 /// `response` record with this date, target URI, and content block.
-const FIXED_VECTOR: &str = "https://archivindex.org/record/9054bd499b56c7c96dfd5beb9ad3635490a65ac3e82bd32bf63846ed6dd43f98";
+const FIXED_VECTOR: &str = "https://archivindex.org/record/2c0afc3a5dcf2c0f4d6e7081685af87a68ddbb85be536ea508778c01838160b5";
 
 /// A record of the given type and identifier, with the given further fields.
 fn record(record_type: &str, id: &str, fields: &[(&str, &str)], body: &str) -> Vec<u8> {
@@ -136,6 +136,8 @@ fn redirects_every_reference_to_a_reidentified_record() {
             "<urn:uuid:4>",
             &[
                 ("WARC-Refers-To", "<urn:uuid:3>"),
+                ("WARC-Refers-To-Date", "2026-01-01T00:00:00Z"),
+                ("WARC-Refers-To-Target-URI", "https://example.org/"),
                 ("WARC-Concurrent-To", "<urn:uuid:9>"),
                 ("WARC-Target-URI", "https://example.org/again"),
             ],

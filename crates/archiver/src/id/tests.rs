@@ -1,4 +1,5 @@
 use archivindex_test_support::warc::render;
+use archivindex_warc::record::header::RevisitProfile;
 use archivindex_warc::version::WarcVersion;
 use chrono::DateTime;
 
@@ -25,6 +26,27 @@ fn record(date: &str, fields: &[(&str, &str)]) -> raw::Record {
     )
 }
 
+/// The coordinates of the original capture every test revisit refers to.
+const ORIGINAL: [(&str, &str); 2] = [
+    ("WARC-Refers-To-Date", "2025-01-01T00:00:00Z"),
+    ("WARC-Refers-To-Target-URI", "https://example.org/original"),
+];
+
+/// A revisit captured at a fixed date, with the given further fields.
+fn revisit(fields: &[(&str, &str)]) -> raw::Record {
+    raw(
+        &[
+            &[
+                ("WARC-Type", "revisit"),
+                ("WARC-Date", "2026-01-01T00:00:00Z"),
+            ][..],
+            fields,
+        ]
+        .concat(),
+        "abc",
+    )
+}
+
 fn id(record: &raw::Record) -> Uri<String> {
     raw_record_id(record).unwrap()
 }
@@ -38,7 +60,7 @@ fn fixed_vectors() {
             &[("WARC-Target-URI", "https://example.org/a%2Fb?q=1")]
         ))
         .as_str(),
-        "https://archivindex.org/record/9054bd499b56c7c96dfd5beb9ad3635490a65ac3e82bd32bf63846ed6dd43f98"
+        "https://archivindex.org/record/2c0afc3a5dcf2c0f4d6e7081685af87a68ddbb85be536ea508778c01838160b5"
     );
     assert_eq!(
         id(&raw(
@@ -49,7 +71,7 @@ fn fixed_vectors() {
             ""
         ))
         .as_str(),
-        "https://archivindex.org/record/1279f996e64d8d1678bf94a32349447c4685351027d9b62d29018b35809ed92f"
+        "https://archivindex.org/record/cc7ce3429091f77a4d2be6d6cd29504bc1cdb6c59bd9a6b1325ea4e80d88d21a"
     );
 }
 
@@ -81,48 +103,43 @@ fn rejects_dates_before_1970() {
             Err(Error::InvalidField(Field::Date))
         ));
         assert!(matches!(
-            raw_record_id(&record(
-                "2026-01-01T00:00:00Z",
-                &[("WARC-Refers-To-Date", date)]
-            )),
+            raw_record_id(&revisit(&[("WARC-Refers-To-Date", date), ORIGINAL[1],])),
             Err(Error::InvalidField(Field::RefersToDate))
         ));
     }
 }
 
-/// Every included optional field distinguishes otherwise equal blocks. Changing a field's value
-/// also changes identity; role tags prevent one reference kind being mistaken for another.
+/// The target URI distinguishes otherwise equal records, including from a record without one, and
+/// a revisit's original capture distinguishes otherwise equal revisits.
 #[test]
-fn context_fields_distinguish_records() {
-    let base = id(&record("2026-01-01T00:00:00Z", &[]));
-    let mut ids = vec![base];
-    for (field, first, second) in [
-        (
-            "WARC-Target-URI",
-            "https://example.org/a",
-            "https://example.org/b",
-        ),
-        (
-            "WARC-Profile",
-            "https://example.org/a",
-            "https://example.org/b",
-        ),
-        (
-            "WARC-Refers-To-Target-URI",
-            "https://example.org/a",
-            "https://example.org/b",
-        ),
-        (
-            "WARC-Refers-To-Date",
-            "2026-01-01T00:00:00.123001Z",
-            "2026-01-01T00:00:00.123002Z",
-        ),
+fn target_uri_and_original_distinguish_records() {
+    let mut ids = Vec::new();
+    for target in [
+        None,
+        Some("https://example.org/a"),
+        Some("https://example.org/b"),
     ] {
-        for value in [first, second] {
-            let next = id(&record("2026-01-01T00:00:00Z", &[(field, value)]));
-            assert!(!ids.contains(&next), "{field}: {value}");
-            ids.push(next);
-        }
+        let fields = target
+            .map(|target| vec![("WARC-Target-URI", target)])
+            .unwrap_or_default();
+        let next = id(&record("2026-01-01T00:00:00Z", &fields));
+        assert!(!ids.contains(&next), "{target:?}");
+        ids.push(next);
+    }
+    let mut ids = vec![id(&revisit(&ORIGINAL))];
+    for original in [
+        [
+            ORIGINAL[0],
+            ("WARC-Refers-To-Target-URI", "https://example.org/other"),
+        ],
+        [
+            ("WARC-Refers-To-Date", "2025-01-01T00:00:00.000001Z"),
+            ORIGINAL[1],
+        ],
+    ] {
+        let next = id(&revisit(&original));
+        assert!(!ids.contains(&next), "{original:?}");
+        ids.push(next);
     }
 }
 
@@ -130,29 +147,26 @@ fn context_fields_distinguish_records() {
 /// unchanged in stored records.
 #[test]
 fn normalizes_only_incidental_spelling() {
-    let first = record(
-        "2026-01-01T00:00:00Z",
-        &[
-            ("WARC-Refers-To-Target-URI", "https://example.org/original"),
-            ("WARC-Target-URI", "https://example.org/"),
-        ],
-    );
-    let second = record(
-        "2026-01-01T00:00:00Z",
-        &[
-            ("warc-target-uri", "<https://example.org/>"),
-            (
-                "warc-refers-to-target-uri",
-                "<https://example.org/original>",
-            ),
-        ],
-    );
+    let first = revisit(&[
+        ("WARC-Target-URI", "https://example.org/"),
+        ORIGINAL[0],
+        ORIGINAL[1],
+    ]);
+    let second = revisit(&[
+        (
+            "warc-refers-to-target-uri",
+            "<https://example.org/original>",
+        ),
+        ("warc-refers-to-date", "2025-01-01T00:00:00Z"),
+        ("warc-target-uri", "<https://example.org/>"),
+    ]);
     assert_eq!(id(&first), id(&second));
 }
 
 /// The source record ID, packaging, and digest configuration do not identify a capture. Neither
 /// do references to other records, so an ID never waits on another record's ID, and rewriting a
-/// file under a new `warcinfo` record keeps its IDs.
+/// file under a new `warcinfo` record keeps its IDs. Revisit fields identify only revisits, and a
+/// revisit's profile is implied by the response head its block stores.
 #[test]
 fn ignores_fields_outside_archivindex_identity() {
     assert_eq!(
@@ -169,20 +183,66 @@ fn ignores_fields_outside_archivindex_identity() {
                 ("WARC-Refers-To", "urn:uuid:5"),
                 ("WARC-Concurrent-To", "urn:uuid:3"),
                 ("WARC-Concurrent-To", "urn:uuid:4"),
+                ("WARC-Refers-To-Date", "yesterday"),
+                ("WARC-Refers-To-Target-URI", "not a uri"),
                 ("X-Annotation", "one"),
             ]
         ))
+    );
+    assert_eq!(
+        id(&revisit(&ORIGINAL)),
+        id(&revisit(&[
+            ORIGINAL[0],
+            ORIGINAL[1],
+            (
+                "WARC-Profile",
+                "http://netpreserve.org/warc/1.1/revisit/server-not-modified",
+            ),
+            ("WARC-Refers-To", "urn:uuid:original"),
+        ]))
     );
 }
 
 /// Malformed and repeated identity fields must not silently disappear from the preimage.
 #[test]
 fn rejects_unreadable_identity_fields() {
-    for (field, value) in [
-        ("WARC-Target-URI", "not a uri"),
-        ("WARC-Refers-To-Date", "yesterday"),
+    // An empty target URI is not a URI, so it cannot be mistaken for an absent one.
+    for target in ["not a uri", ""] {
+        assert!(matches!(
+            raw_record_id(&record(
+                "2026-01-01T00:00:00Z",
+                &[("WARC-Target-URI", target)]
+            )),
+            Err(Error::InvalidField(Field::TargetURI))
+        ));
+    }
+    for (field, name, value) in [
+        (Field::RefersToDate, "WARC-Refers-To-Date", "yesterday"),
+        (
+            Field::RefersToTargetURI,
+            "WARC-Refers-To-Target-URI",
+            "not a uri",
+        ),
     ] {
-        assert!(raw_record_id(&record("2026-01-01T00:00:00Z", &[(field, value)])).is_err());
+        let original = ORIGINAL.map(|(other, existing)| {
+            if other == name {
+                (name, value)
+            } else {
+                (other, existing)
+            }
+        });
+        assert!(matches!(
+            raw_record_id(&revisit(&original)),
+            Err(Error::InvalidField(found)) if found == field
+        ));
+        let missing = ORIGINAL
+            .into_iter()
+            .filter(|(other, _)| *other != name)
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            raw_record_id(&revisit(&missing)),
+            Err(Error::InvalidField(found)) if found == field
+        ));
     }
     assert!(matches!(
         raw_record_id(&record(
@@ -250,16 +310,29 @@ fn typed_and_raw_records_agree() {
         .unwrap();
     let typed = record_id(&record).unwrap();
     assert_eq!(typed, id(&record.into_raw().unwrap()));
+    let record = Record::revisit(
+        "https://example.org/",
+        date,
+        RevisitProfile::SERVER_NOT_MODIFIED,
+    )
+    .unwrap()
+    .refers_to_target_uri(Uri::parse("https://example.org/original".to_owned()).unwrap())
+    .refers_to_date(WarcDate::from(DateTime::UNIX_EPOCH))
+    .body(b"abc".to_vec())
+    .unwrap();
+    let typed = record_id(&record).unwrap();
+    assert_eq!(typed, id(&record.into_raw().unwrap()));
     assert_eq!(
         WarcDate::parse("2026-01-01T00:00:00Z", WarcVersion::V1_0),
         WarcDate::parse("2026-01-01T00:00:00Z", WarcVersion::V1_1)
     );
 }
 
-/// This vector fixes the context tags, numeric encodings, and reference suffix. The expected
-/// digest was computed independently with Python's hashlib and big-endian struct packing.
+/// This vector fixes the revisit suffix and its encodings, and shows that the profile and reference
+/// are excluded. The expected digest was computed independently with Python's hashlib and
+/// big-endian struct packing.
 #[test]
-fn context_fixed_vector() {
+fn revisit_fixed_vector() {
     let revisit = raw(
         &[
             ("WARC-Type", "revisit"),
@@ -277,11 +350,11 @@ fn context_fixed_vector() {
     );
     assert_eq!(
         id(&revisit).as_str(),
-        "https://archivindex.org/record/4602eb3148722334faa2aad12bc9b5f51dc21c1eeaaa08eaad0ab4c1eec392cf"
+        "https://archivindex.org/record/21a6afe711c1360953945b5634e8be44c7862277b286ae3636e7b89c91220c97"
     );
 }
 
-/// Type and stored block remain identity inputs even when the contextual fields are identical.
+/// Type and stored block remain identity inputs even when the other properties are identical.
 #[test]
 fn type_and_block_distinguish_records() {
     let original = record("2026-01-01T00:00:00Z", &[]);

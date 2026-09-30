@@ -6,11 +6,13 @@ use archivindex_warc::record::record_type::RecordType;
 use archivindex_warc::value::WarcDate;
 use fluent_uri::Uri;
 
-use super::{Error, Preimage, date_bytes};
+use super::{Error, Original, derive};
 
 pub(super) fn record_id(record: &raw::Record) -> Result<Uri<String>, Error> {
     let header = &record.header;
-    let record_type = text(header, Field::WarcType)?.ok_or(Error::InvalidField(Field::WarcType))?;
+    let record_type = RecordType::from(
+        text(header, Field::WarcType)?.ok_or(Error::InvalidField(Field::WarcType))?,
+    );
     let record_date = date(header, Field::Date)?.ok_or(Error::InvalidField(Field::Date))?;
     if let Some(field) = [
         Field::SegmentNumber,
@@ -26,17 +28,21 @@ pub(super) fn record_id(record: &raw::Record) -> Result<Uri<String>, Error> {
     }) {
         return Err(Error::Segmented(field));
     }
-    let mut preimage = Preimage::new(&RecordType::from(record_type), record_date, &record.body)?;
-    preimage.optional(1, uri(header, Field::TargetURI)?.map(str::as_bytes));
-    preimage.optional(2, uri(header, Field::Profile)?.map(str::as_bytes));
-    preimage.optional(3, uri(header, Field::RefersToTargetURI)?.map(str::as_bytes));
-    preimage.optional(
-        4,
-        date(header, Field::RefersToDate)?
-            .map(|date| date_bytes(date, Field::RefersToDate))
-            .transpose()?,
-    );
-    Ok(preimage.finish())
+    let original = if matches!(record_type, RecordType::Revisit) {
+        Some(Original {
+            date: date(header, Field::RefersToDate)?,
+            target_uri: uri(header, Field::RefersToTargetURI)?,
+        })
+    } else {
+        None
+    };
+    derive(
+        &record_type,
+        record_date,
+        uri(header, Field::TargetURI)?,
+        &record.body,
+        original,
+    )
 }
 
 fn value(header: &raw::RecordHeader, field: Field) -> Result<Option<&[u8]>, Error> {

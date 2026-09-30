@@ -1,9 +1,9 @@
 //! Content-derived record IDs.
 //!
-//! Version 1 hashes the record type, date at microsecond precision, SHA-256 of its stored block,
-//! target URI, and a revisit's profile and original capture coordinates. An ID depends only on its
-//! own record. See the crate README for the byte format and the fields intentionally excluded from
-//! identity.
+//! Version 1 hashes the record type, date at microsecond precision, target URI, and SHA-256 of the
+//! stored block, followed for a revisit by the date and target URI of its original capture. An ID
+//! depends only on its own record. See the crate README for the byte format and the fields
+//! intentionally excluded from identity.
 
 use archivindex_warc::parse::raw;
 use archivindex_warc::parse::untyped::name::Field;
@@ -40,35 +40,26 @@ pub enum Error {
 ///
 /// # Errors
 ///
-/// Fails for an unsupported record type, a segment number, or a date before 1970.
+/// Fails for an unsupported record type, a segment number, a date before 1970, or a revisit
+/// without its original's date and target URI.
 pub fn record_id(record: &Record) -> Result<Uri<String>, Error> {
     if record.segment_number().is_some() {
         return Err(Error::Segmented(Field::SegmentNumber));
     }
-    let mut preimage = Preimage::new(
+    let original = match record {
+        Record::Revisit { header, .. } => Some(Original {
+            date: header.refers_to_date,
+            target_uri: header.refers_to_target_uri.as_ref().map(Uri::as_str),
+        }),
+        _ => None,
+    };
+    derive(
         &record.record_type(),
         record.core().date,
+        record.target_uri().map(Uri::as_str),
         &record.body_bytes(),
-    )?;
-    preimage.optional(1, record.target_uri().map(|uri| uri.as_str().as_bytes()));
-    if let Record::Revisit { header, .. } = record {
-        preimage.field(2, header.profile.to_string().as_bytes());
-        preimage.optional(
-            3,
-            header
-                .refers_to_target_uri
-                .as_ref()
-                .map(|uri| uri.as_str().as_bytes()),
-        );
-        preimage.optional(
-            4,
-            header
-                .refers_to_date
-                .map(|date| date_bytes(date, Field::RefersToDate))
-                .transpose()?,
-        );
-    }
-    Ok(preimage.finish())
+        original,
+    )
 }
 
 /// Derive the ID of a raw record without validating unrelated header fields.
@@ -77,55 +68,59 @@ pub fn record_id(record: &Record) -> Result<Uri<String>, Error> {
 ///
 /// # Errors
 ///
-/// Fails for an unsupported type, a segment field, a missing type or date, or a malformed or
-/// repeated identity field.
+/// Fails for an unsupported type, a segment field, a missing type or date, a malformed or repeated
+/// identity field, or a revisit without its original's date and target URI.
 pub fn raw_record_id(record: &raw::Record) -> Result<Uri<String>, Error> {
     read::record_id(record)
 }
 
-/// The hash of a record's identity properties, fed in the order the scheme defines.
-struct Preimage(Sha256);
-
-impl Preimage {
-    fn new(record_type: &RecordType, date: WarcDate, block: &[u8]) -> Result<Self, Error> {
-        if !matches!(
-            record_type,
-            RecordType::Warcinfo
-                | RecordType::Request
-                | RecordType::Response
-                | RecordType::Metadata
-                | RecordType::Revisit
-        ) {
-            return Err(Error::UnsupportedRecordType(record_type.to_string()));
-        }
-        let mut hash = Sha256::new();
-        hash.update([VERSION, record_type.canonical_rank() + 1]);
-        hash.update(date_bytes(date, Field::Date)?);
-        hash.update(Sha256::digest(block));
-        Ok(Self(hash))
-    }
-
-    fn field(&mut self, tag: u8, value: &[u8]) {
-        field(&mut self.0, tag, value);
-    }
-
-    fn optional(&mut self, tag: u8, value: Option<impl AsRef<[u8]>>) {
-        if let Some(value) = value {
-            self.field(tag, value.as_ref());
-        }
-    }
-
-    fn finish(self) -> Uri<String> {
-        Uri::parse(format!(
-            "https://archivindex.org/record/{}",
-            data_encoding::HEXLOWER.encode(&self.0.finalize())
-        ))
-        .expect("the record ID is a valid HTTPS URI")
-    }
+/// A revisit's original capture, as its `WARC-Refers-To-Date` and `WARC-Refers-To-Target-URI`.
+struct Original<'a> {
+    date: Option<WarcDate>,
+    target_uri: Option<&'a str>,
 }
 
-fn field(hash: &mut Sha256, tag: u8, value: &[u8]) {
-    hash.update([tag]);
+/// Hash the pre-image of a record, where `original` is present exactly when it is a revisit.
+fn derive(
+    record_type: &RecordType,
+    date: WarcDate,
+    target_uri: Option<&str>,
+    block: &[u8],
+    original: Option<Original<'_>>,
+) -> Result<Uri<String>, Error> {
+    if !matches!(
+        record_type,
+        RecordType::Warcinfo
+            | RecordType::Request
+            | RecordType::Response
+            | RecordType::Metadata
+            | RecordType::Revisit
+    ) {
+        return Err(Error::UnsupportedRecordType(record_type.to_string()));
+    }
+    let mut hash = Sha256::new();
+    hash.update([VERSION, record_type.canonical_rank() + 1]);
+    hash.update(date_bytes(date, Field::Date)?);
+    length_prefixed(&mut hash, target_uri.unwrap_or_default());
+    hash.update(Sha256::digest(block));
+    if let Some(original) = original {
+        let date = original
+            .date
+            .ok_or(Error::InvalidField(Field::RefersToDate))?;
+        hash.update(date_bytes(date, Field::RefersToDate)?);
+        let target_uri = original
+            .target_uri
+            .ok_or(Error::InvalidField(Field::RefersToTargetURI))?;
+        length_prefixed(&mut hash, target_uri);
+    }
+    Ok(Uri::parse(format!(
+        "https://archivindex.org/record/{}",
+        data_encoding::HEXLOWER.encode(&hash.finalize())
+    ))
+    .expect("the record ID is a valid HTTPS URI"))
+}
+
+fn length_prefixed(hash: &mut Sha256, value: &str) {
     hash.update((value.len() as u64).to_be_bytes());
     hash.update(value);
 }

@@ -66,9 +66,11 @@ retain their UUID defaults.
 
 ### Identity policy
 
-A record's identity includes its type, capture date, stored content block, and target URI. A
-revisit's profile and original capture (its URI and date) distinguish what its stored block
-represents.
+A record's identity is its type, capture date, target URI, and stored content block. A revisit's
+block stands for content stored elsewhere, so its identity also includes the capture date and target
+URI of its original, which it must declare in `WARC-Refers-To-Date` and `WARC-Refers-To-Target-URI`.
+A revisit's profile is excluded: the archiver uses `server-not-modified` exactly when the response
+is a `304`, and the block keeps that response's head.
 
 Dates use unsigned Unix **microseconds**, matching the archiver's capture precision. The archiver
 never writes a date before 1970, so such dates are refused. Finer input precision is truncated
@@ -93,36 +95,34 @@ WARC records.
 ### Version 1 byte format
 
 An ID is `https://archivindex.org/record/<hash>`, where `<hash>` is the lowercase hexadecimal
-SHA-256 of the following prefix followed by the present fields in the second table. All integers use
-big-endian byte order, without padding between fields.
+SHA-256 of the following fields in order, with no tags, padding, field count, or terminator.
+Integers are big-endian. A URI is encoded as its `u64` byte length followed by its exact bytes.
 
-| Prefix component | Encoding                                  |
-| ---------------- | ----------------------------------------- |
-| Version          | `u8`, currently 1                         |
-| Record type      | `u8`, canonical rank plus one             |
-| Capture date     | `u64`, Unix microseconds from `WARC-Date` |
-| Block hash       | 32 bytes, SHA-256 of the stored block     |
+| Field        | Encoding                                                       |
+| ------------ | -------------------------------------------------------------- |
+| Version      | `u8`, currently 1                                              |
+| Record type  | `u8`, canonical rank plus one                                  |
+| Capture date | `u64`, Unix microseconds from `WARC-Date`                      |
+| Target URI   | `WARC-Target-URI` as a URI, or a zero length when it is absent |
+| Block hash   | 32 bytes, SHA-256 of the stored block                          |
+
+A URI always has a scheme, so an absent target URI cannot be confused with a present one. These five
+fields are the whole pre-image of every record except a revisit, which continues with its original
+capture:
+
+| Field                 | Encoding                                            |
+| --------------------- | --------------------------------------------------- |
+| Original capture date | `u64`, Unix microseconds from `WARC-Refers-To-Date` |
+| Original target URI   | `WARC-Refers-To-Target-URI` as a URI                |
 
 Record type bytes are `warcinfo` = 1, `request` = 2, `response` = 3, `metadata` = 4, `revisit` = 5.
 The archiver writes no other record types, so `resource`, `conversion`, `continuation`, and
 extension records are refused. It also never writes segmented records, so any record carrying
 `WARC-Segment-Number`, `WARC-Segment-Origin-ID`, or `WARC-Segment-Total-Length` is refused.
 
-Each present field is encoded as its `u8` tag, a `u64` byte length, and that many value bytes.
-Absent fields contribute no bytes. Fields appear in ascending tag order. No field count or
-terminator is added.
-
-| Tag | Field                       | Value encoding           |
-| --- | --------------------------- | ------------------------ |
-| 1   | `WARC-Target-URI`           | Exact URI bytes          |
-| 2   | `WARC-Profile`              | Exact URI bytes          |
-| 3   | `WARC-Refers-To-Target-URI` | Exact URI bytes          |
-| 4   | `WARC-Refers-To-Date`       | `u64`, Unix microseconds |
-
 URI brackets and surrounding header whitespace are excluded. URI spelling is otherwise exact,
 including percent escapes. Header name case and header order do not affect identity. A malformed or
-repeated identity field is refused.
-These bytes define version 1 of the scheme.
+repeated identity field is refused. These bytes define version 1 of the scheme.
 
 ## Benchmarks
 

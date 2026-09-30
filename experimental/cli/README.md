@@ -101,10 +101,10 @@ naming a record in the file is updated to that record's final ID. Forward refere
 and records may name each other. A reference to a record outside the file remains unchanged.
 
 A record carrying no `WARC-Record-ID` is given one. A record of a type the archiver never writes
-(`resource`, `conversion`, `continuation`, or an extension type), a record with a segment field,
-or one with an unreadable or repeated identity field or a date before 1970 keeps its ID with a
-warning. References in these records are still updated. Every other field, every body, and the
-record order are preserved.
+(`resource`, `conversion`, `continuation`, or an extension type), a record with a segment field, a
+revisit without its original's date and target URI, or a record with an unreadable or repeated
+identity field or a date before 1970 keeps its ID with a warning. References in these records are
+still updated. Every other field, every body, and the record order are preserved.
 
 The input is read twice and must remain unchanged during the operation; it cannot be standard input.
 The first pass retains identifiers, not content blocks. A `.gz` extension selects gzip compression

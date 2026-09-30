@@ -39,7 +39,7 @@ mod tests {
         assign_record_id(&mut record).unwrap();
         assert_eq!(
             record.core().record_id.as_str(),
-            "https://archivindex.org/record/9054bd499b56c7c96dfd5beb9ad3635490a65ac3e82bd32bf63846ed6dd43f98"
+            "https://archivindex.org/record/2c0afc3a5dcf2c0f4d6e7081685af87a68ddbb85be536ea508778c01838160b5"
         );
         let id = record.core().record_id.clone();
         assign_record_id(&mut record).unwrap();
@@ -60,7 +60,7 @@ mod tests {
         assign_record_id(&mut record).unwrap();
         assert_eq!(
             record.core().record_id.as_str(),
-            "https://archivindex.org/record/1279f996e64d8d1678bf94a32349447c4685351027d9b62d29018b35809ed92f"
+            "https://archivindex.org/record/cc7ce3429091f77a4d2be6d6cd29504bc1cdb6c59bd9a6b1325ea4e80d88d21a"
         );
     }
 }
