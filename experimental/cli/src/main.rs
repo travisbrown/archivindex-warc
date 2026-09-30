@@ -29,7 +29,10 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
     }
 }
 
-/// Build an archiver, applying the proxy given on the command line.
+/// Build an archiver, using an external capture backend when one is selected.
+///
+/// Backends other than the built-in recorder live in their own crates, so selecting one is this
+/// program's concern rather than the archiver's configuration.
 fn build_archiver(
     mut config: archivindex_archiver::Config,
     options: &ArchiveOptions,
@@ -37,7 +40,39 @@ fn build_archiver(
     if let Some(proxy) = &options.proxy {
         config.proxy = Some(proxy.clone());
     }
-    Archiver::new(config).map_err(Into::into)
+    #[cfg(not(feature = "wreq"))]
+    {
+        Archiver::new(config).map_err(Into::into)
+    }
+    #[cfg(feature = "wreq")]
+    match options.backend {
+        Backend::Recorder if options.profile.is_some() => {
+            anyhow::bail!("--profile applies only to --backend wreq")
+        }
+        Backend::Recorder => Archiver::new(config).map_err(Into::into),
+        Backend::Wreq => {
+            let profile = options
+                .profile
+                .unwrap_or(archivindex_archiver_wreq::Profile::Chrome136);
+            let backend = archivindex_archiver_wreq::WreqBackend::new(profile)
+                .proxy(config.proxy.as_deref())?
+                .connect_timeout(Some(config.timeout))
+                .io_timeout(Some(config.timeout))
+                .max_response_length(config.max_response_length);
+            Archiver::with_backend(config, std::sync::Arc::new(backend)).map_err(Into::into)
+        }
+    }
+}
+
+/// The capture backend to archive with.
+#[cfg(feature = "wreq")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+enum Backend {
+    /// The built-in synchronous recorder.
+    #[default]
+    Recorder,
+    /// Browser-derived TLS emulation constrained to HTTP/1.
+    Wreq,
 }
 
 /// Archive a list of URLs read from standard input.
@@ -163,6 +198,17 @@ struct ArchiveOptions {
     /// The WARC file to write; an existing file is not overwritten.
     #[arg(short, long, value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
     output: PathBuf,
+
+    /// The capture backend. Every other setting applies to whichever is chosen.
+    #[cfg(feature = "wreq")]
+    #[arg(long, value_enum, default_value_t = Backend::Recorder)]
+    backend: Backend,
+
+    /// The browser profile the `wreq` backend emulates, such as `chrome_136`, the default. Only
+    /// valid with `--backend wreq`.
+    #[cfg(feature = "wreq")]
+    #[arg(long, value_name = "NAME", value_parser = archivindex_archiver_wreq::parse_profile)]
+    profile: Option<archivindex_archiver_wreq::Profile>,
 }
 
 #[cfg(test)]
@@ -218,27 +264,68 @@ mod tests {
     }
 
     #[test]
-    fn proxy_is_optional_and_overrides_the_configuration() {
-        for proxy in [None, Some("socks5h://127.0.0.1:1080")] {
-            let mut args = vec![
-                "archivindex-archiver",
-                "archive",
-                "--output",
-                "capture.warc",
-            ];
-            if let Some(proxy) = proxy {
-                args.extend(["--proxy", proxy]);
+    fn proxy_is_optional_and_overrides_the_configuration_for_each_backend() {
+        let backends: &[&[&str]] = &[
+            &[],
+            #[cfg(feature = "wreq")]
+            &["--backend", "wreq"],
+        ];
+        for backend in backends {
+            for proxy in [None, Some("socks5h://127.0.0.1:1080")] {
+                let mut args = vec![
+                    "archivindex-archiver",
+                    "archive",
+                    "--output",
+                    "capture.warc",
+                ];
+                args.extend_from_slice(backend);
+                if let Some(proxy) = proxy {
+                    args.extend(["--proxy", proxy]);
+                }
+                let cli = Cli::try_parse_from(args).unwrap();
+                let Command::Archive(options) = cli.command;
+                assert_eq!(options.proxy.as_deref(), proxy);
+                let config = Config {
+                    proxy: Some("socks5h://127.0.0.1:invalid".to_owned()),
+                    ..Config::default()
+                };
+                assert_eq!(
+                    super::build_archiver(config, &options).is_ok(),
+                    proxy.is_some()
+                );
             }
-            let cli = Cli::try_parse_from(args).unwrap();
-            let Command::Archive(options) = cli.command;
-            assert_eq!(options.proxy.as_deref(), proxy);
-            let config = Config {
-                proxy: Some("socks5h://127.0.0.1:invalid".to_owned()),
-                ..Config::default()
-            };
+        }
+    }
+
+    /// A profile is checked as the command line is parsed, and it applies only to the wreq backend.
+    #[cfg(feature = "wreq")]
+    #[test]
+    fn a_profile_is_validated_and_requires_the_wreq_backend() {
+        let parse = |extra: &[&str]| {
+            Cli::try_parse_from(
+                [
+                    &[
+                        "archivindex-archiver",
+                        "archive",
+                        "--output",
+                        "capture.warc",
+                    ][..],
+                    extra,
+                ]
+                .concat(),
+            )
+        };
+        assert!(parse(&["--backend", "wreq", "--profile", "no_such_browser"]).is_err());
+        for (extra, valid) in [
+            (&["--backend", "wreq", "--profile", "chrome_136"][..], true),
+            (&["--backend", "wreq"][..], true),
+            (&["--profile", "chrome_136"][..], false),
+        ] {
+            let Command::Archive(options) = parse(extra).unwrap().command;
             assert_eq!(
-                super::build_archiver(config, &options).is_ok(),
-                proxy.is_some()
+                super::build_archiver(Config::default(), &options).is_ok(),
+                valid,
+                "{extra:?}"
             );
         }
     }

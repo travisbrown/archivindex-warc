@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 The `session` module supports driver-steered crawls, retries, and a persistent revisit index for
 deduplication and HTTP revalidation across runs. For a command-line interface, see
-[`archivindex-archiver-cli`](../../tools/archiver-cli/README.md).
+[`archivindex-archiver-cli`](../../experimental/cli/README.md).
 
 ## Proxies
 
@@ -56,7 +56,7 @@ For standalone captures, set `Recorder::proxy` and call the `Backend` trait's `f
 `fetch_by`. When supplying another backend with `Archiver::with_backend`, apply the same proxy to
 that backend and `Config::proxy` so the recorded configuration matches the transport. A backend can
 validate proxy URIs with `recorder::check_proxy` to accept exactly the URIs the recorder accepts.
-The CLI applies its configuration and `--proxy` option.
+The experimental CLI applies its configuration and `--proxy` option to either supported backend.
 
 ## Benchmarks
 

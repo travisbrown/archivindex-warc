@@ -38,6 +38,9 @@ exceptions = [
   { crate = "archivindex-archiver", allow = [
     "GPL-3.0-only",
   ] },
+  { crate = "archivindex-archiver-wreq", allow = [
+    "GPL-3.0-only",
+  ] },
   { crate = "archivindex-archiver-cli", allow = [
     "GPL-3.0-only",
   ] },
@@ -58,5 +61,9 @@ exceptions = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# The support packages shared across the Archivindex repositories.
-allow-git = ["https://github.com/travisbrown/archivindex"]
+# The support packages shared across the Archivindex repositories, and the observer-enabled `wreq`
+# fork required by the experimental capture backend.
+allow-git = [
+  "https://github.com/travisbrown/archivindex",
+  "https://github.com/travisbrown/wreq",
+]

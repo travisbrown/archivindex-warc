@@ -8,7 +8,7 @@
 
 # Optional SOCKS5 proxy for every request, including redirects, challenges, and retries.
 # socks5h resolves target hostnames through the proxy; socks5 resolves them locally.
-# Username/password authentication is supported. Environment proxy settings are ignored.
+# Both backends support username/password authentication. Environment proxy settings are ignored.
 # proxy = "socks5h://127.0.0.1:1080"
 
 # The idle timeout for connecting and for each socket read or write.
