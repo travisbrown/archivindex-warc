@@ -126,6 +126,9 @@ pub fn check_payload_digest<E: Extension>(
     }
 
     let declared = headers.payload_digest.as_ref();
+    if declared.is_none() && added.is_none() {
+        return Ok(None);
+    }
     let payload = match record.payload_bytes() {
         Ok(Some(payload)) => payload,
         Ok(None) | Err(payload::Error::UnsupportedTransferCoding(_)) => return Ok(None),
