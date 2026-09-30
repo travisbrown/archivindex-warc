@@ -213,7 +213,7 @@ fn head_and_bodyless_statuses_preserve_representation_length() {
             .fetch(&method, &target, &HeaderMap::new(), None)
             .unwrap();
         server.join().unwrap();
-        assert!(captured.stored_body().is_empty());
+        assert_eq!(captured.stored_body(), b"");
         assert_eq!(captured.truncated, None);
         if status != StatusCode::NO_CONTENT {
             assert!(String::from_utf8_lossy(&captured.response).contains("content-length: 5\r\n"));

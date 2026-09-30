@@ -1,9 +1,11 @@
 //! Run the shared exactness contract against the optional wreq backend.
+
 use archivindex_archiver_wreq::{Profile, WreqBackend as Backend};
 
 const fn backend() -> Backend {
     Backend::new(Profile::Chrome136)
 }
+
 fn trusted_backend(certificate: &rustls::pki_types::CertificateDer<'static>) -> Backend {
     let store = wreq::tls::trust::CertStore::builder()
         .add_der_cert(certificate)
@@ -11,6 +13,7 @@ fn trusted_backend(certificate: &rustls::pki_types::CertificateDer<'static>) -> 
         .expect("a root");
     backend().tls_cert_store(store)
 }
+
 // The exactness contract every backend must satisfy, shared with the built-in recorder.
 include!("../../../crates/archiver/tests/support/backend_conformance.rs");
 
@@ -55,6 +58,7 @@ async fn synchronous_capture_works_inside_a_tokio_runtime() {
     let captured = fetch(&backend(), port, "/nested");
     assert_eq!(captured.request, server.join().unwrap());
 }
+
 fn proxied_archiver(proxy: &str) -> archivindex_archiver::Archiver {
     archivindex_archiver::Archiver::with_backend(
         archivindex_archiver::Config {
@@ -65,4 +69,5 @@ fn proxied_archiver(proxy: &str) -> archivindex_archiver::Archiver {
     )
     .unwrap()
 }
+
 include!("../../../crates/archiver/tests/support/proxy_conformance.rs");
