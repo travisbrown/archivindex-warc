@@ -79,8 +79,10 @@ impl<C: Handle> Store<C> {
     /// Payload-bearing HTTP `response` records establish canonical payloads, and HTTP 200 responses
     /// update resource state. Revisit records never become canonical payloads.
     /// `identical-payload-digest` revisits resolve to an existing canonical source or to their
-    /// explicit `WARC-Refers-To` fields. When the digest matches stored resource state, omitted
-    /// metadata is retained. `server-not-modified` revisits retain the representation identity and
+    /// explicit `WARC-Refers-To` fields. Only HTTP 200 or empty-block identical-payload revisits
+    /// update resource state. An empty block retains metadata when the digest matches the stored
+    /// representation; a complete head replaces its validators. `server-not-modified` revisits
+    /// retain the representation identity and
     /// update only its validators.
     ///
     /// A record whose own `WARC-Payload-Digest` names an algorithm this crate does not know, holds
@@ -236,6 +238,9 @@ fn index_revisit<E: Extension>(
 
     let resource_updated = match &header.profile {
         RevisitProfile::IdenticalPayloadDigest(_) => {
+            if !body.is_empty() && metadata.status != 200 {
+                return Ok(IndexRecordOutcome::default());
+            }
             let digest = header.payload.payload_digest.as_ref().ok_or(
                 IngestError::MalformedHttpResponse(
                     "identical-payload-digest revisit has no payload digest",
@@ -251,17 +256,16 @@ fn index_revisit<E: Extension>(
             let mut last_modified = metadata.last_modified;
             let mut variance = Variance::declared_without_request(metadata.vary.as_deref());
 
-            // Agreeing digests make this the representation already stored, so the revisit confirms
-            // it rather than replacing it and whatever its block leaves unsaid, which for the usual
-            // empty block is everything, is kept.
+            // An empty block leaves the response metadata unknown. A recorded head instead
+            // replaces the validators, even when the payload bytes have not changed.
             if let Some(stored) = lookup_resource(connection, &key)?
                 .filter(|stored| stored.payload_digest.as_ref() == Some(digest))
             {
-                etag = etag.or(stored.etag);
-                last_modified = last_modified.or(stored.last_modified);
                 record_id = record_id.or(stored.record_id);
                 warc_date = warc_date.or(stored.warc_date);
                 if body.is_empty() {
+                    etag = stored.etag;
+                    last_modified = stored.last_modified;
                     variance = stored.variance;
                 }
             }

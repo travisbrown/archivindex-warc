@@ -1034,3 +1034,62 @@ fn load_records_rolls_back_on_a_read_error() -> Result<(), Box<dyn StdError>> {
     assert!(index.lookup_payload(&sha256(b"hello"))?.is_none());
     Ok(())
 }
+
+/// Error pages and partial representations may be deduplicated, but their validators must not
+/// replace the resource's complete representation when that capture is loaded from a WARC.
+#[test]
+fn non_200_identical_revisits_do_not_update_resource_state() -> Result<(), Box<dyn StdError>> {
+    for status in [206, 301, 404, 500] {
+        let index = Index::open_in_memory()?;
+        index.index_record(&response(
+            URI_A,
+            RECORD_A,
+            "2025-01-01T00:00:00Z",
+            "ETag: \"original\"\r\n",
+            b"original",
+        )?)?;
+        let before = index.lookup_resource(&key(URI_A))?;
+        let revisit = Record::<NoExtension>::revisit(
+            URI_A,
+            date("2025-01-02T00:00:00Z"),
+            RevisitProfile::IDENTICAL_PAYLOAD_DIGEST,
+        )?
+        .payload_digest(sha256(b"other"))
+        .refers_to(uri(RECORD_B))
+        .refers_to_target_uri(uri(URI_B))
+        .refers_to_date(date("2025-01-01T00:00:00Z"))
+        .body(format!("HTTP/1.1 {status} Other\r\nETag: \"other\"\r\n\r\n").into_bytes())?;
+
+        assert!(!index.index_record(&revisit)?.resource_updated);
+        assert_eq!(index.lookup_resource(&key(URI_A))?, before);
+    }
+    Ok(())
+}
+
+/// A complete new response head replaces validators even when its payload is unchanged. Only an
+/// absent head leaves the previous capture's metadata unknown.
+#[test]
+fn identical_revisit_with_a_head_clears_omitted_validators() -> Result<(), Box<dyn StdError>> {
+    let index = Index::open_in_memory()?;
+    index.index_record(&response(
+        URI_A,
+        RECORD_A,
+        "2025-01-01T00:00:00Z",
+        "ETag: \"original\"\r\nLast-Modified: Wed, 21 Oct 2015 07:28:00 GMT\r\n",
+        b"same",
+    )?)?;
+    let revisit = Record::<NoExtension>::revisit(
+        URI_A,
+        date("2025-01-02T00:00:00Z"),
+        RevisitProfile::IDENTICAL_PAYLOAD_DIGEST,
+    )?
+    .payload_digest(sha256(b"same"))
+    .body(b"HTTP/1.1 200 OK\r\n\r\n".to_vec())?;
+
+    assert!(index.index_record(&revisit)?.resource_updated);
+    let state = index.lookup_resource(&key(URI_A))?.unwrap();
+    assert_eq!(state.etag, None);
+    assert_eq!(state.last_modified, None);
+    assert_eq!(state.record_id, Some(uri(RECORD_A)));
+    Ok(())
+}
