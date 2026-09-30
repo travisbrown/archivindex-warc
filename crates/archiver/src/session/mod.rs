@@ -17,7 +17,7 @@ use http::{HeaderMap, Method};
 use crate::capture::{
     CaptureSummary, Failure, Origin, ProgressControl, ProgressEvent, ProgressSink,
 };
-use crate::config::SessionConfig;
+use crate::config::{Operator, SessionConfig, Software};
 use crate::{Archiver, Error};
 
 mod crawl;
@@ -33,8 +33,6 @@ pub use crawl::Crawl;
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("invalid session identifier: {0:?}")]
 pub struct SessionIdError(String);
-
-pub use crate::config::{Operator, Software};
 
 /// A successfully captured page shown to a [`Driver`].
 #[derive(Clone, Debug)]
