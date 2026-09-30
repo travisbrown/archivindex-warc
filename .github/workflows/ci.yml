@@ -149,11 +149,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
-      # Keep tarball checks for crates whose dependencies can resolve on the registry. --no-verify
-      # skips building the tarballs, not registry dependency resolution.
+      # Build the tarballs to check that publishable crates contain everything they need.
+      # These crates can resolve their dependencies on the registry.
       - name: Package registry-resolvable crates
         run: >-
-          cargo package --locked --workspace --no-verify
+          cargo package --locked --workspace
           --exclude archivindex-warc-ops
           --exclude archivindex-warc-cli
           --exclude archivindex-archiver
