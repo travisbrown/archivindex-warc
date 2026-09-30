@@ -62,7 +62,8 @@ impl WreqBackend {
         body: Option<&[u8]>,
         deadline: Option<Instant>,
     ) -> Result<CapturedExchange, Error> {
-        let tap = Arc::new(Tap::new(*method == Method::HEAD, self.max_response_length));
+        let head = *method == Method::HEAD;
+        let tap = Arc::new(Tap::new(head, self.max_response_length));
         let (client, orig_headers) = self.client(tap.clone())?;
         let mut headers = headers.clone();
         // A provided byte body has a known length. Do not let caller framing turn it into
@@ -80,12 +81,13 @@ impl WreqBackend {
         let sent_target = request.uri().clone();
         let date = Utc::now();
         let clock = Instant::now();
-        let operation = tap.receive(client, request, *method == Method::HEAD);
+        let operation = tap.receive(client, request, head);
         let expire = async {
-            if let Some(deadline) = deadline {
-                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
-            } else {
-                std::future::pending::<()>().await;
+            match deadline {
+                Some(deadline) => {
+                    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                }
+                None => std::future::pending().await,
             }
         };
         tokio::select! {
@@ -107,16 +109,15 @@ impl WreqBackend {
             }
         }
         let fetch_time = clock.elapsed();
-        let mut state = tap.state();
+        let mut state = std::mem::replace(&mut *tap.state(), State::new(head, None));
         if let Some(error) = state.error.take() {
             return Err(error);
         }
-        let response = std::mem::replace(&mut state.response, ResponseCapture::new(false, None));
-        let (response, truncated) = response.into_parts();
-        let response_metadata =
-            ResponseMetadata::parse(&response).ok_or(ResponseError::MalformedStatusLine)?;
         let request = state.recorded_request(method, &sent_target, body)?;
         let protocols = state.protocols();
+        let (response, truncated) = state.response.into_parts();
+        let response_metadata =
+            ResponseMetadata::parse(&response).ok_or(ResponseError::MalformedStatusLine)?;
         Ok(CapturedExchange {
             request,
             request_protocols: protocols.clone(),
@@ -159,6 +160,37 @@ struct State {
 }
 
 impl State {
+    fn new(head: bool, cap: Option<u64>) -> Self {
+        Self {
+            response: ResponseCapture::new(head, cap),
+            request: Vec::new(),
+            error: None,
+            id: None,
+            ip_address: None,
+            last_activity: None,
+            http2: false,
+            tls_version: None,
+            request_headers: None,
+            h2_request: http2::RequestCapture::default(),
+        }
+    }
+
+    /// Close the capture because the transport ended or ran out of time.
+    fn end(&mut self, timed_out: bool) {
+        if self.error.is_none()
+            && let Err(error) = self.response.end(timed_out)
+        {
+            self.error = Some(error.into());
+        }
+    }
+
+    /// Fail the exchange, unless the response was already captured in full.
+    fn fail(&mut self, error: Error) {
+        if !self.response.is_done() && self.error.is_none() {
+            self.error = Some(error);
+        }
+    }
+
     fn protocols(&self) -> Vec<Protocol> {
         let tls = match self.tls_version {
             Some(TlsVersion::TLS_1_0) => Some(Protocol::TLS_1_0),
@@ -217,18 +249,7 @@ impl State {
 impl Tap {
     fn new(head: bool, cap: Option<u64>) -> Self {
         Self {
-            state: Mutex::new(State {
-                response: ResponseCapture::new(head, cap),
-                request: Vec::new(),
-                error: None,
-                id: None,
-                ip_address: None,
-                last_activity: None,
-                http2: false,
-                tls_version: None,
-                request_headers: None,
-                h2_request: http2::RequestCapture::default(),
-            }),
+            state: Mutex::new(State::new(head, cap)),
             done: Notify::new(),
             activity: Notify::new(),
         }
@@ -302,78 +323,47 @@ impl Tap {
     }
 
     fn end(&self, timed_out: bool) {
-        let mut state = self.state();
-        if state.error.is_none()
-            && let Err(error) = state.response.end(timed_out)
-        {
-            state.error = Some(error.into());
-        }
-        drop(state);
+        self.state().end(timed_out);
         self.done.notify_one();
     }
 
     fn fail(&self, error: Error) {
-        let mut state = self.state();
-        if !state.response.is_done() && state.error.is_none() {
-            state.error = Some(error);
-        }
-        drop(state);
+        self.state().fail(error);
         self.done.notify_one();
+    }
+
+    /// Record exchange progress, restarting the idle timeout.
+    fn progress(&self, state: &mut State) {
+        state.last_activity = Some(Instant::now());
+        self.activity.notify_one();
     }
 }
 
 impl ConnectionObserver for Tap {
     fn observe(&self, event: ConnectionEvent<'_>) {
-        if self.state().http2
-            && matches!(
-                event,
-                ConnectionEvent::Eof { .. } | ConnectionEvent::ReadError { .. }
-            )
-        {
-            return;
-        }
+        let mut state = self.state();
         match event {
-            ConnectionEvent::Eof { .. } => {
-                self.end(false);
+            // HTTP/2 stream ends and errors reach the response body instead.
+            ConnectionEvent::Eof { .. } | ConnectionEvent::ReadError { .. } if state.http2 => {
                 return;
             }
-            ConnectionEvent::ReadError { error, .. } => {
-                match error.kind() {
-                    ErrorKind::UnexpectedEof | ErrorKind::ConnectionReset => self.end(false),
-                    ErrorKind::TimedOut | ErrorKind::WouldBlock => self.end(true),
-                    _ => self.fail(io::Error::new(error.kind(), error.to_string()).into()),
-                }
-                return;
-            }
+            ConnectionEvent::Eof { .. } => state.end(false),
+            ConnectionEvent::ReadError { error, .. } => match error.kind() {
+                ErrorKind::UnexpectedEof | ErrorKind::ConnectionReset => state.end(false),
+                ErrorKind::TimedOut | ErrorKind::WouldBlock => state.end(true),
+                _ => state.fail(io::Error::new(error.kind(), error.to_string()).into()),
+            },
             // The request did not reach the peer in full, so no exchange can be attributed to it.
             // A response already captured in full is kept: `fail` leaves a finished capture alone.
             ConnectionEvent::WriteError { error, .. }
             | ConnectionEvent::FlushError { error, .. } => {
-                self.fail(io::Error::new(error.kind(), error.to_string()).into());
-                return;
+                state.fail(io::Error::new(error.kind(), error.to_string()).into());
             }
             // Closing our write half can fail once a complete response has been read, and a
             // connection that is genuinely gone reports that again on the read side. Neither
             // outcome invalidates what was captured.
             ConnectionEvent::ShutdownError { .. } => return,
-            _ => {}
-        }
-        let mut state = self.state();
-        if state.error.is_some() {
-            return;
-        }
-        if !state.http2
-            && matches!(
-                event,
-                ConnectionEvent::Connected { .. }
-                    | ConnectionEvent::Read { .. }
-                    | ConnectionEvent::Write { .. }
-            )
-        {
-            state.last_activity = Some(Instant::now());
-            self.activity.notify_one();
-        }
-        match event {
+            _ if state.error.is_some() => return,
             ConnectionEvent::Connected {
                 id,
                 remote_addr,
@@ -381,6 +371,8 @@ impl ConnectionObserver for Tap {
                 tls_version,
                 ..
             } => {
+                // Connecting starts the idle clock for both protocols.
+                self.progress(&mut state);
                 state.http2 = http2;
                 state.tls_version = tls_version;
                 if state.id.replace(id).is_some() {
@@ -391,33 +383,33 @@ impl ConnectionObserver for Tap {
             ConnectionEvent::Read { id, bytes } => {
                 if state.id != Some(id) {
                     state.error = Some(io::Error::other("unexpected connection ID").into());
-                } else if !state.http2
-                    && let Err(error) = state.response.push(bytes)
-                {
-                    state.error = Some(error.into());
+                } else if !state.http2 {
+                    // HTTP/2 reads include connection control traffic, so only the reconstructed
+                    // response counts as its progress.
+                    self.progress(&mut state);
+                    if let Err(error) = state.response.push(bytes) {
+                        state.error = Some(error.into());
+                    }
                 }
             }
             ConnectionEvent::Write { id, bytes } => {
-                if state.id == Some(id) {
-                    if state.http2 {
-                        match state.h2_request.push(bytes) {
-                            Ok(true) => {
-                                state.last_activity = Some(Instant::now());
-                                self.activity.notify_one();
-                            }
-                            Ok(false) => {}
-                            Err(error) => state.error = Some(error.into()),
-                        }
-                    } else {
-                        state.request.extend_from_slice(bytes);
+                if state.id != Some(id) {
+                    state.error = Some(io::Error::other("unexpected connection ID").into());
+                } else if state.http2 {
+                    match state.h2_request.push(bytes) {
+                        Ok(true) => self.progress(&mut state),
+                        Ok(false) => {}
+                        Err(error) => state.error = Some(error.into()),
                     }
                 } else {
-                    state.error = Some(io::Error::other("unexpected connection ID").into());
+                    self.progress(&mut state);
+                    state.request.extend_from_slice(bytes);
                 }
             }
             _ => {}
         }
         if state.error.is_some() || state.response.is_done() {
+            drop(state);
             self.done.notify_one();
         }
     }

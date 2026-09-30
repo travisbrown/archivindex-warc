@@ -5,7 +5,7 @@ use http::{HeaderMap, HeaderValue, StatusCode, Version, header};
 use wreq::header::OrigHeaderMap;
 use wreq_proto::ext::{OnPreserveHeaderCallback, on_preserve_header};
 
-use super::{Arc, Error, Instant, Tap, io};
+use super::{Arc, Error, Tap, io};
 
 pub(super) fn observe_headers(
     request: &mut http::Request<wreq::Body>,
@@ -98,8 +98,7 @@ impl Tap {
         let mut state = self.state();
         if !state.response.is_done() {
             state.response.push(bytes)?;
-            state.last_activity = Some(Instant::now());
-            self.activity.notify_one();
+            self.progress(&mut state);
         }
         let done = state.response.is_done();
         drop(state);
