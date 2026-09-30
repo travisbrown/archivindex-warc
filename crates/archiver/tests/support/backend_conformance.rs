@@ -113,6 +113,24 @@ fn records_the_request_and_response_bytes_exactly() {
     assert_eq!(captured.truncated, None);
 }
 
+/// `Connection: close` is only a default, so a caller's own `Connection` header is sent as given.
+#[test]
+fn keeps_a_configured_connection_header() {
+    let (port, capture) = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    let target: Uri = format!("http://127.0.0.1:{port}/").parse().expect("a target");
+    let mut headers = HeaderMap::new();
+    headers.insert("connection", HeaderValue::from_static("keep-alive"));
+
+    let captured = backend()
+        .fetch(&Method::GET, &target, &headers, None)
+        .expect("a recorded exchange");
+
+    assert_eq!(captured.request, capture.join().expect("a served request"));
+    let request = String::from_utf8_lossy(&captured.request).to_ascii_lowercase();
+    assert!(request.contains("connection: keep-alive\r\n"), "{request}");
+    assert!(!request.contains("connection: close"), "{request}");
+}
+
 #[test]
 fn records_a_chunked_response_verbatim_and_renders_its_records() {
     let response: &[u8] =

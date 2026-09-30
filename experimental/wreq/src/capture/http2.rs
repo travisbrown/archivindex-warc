@@ -40,7 +40,9 @@ impl OnPreserveHeaderCallback for Headers {
         dst: &mut dyn FnMut(&dyn AsRef<[u8]>, &HeaderValue),
     ) {
         // Only the HTTP/1 serializer calls this method. HTTP/2 must not send Connection.
-        headers.insert(header::CONNECTION, HeaderValue::from_static("close"));
+        headers
+            .entry(header::CONNECTION)
+            .or_insert(HeaderValue::from_static("close"));
         self.profile.call_visit(headers, dst);
     }
 }

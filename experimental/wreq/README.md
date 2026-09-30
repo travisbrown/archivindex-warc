@@ -97,7 +97,8 @@ Browser emulation may improve access but is not guaranteed to make a site accept
 Redirects, retries, pooling, automatic proxies, decompression, and the wreq cookie store are off.
 The archiver owns application-level follow-ups, including proof-of-work submissions. Every
 completed exchange goes through the existing outcome and WARC mapping paths. A supplied byte
-body's framing is normalized. `Connection: close` is added only when serializing HTTP/1.
+body's framing is normalized. `Connection: close` is added only when serializing HTTP/1, and only
+when the request has no `Connection` header, as with the built-in recorder.
 
 HTTP/1 request and response blocks retain observed wire bytes, including reason phrases, header
 formatting, duplicates, chunk extensions, and trailers. The shared `backend::ResponseCapture`
