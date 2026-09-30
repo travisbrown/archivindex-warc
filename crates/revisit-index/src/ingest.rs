@@ -77,7 +77,8 @@ impl<C: Handle> Store<C> {
     /// Index one semantic WARC record.
     ///
     /// Payload-bearing HTTP `response` records establish canonical payloads, and HTTP 200 responses
-    /// update resource state. Revisit records never become canonical payloads.
+    /// update resource state. Truncated and segmented responses are ignored. Revisit records never
+    /// become canonical payloads.
     /// `identical-payload-digest` revisits resolve to an existing canonical source or to their
     /// explicit `WARC-Refers-To` fields. Only HTTP 200 or empty-block identical-payload revisits
     /// update resource state. An empty block retains metadata when the digest matches the stored
@@ -145,8 +146,8 @@ fn index_response<E: Extension>(
         unreachable!("index_response is only called for response records");
     };
 
-    // A truncated body is neither a representation nor a revisit target.
-    if header.core.truncated.is_some() {
+    // A truncated body or first segment is neither a complete representation nor a revisit target.
+    if header.core.truncated.is_some() || header.segment_origin {
         return Ok(IndexRecordOutcome::default());
     }
     let metadata = http_metadata(body)?;

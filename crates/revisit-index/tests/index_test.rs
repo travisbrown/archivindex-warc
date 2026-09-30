@@ -1153,3 +1153,20 @@ fn not_modified_revisit_updates_vary() -> Result<(), Box<dyn StdError>> {
     );
     Ok(())
 }
+
+/// A first segment holds only part of the representation. Even a matching digest of those bytes
+/// cannot make it a complete payload source or establish conditional-request state.
+#[test]
+fn segmented_response_is_not_indexed() -> Result<(), Box<dyn StdError>> {
+    let index = Index::open_in_memory()?;
+    let record = Record::<NoExtension>::response(URI_A, date("2025-01-01T00:00:00Z"))?
+        .segment_origin()
+        .payload_digest(sha256(b"part"))
+        .body(b"HTTP/1.1 200 OK\r\nETag: \"v1\"\r\n\r\npart".to_vec())?;
+    let outcome = index.index_record(&record)?;
+    assert!(!outcome.payload_inserted);
+    assert!(!outcome.resource_updated);
+    assert!(index.lookup_payload(&sha256(b"part"))?.is_none());
+    assert!(index.lookup_resource(&key(URI_A))?.is_none());
+    Ok(())
+}
