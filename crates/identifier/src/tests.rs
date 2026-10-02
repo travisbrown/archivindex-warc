@@ -1,4 +1,5 @@
 use archivindex_test_support::warc::render;
+use archivindex_warc::parse::raw;
 use archivindex_warc::record::header::RevisitProfile;
 use archivindex_warc::version::WarcVersion;
 use chrono::DateTime;
@@ -48,30 +49,46 @@ fn revisit(fields: &[(&str, &str)]) -> raw::Record {
 }
 
 fn id(record: &raw::Record) -> Uri<String> {
-    raw_record_id(record).unwrap()
+    record_id(record).unwrap()
 }
 
 /// Fixed vectors also check agreement with the typed adapter and the reidentify command.
 #[test]
 fn fixed_vectors() {
+    let response = record(
+        "1970-01-01T00:00:01.234Z",
+        &[("WARC-Target-URI", "https://example.org/a%2Fb?q=1")],
+    );
+    let response = IdentityV1::new(&response).unwrap();
     assert_eq!(
-        id(&record(
-            "1970-01-01T00:00:01.234Z",
-            &[("WARC-Target-URI", "https://example.org/a%2Fb?q=1")]
-        ))
-        .as_str(),
+        response.uri().as_str(),
         "https://archivindex.org/record/2c0afc3a5dcf2c0f4d6e7081685af87a68ddbb85be536ea508778c01838160b5"
     );
     assert_eq!(
-        id(&raw(
-            &[
-                ("WARC-Type", "warcinfo"),
-                ("WARC-Date", "1970-01-01T00:00:00Z")
-            ],
-            ""
-        ))
-        .as_str(),
+        data_encoding::HEXLOWER.encode(&response.preimage()),
+        concat!(
+            "0103000000000012d450000000000000001d68747470733a2f2f6578616d706c652e6f72672f6125",
+            "3246623f713d31ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        )
+    );
+    let warcinfo = raw(
+        &[
+            ("WARC-Type", "warcinfo"),
+            ("WARC-Date", "1970-01-01T00:00:00Z"),
+        ],
+        "",
+    );
+    let warcinfo = IdentityV1::new(&warcinfo).unwrap();
+    assert_eq!(
+        warcinfo.uri().as_str(),
         "https://archivindex.org/record/cc7ce3429091f77a4d2be6d6cd29504bc1cdb6c59bd9a6b1325ea4e80d88d21a"
+    );
+    assert_eq!(
+        data_encoding::HEXLOWER.encode(&warcinfo.preimage()),
+        concat!(
+            "010100000000000000000000000000000000e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b",
+            "934ca495991b7852b855",
+        )
     );
 }
 
@@ -90,7 +107,7 @@ fn dates_use_archiver_precision() {
         id(&record("2026-01-01T00:00:00.000000Z", &[]))
     );
     for date in ["1970-01-01T00:00:00Z", "9999-12-31T23:59:59.999999Z"] {
-        assert!(raw_record_id(&record(date, &[])).is_ok());
+        assert!(IdentityV1::new(&record(date, &[])).is_ok());
     }
 }
 
@@ -99,11 +116,11 @@ fn dates_use_archiver_precision() {
 fn rejects_dates_before_1970() {
     for date in ["1969-12-31T23:59:59.999999Z", "0000-01-01T00:00:00Z"] {
         assert!(matches!(
-            raw_record_id(&record(date, &[])),
+            record_id(&record(date, &[])),
             Err(Error::InvalidField(Field::Date))
         ));
         assert!(matches!(
-            raw_record_id(&revisit(&[("WARC-Refers-To-Date", date), ORIGINAL[1],])),
+            IdentityV1::new(&revisit(&[("WARC-Refers-To-Date", date), ORIGINAL[1],])),
             Err(Error::InvalidField(Field::RefersToDate))
         ));
     }
@@ -209,7 +226,7 @@ fn rejects_unreadable_identity_fields() {
     // An empty target URI is not a URI, so it cannot be mistaken for an absent one.
     for target in ["not a uri", ""] {
         assert!(matches!(
-            raw_record_id(&record(
+            IdentityV1::new(&record(
                 "2026-01-01T00:00:00Z",
                 &[("WARC-Target-URI", target)]
             )),
@@ -232,7 +249,7 @@ fn rejects_unreadable_identity_fields() {
             }
         });
         assert!(matches!(
-            raw_record_id(&revisit(&original)),
+            IdentityV1::new(&revisit(&original)),
             Err(Error::InvalidField(found)) if found == field
         ));
         let missing = ORIGINAL
@@ -240,12 +257,12 @@ fn rejects_unreadable_identity_fields() {
             .filter(|(other, _)| *other != name)
             .collect::<Vec<_>>();
         assert!(matches!(
-            raw_record_id(&revisit(&missing)),
+            IdentityV1::new(&revisit(&missing)),
             Err(Error::InvalidField(found)) if found == field
         ));
     }
     assert!(matches!(
-        raw_record_id(&record(
+        IdentityV1::new(&record(
             "2026-01-01T00:00:00Z",
             &[
                 ("WARC-Target-URI", "https://example.org/a"),
@@ -256,7 +273,7 @@ fn rejects_unreadable_identity_fields() {
     ));
     for record_type in ["resource", "conversion", "continuation", "extension"] {
         assert!(matches!(
-            raw_record_id(&raw(
+            IdentityV1::new(&raw(
                 &[
                     ("WARC-Type", record_type),
                     ("WARC-Date", "2026-01-01T00:00:00Z")
@@ -282,7 +299,7 @@ fn rejects_segmented_records() {
         (Field::SegmentTotalLength, "warc-segment-total-length", "3"),
     ] {
         assert!(matches!(
-            raw_record_id(&record("2026-01-01T00:00:00Z", &[(name, value)])),
+            IdentityV1::new(&record("2026-01-01T00:00:00Z", &[(name, value)])),
             Err(Error::Segmented(found)) if found == field
         ));
     }
@@ -293,7 +310,7 @@ fn rejects_segmented_records() {
         .body(b"abc".to_vec())
         .unwrap();
     assert!(matches!(
-        record_id(&record),
+        IdentityV1::from_record(&record),
         Err(Error::Segmented(Field::SegmentNumber))
     ));
 }
@@ -308,7 +325,7 @@ fn typed_and_raw_records_agree() {
         .concurrent_to(Uri::parse("urn:uuid:request".to_owned()).unwrap())
         .body(b"abc".to_vec())
         .unwrap();
-    let typed = record_id(&record).unwrap();
+    let typed = IdentityV1::from_record(&record).unwrap().uri();
     assert_eq!(typed, id(&record.into_raw().unwrap()));
     let record = Record::revisit(
         "https://example.org/",
@@ -320,7 +337,7 @@ fn typed_and_raw_records_agree() {
     .refers_to_date(WarcDate::from(DateTime::UNIX_EPOCH))
     .body(b"abc".to_vec())
     .unwrap();
-    let typed = record_id(&record).unwrap();
+    let typed = IdentityV1::from_record(&record).unwrap().uri();
     assert_eq!(typed, id(&record.into_raw().unwrap()));
     assert_eq!(
         WarcDate::parse("2026-01-01T00:00:00Z", WarcVersion::V1_0),
@@ -352,6 +369,14 @@ fn revisit_fixed_vector() {
         id(&revisit).as_str(),
         "https://archivindex.org/record/21a6afe711c1360953945b5634e8be44c7862277b286ae3636e7b89c91220c97"
     );
+    assert_eq!(
+        data_encoding::HEXLOWER.encode(&IdentityV1::new(&revisit).unwrap().preimage()),
+        concat!(
+            "0105000000000012d451000000000000001468747470733a2f2f6578616d706c652e6f72672fba78",
+            "16bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad00000000000000010000",
+            "00000000001c68747470733a2f2f6578616d706c652e6f72672f6f726967696e616c",
+        )
+    );
 }
 
 /// Type and stored block remain identity inputs even when the other properties are identical.
@@ -370,4 +395,30 @@ fn type_and_block_distinguish_records() {
         .unwrap()
         .1 = b" request".to_vec();
     assert_ne!(id(&original), id(&changed));
+}
+
+/// Version 1 assigns its own type bytes independently of the WARC library's sorting order.
+#[test]
+fn fixed_type_bytes() {
+    for (kind, byte) in [
+        ("warcinfo", 1),
+        ("request", 2),
+        ("response", 3),
+        ("metadata", 4),
+        ("revisit", 5),
+    ] {
+        let record = raw(
+            &[
+                ("WARC-Type", kind),
+                ("WARC-Date", "1970-01-01T00:00:00Z"),
+                ORIGINAL[0],
+                ORIGINAL[1],
+            ],
+            "",
+        );
+        assert_eq!(
+            &IdentityV1::new(&record).unwrap().preimage()[..2],
+            &[1, byte]
+        );
+    }
 }

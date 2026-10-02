@@ -47,6 +47,9 @@ exceptions = [
   { crate = "archivindex-warc-cli", allow = [
     "GPL-3.0-only",
   ] },
+  { crate = "archivindex-warc-identifier", allow = [
+    "GPL-3.0-only",
+  ] },
   { crate = "archivindex-warc-linter", allow = [
     "GPL-3.0-only",
   ] },

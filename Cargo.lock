@@ -110,6 +110,7 @@ dependencies = [
  "archivindex-publication",
  "archivindex-test-support",
  "archivindex-warc",
+ "archivindex-warc-identifier",
  "archivindex-warc-revisit-index",
  "chrono",
  "criterion",
@@ -227,6 +228,19 @@ dependencies = [
  "sha3",
  "thiserror",
  "xxhash-rust",
+]
+
+[[package]]
+name = "archivindex-warc-identifier"
+version = "0.1.0"
+dependencies = [
+ "archivindex-test-support",
+ "archivindex-warc",
+ "chrono",
+ "data-encoding",
+ "fluent-uri",
+ "sha2",
+ "thiserror",
 ]
 
 [[package]]

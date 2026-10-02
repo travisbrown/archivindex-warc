@@ -3,8 +3,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use archivindex_archiver::id::raw_record_id;
 use archivindex_warc::parse::untyped::name::Field;
+use archivindex_warc_identifier::IdentityV1;
 use archivindex_warc_ops::file::open;
 use archivindex_warc_ops::header::normalize_id;
 use fluent_uri::Uri;
@@ -39,7 +39,7 @@ pub(super) fn redirects(input: &Path) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
         }
         nodes.push(Node {
             written,
-            derived: raw_record_id(&record).ok(),
+            derived: IdentityV1::new(&record).map(|identity| identity.uri()).ok(),
         });
     }
 

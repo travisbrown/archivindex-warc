@@ -38,8 +38,7 @@ impl RecordType {
     /// The zero-based position in the canonical record-type order.
     ///
     /// Standard types have stable ranks from 0 through 7. All unknown types have rank 8;
-    /// [`Ord`] additionally compares their names. The archiver uses the rank plus one as the
-    /// type byte in its record ID scheme.
+    /// [`Ord`] additionally compares their names.
     #[must_use]
     pub const fn canonical_rank(&self) -> u8 {
         match self {

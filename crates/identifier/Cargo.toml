@@ -1,0 +1,28 @@
+[package]
+name = "archivindex-warc-identifier"
+version.workspace = true
+description = "Versioned content-derived identifiers for WARC records"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+archivindex-warc.workspace = true
+data-encoding.workspace = true
+fluent-uri.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+archivindex-test-support.workspace = true
+chrono.workspace = true

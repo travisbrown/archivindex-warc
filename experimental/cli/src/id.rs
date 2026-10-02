@@ -4,9 +4,9 @@
 
 use std::path::Path;
 
-use archivindex_archiver::id::raw_record_id;
 use archivindex_warc::parse::raw;
 use archivindex_warc::parse::untyped::name::Field;
+use archivindex_warc_identifier::IdentityV1;
 use archivindex_warc_ops::file::{compression, is_stdin, transform};
 use archivindex_warc_ops::header::{insert_field, redirect_references};
 use fluent_uri::Uri;
@@ -79,7 +79,7 @@ pub fn record_ids(input: &Path, output: &Path) -> Result<Summary> {
         compression(output),
         |index, mut record| {
             redirect_references(&mut record.header, &redirects);
-            match raw_record_id(&record) {
+            match IdentityV1::new(&record).map(|identity| identity.uri()) {
                 Ok(id) => {
                     set_record_id(&mut record.header, &id);
                     reidentified += 1;

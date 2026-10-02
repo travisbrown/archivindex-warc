@@ -100,8 +100,8 @@ archivindex-archiver reidentify --input input.warc.gz --output output.warc.gz
 ```
 
 Replaces each identifiable record's `WARC-Record-ID` with the identifier the
-[Archivindex scheme](../../crates/archiver/README.md#record-ids) assigns. Identity includes the
-capture date at microsecond precision, stored block, target URI, and revisit context, and never
+[Archivindex scheme](../../crates/identifier/README.md#identity-policy) assigns. Identity includes
+the capture date at microsecond precision, stored block, target URI, and revisit context, and never
 depends on another record. Applying the command to its own output preserves the record IDs and
 references.
 

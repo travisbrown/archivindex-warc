@@ -86,9 +86,8 @@ SQLite.
 The [linter](crates/linter/) checks WARC requirements and additional conventions, including digests,
 capture relationships, and gzip framing. The [WARC CLI](tools/cli/) exposes it through `lint`.
 
-The [`archivindex-archiver` package](crates/archiver/) captures HTTP exchanges into WARC files. Its
-README describes usage and the [record ID scheme](crates/archiver/README.md#record-ids) its records
-use.
+The [`archivindex-archiver` package](crates/archiver/) captures HTTP exchanges into WARC files. The
+[identifier crate](crates/identifier/) provides the versioned identity scheme its records use.
 
 ## Development
 

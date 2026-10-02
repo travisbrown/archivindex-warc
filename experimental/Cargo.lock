@@ -103,6 +103,7 @@ version = "0.1.0"
 dependencies = [
  "archivindex-publication",
  "archivindex-warc",
+ "archivindex-warc-identifier",
  "archivindex-warc-revisit-index",
  "chrono",
  "data-encoding",
@@ -129,6 +130,7 @@ dependencies = [
  "archivindex-cli-support",
  "archivindex-test-support",
  "archivindex-warc",
+ "archivindex-warc-identifier",
  "archivindex-warc-ops",
  "clap",
  "fluent-uri",
@@ -225,6 +227,17 @@ dependencies = [
  "md-5",
  "serde",
  "sha1",
+ "sha2",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "archivindex-warc-identifier"
+version = "0.1.0"
+dependencies = [
+ "archivindex-warc",
+ "data-encoding",
+ "fluent-uri",
  "sha2",
  "thiserror 2.0.21",
 ]

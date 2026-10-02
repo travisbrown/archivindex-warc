@@ -1,10 +1,10 @@
 //! Shared support for integration tests: WARC readback and payload digests.
 
-use archivindex_archiver::id::{raw_record_id, record_id};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::Record;
 use archivindex_warc::record::extension::NoExtension;
 use archivindex_warc::value::{Algorithm, LabelledDigest};
+use archivindex_warc_identifier::IdentityV1;
 
 /// Parse every record of a WARC held in memory, gzip-compressed or plain as its first bytes say.
 pub fn records(bytes: &[u8]) -> Result<Vec<Record>, archivindex_warc::io::read::Error> {
@@ -19,10 +19,12 @@ pub fn records(bytes: &[u8]) -> Result<Vec<Record>, archivindex_warc::io::read::
         .records()
         .collect::<Result<_, _>>()?;
     for record in &records {
-        let expected = record_id(record).unwrap();
+        let expected = IdentityV1::from_record(record).unwrap().uri();
         assert_eq!(record.core().record_id, expected);
         assert_eq!(
-            raw_record_id(&record.clone().into_raw().unwrap()).unwrap(),
+            IdentityV1::new(&record.clone().into_raw().unwrap())
+                .unwrap()
+                .uri(),
             expected
         );
     }

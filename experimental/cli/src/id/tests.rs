@@ -515,7 +515,7 @@ fn redirects_forward_references() {
     for record in output {
         assert_eq!(
             id_of(&record).trim(),
-            format!("<{}>", raw_record_id(&record).unwrap())
+            format!("<{}>", IdentityV1::new(&record).unwrap().uri())
         );
     }
 }

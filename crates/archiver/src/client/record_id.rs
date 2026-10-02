@@ -1,15 +1,14 @@
 //! Content-derived IDs for records the archiver authors.
 
 use archivindex_warc::record::Record;
-
-use crate::id;
+use archivindex_warc_identifier::IdentityV1;
 
 /// Assign an ID before creating links to this record or persisting its revisit target.
 pub(super) fn assign_record_id(record: &mut Record) -> std::io::Result<()> {
-    let id = id::record_id(record)
+    let id = IdentityV1::from_record(record)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
 
-    record.core_mut().record_id = id;
+    record.core_mut().record_id = id.uri();
 
     Ok(())
 }
