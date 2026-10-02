@@ -121,8 +121,8 @@ pub struct TransformSummary {
 /// rather than the file it held, so an output that is a hard link or symbolic link to an input
 /// leaves the input as it was. The partial file is created exclusively: a run whose partial file
 /// already exists fails without writing, so concurrent runs cannot share one, a link or an input at
-/// that path is left as it was, and a partial file left by an interrupted run must be removed
-/// first.
+/// that path is left as it was. A failed or interrupted run retains its partial file, which must
+/// be moved or removed before retrying.
 pub fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Record>>>(
     inputs: &[&Path],
     output: &Path,
@@ -140,13 +140,12 @@ pub fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Record>>>(
         .map(|input| open(input).map(|reader| (*input, reader)))
         .collect::<Result<Vec<_>>>()?;
     let partial = partial_path(output);
-    let publication =
-        Publication::with_partial_path(output, &partial, Policy::Replace).map_err(|source| {
-            Error::Create {
-                path: partial.clone(),
-                source,
-            }
-        })?;
+    let publication = Publication::with_partial_path(output, &partial, Policy::Replace)
+        .map_err(|source| Error::Create {
+            path: partial.clone(),
+            source,
+        })?
+        .retain_partial();
     let file = publication.reopen().map_err(|source| Error::Create {
         path: partial.clone(),
         source,
@@ -338,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn leaves_the_previous_output_in_place_when_a_record_cannot_be_read() {
+    fn retains_partial_output_when_a_record_cannot_be_read() {
         let directory = tempfile::tempdir().unwrap();
         let input = directory.path().join("input.warc");
         let output = directory.path().join("output.warc");
@@ -354,7 +353,10 @@ mod tests {
 
         assert!(matches!(error, Error::Read { .. }));
         assert_eq!(std::fs::read(&output).unwrap(), b"previous");
-        assert!(!partial_path(&output).exists());
+        assert_eq!(
+            std::fs::read(partial_path(&output)).unwrap(),
+            resource("body")
+        );
     }
 
     #[test]

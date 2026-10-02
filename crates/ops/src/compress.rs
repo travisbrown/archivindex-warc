@@ -72,7 +72,8 @@ pub fn compress<R: BufRead, W: Write>(
 /// is rewritten to the name of `output`. The records are written to `<output>.partial`, which must
 /// not already exist, and moved into place once the last one is written, so a failure leaves any
 /// file already at `output` as it was, and an output that is a hard link or symbolic link to the
-/// input leaves the input as it was.
+/// input leaves the input as it was. A failed run retains its partial file, which must be moved or
+/// removed before retrying.
 ///
 /// # Errors
 ///
@@ -341,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_record_leaves_the_previous_output_in_place() {
+    fn an_unreadable_record_retains_partial_output() {
         let directory = tempfile::tempdir().unwrap();
         let input = directory.path().join("input.warc");
         let output = directory.path().join("output.warc.gz");
@@ -354,7 +355,8 @@ mod tests {
 
         assert!(matches!(error, crate::Error::Read { .. }));
         assert_eq!(std::fs::read(&output).unwrap(), b"previous");
-        assert!(!directory.path().join("output.warc.gz.partial").exists());
+        let partial = std::fs::read(directory.path().join("output.warc.gz.partial")).unwrap();
+        assert_eq!(members(&partial).concat(), archive());
     }
 
     #[test]

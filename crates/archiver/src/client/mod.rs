@@ -147,6 +147,8 @@ impl Archiver {
     ///
     /// The file name of `path` is recorded as the `WARC-Filename` of the `warcinfo` record, so it
     /// must be UTF-8 without control characters.
+    /// Captures are written to `<path>.partial`, which must not already exist. If writing or
+    /// publication fails, the partial file is retained for recovery.
     pub fn archive_to_path<P: AsRef<Path>, I: IntoIterator<Item = S>, S: AsRef<str>>(
         &self,
         urls: I,

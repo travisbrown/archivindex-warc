@@ -22,6 +22,9 @@ The `session` module supports driver-steered crawls, retries, and a persistent r
 deduplication and HTTP revalidation across runs. For a command-line interface, see
 [`archivindex-archiver-cli`](../../experimental/cli/README.md).
 
+Path output is written to `<output>.partial`, then published once complete. A failed run retains
+the partial file for recovery. Move or remove it before retrying with the same output path.
+
 ## Proxies
 
 Set `Config::proxy` to route every request through a SOCKS5 proxy, including redirects, challenge

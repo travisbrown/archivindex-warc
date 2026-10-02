@@ -2315,6 +2315,8 @@ fn recording_acknowledgment_respects_cancellation_and_failures()
                 assert!(result.is_err());
                 assert_eq!(driver.acknowledgments.len(), 1);
                 assert_eq!(std::fs::read(&output)?, b"existing output");
+                let partial = directory.path().join("acknowledged.warc.gz.partial");
+                assert_eq!(records(&std::fs::read(partial)?)?.len(), 4);
             }
             "rejected" => {
                 assert_eq!(driver.acknowledgments, [None]);

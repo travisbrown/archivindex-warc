@@ -1,6 +1,6 @@
 //! WARC spooling and revisit-state accumulation.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
 use std::path::{Path, PathBuf};
 
@@ -16,7 +16,6 @@ use archivindex_warc_revisit_index::resource::{
 };
 use fluent_uri::Uri;
 use http::header::HeaderMap;
-use tempfile::{NamedTempFile, TempPath};
 
 use super::outcome::{CaptureOutcome, Exchange, Original, request_field};
 use super::warc_fields::{WarcinfoOptions, warcinfo_record};
@@ -28,7 +27,7 @@ use crate::config::DigestFormats;
 /// Files accumulated while captures are written to a spooled WARC file.
 pub struct Collection {
     warc: RecordWriter<BufWriter<File>>,
-    spool_path: Option<TempPath>,
+    publication: Option<Publication>,
     warcinfo_id: Uri<String>,
     summary: ArchiveSummary,
     /// Payload and conditional-request state created by this collection.
@@ -72,31 +71,21 @@ impl Collection {
     /// Start a collection in `<output>.partial` so its growth is visible while it is written.
     ///
     /// The `warcinfo` record is built before `<output>.partial` is created, so an unrecordable WARC
-    /// file name leaves nothing on disk.
+    /// file name leaves nothing on disk. Once created, the partial file is retained if writing or
+    /// publication fails.
     pub fn new_for_path(output: &Path, options: CollectionOptions<'_>) -> Result<Self, Error> {
         let warcinfo = warcinfo_record(options.warc_name, &options.warcinfo)?;
-        if output.try_exists()? {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!("output already exists: {}", output.display()),
-            )
-            .into());
-        }
+        let publication =
+            Publication::with_partial_path(output, partial_path(output), Policy::CreateNew)?
+                .retain_partial();
+        let file = publication.reopen()?;
 
-        let partial_path = std::path::absolute(partial_path(output))?;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&partial_path)?;
-        let spool_path = TempPath::try_from_path(&partial_path)?;
-
-        Self::with_spool(file, Some(spool_path), warcinfo, options)
+        Self::with_spool(file, Some(publication), warcinfo, options)
     }
 
     fn with_spool(
         file: File,
-        spool_path: Option<TempPath>,
+        publication: Option<Publication>,
         warcinfo: Record,
         options: CollectionOptions<'_>,
     ) -> Result<Self, Error> {
@@ -120,13 +109,13 @@ impl Collection {
         );
         let warcinfo_id = warcinfo.core().record_id.clone();
         warc.write(warcinfo)?;
-        if spool_path.is_some() {
+        if publication.is_some() {
             warc.flush()?;
         }
 
         Ok(Self {
             warc,
-            spool_path,
+            publication,
             warcinfo_id,
             summary: ArchiveSummary::default(),
             session_index: Index::open_in_memory()?,
@@ -274,7 +263,7 @@ impl Collection {
 
     /// Flush a spooled WARC so that its partial file holds every completed capture.
     fn flush_spool(&mut self) -> Result<(), Error> {
-        if self.spool_path.is_some() {
+        if self.publication.is_some() {
             self.warc.flush()?;
         }
 
@@ -378,7 +367,7 @@ impl Collection {
     pub fn finish<W: Write>(self, mut output: W) -> Result<ArchiveSummary, Error> {
         let Self {
             warc,
-            spool_path: _,
+            publication: _,
             warcinfo_id: _,
             summary,
             persistent_index: _,
@@ -397,7 +386,7 @@ impl Collection {
     pub fn finish_to_path(self, path: &Path) -> Result<ArchiveSummary, Error> {
         let Self {
             warc,
-            spool_path,
+            publication,
             warcinfo_id: _,
             summary,
             persistent_index: _,
@@ -406,15 +395,12 @@ impl Collection {
             min_revisit_payload_length: _,
         } = self;
         let mut source = warc.finish().map_err(std::io::IntoInnerError::into_error)?;
-        source.rewind()?;
-        let publication = if let Some(spool_path) = spool_path {
-            Publication::from_temporary(
-                path,
-                NamedTempFile::from_parts(source, spool_path),
-                Policy::CreateNew,
-            )?
+        let publication = if let Some(publication) = publication {
+            drop(source);
+            publication
         } else {
-            let mut publication = Publication::new(path, Policy::CreateNew)?;
+            source.rewind()?;
+            let mut publication = Publication::new(path, Policy::CreateNew)?.retain_partial();
             std::io::copy(&mut source, &mut publication)?;
             publication
         };

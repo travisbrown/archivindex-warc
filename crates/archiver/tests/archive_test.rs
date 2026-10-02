@@ -840,6 +840,42 @@ fn archive_to_path_writes_a_collection() -> Result<(), Box<dyn std::error::Error
 }
 
 #[test]
+fn archive_to_path_retains_partial_output_when_progress_panics()
+-> Result<(), Box<dyn std::error::Error>> {
+    for gzip_warc in [false, true] {
+        let server = serve(1)?;
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("test.warc");
+        let partial_path = directory.path().join("test.warc.partial");
+        let archiver = Archiver::new(Config {
+            gzip_warc,
+            ..Config::default()
+        })?;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            archiver.archive_to_path_with_progress(
+                [format!("http://127.0.0.1:{}/", server.port())],
+                &path,
+                &mut |event: ProgressEvent<'_>| {
+                    if matches!(event, ProgressEvent::Written { .. }) {
+                        panic!("interrupted after recording a capture");
+                    }
+                    ProgressControl::Continue
+                },
+            )
+        }));
+        let _ = server.finish();
+
+        assert!(result.is_err());
+        assert!(!path.exists());
+        assert_eq!(records(&std::fs::read(&partial_path)?)?.len(), 4);
+        assert!(archiver.archive_to_path::<_, _, &str>([], &path).is_err());
+        assert_eq!(records(&std::fs::read(&partial_path)?)?.len(), 4);
+    }
+
+    Ok(())
+}
+
+#[test]
 fn recorded_messages_match_the_wire_bytes() -> Result<(), Box<dyn std::error::Error>> {
     let server = serve(1)?;
     let port = server.port();
