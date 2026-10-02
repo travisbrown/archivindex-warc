@@ -1,4 +1,4 @@
-//! The lint rules, one module per family. The module documentation lists the rules in the order
+//! The lint rules, one module per family. The crate documentation lists the rules in the order
 //! they run.
 
 pub(super) mod block;

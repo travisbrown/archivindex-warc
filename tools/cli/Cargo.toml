@@ -26,6 +26,7 @@ bundled = ["archivindex-warc-revisit-index/bundled"]
 anyhow = "1"
 archivindex-cli-support.workspace = true
 archivindex-warc.workspace = true
+archivindex-warc-linter.workspace = true
 archivindex-warc-ops = { path = "../../crates/ops" }
 archivindex-warc-revisit-index = { version = "0.1.0", path = "../../crates/revisit-index/" }
 clap.workspace = true

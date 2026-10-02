@@ -20,7 +20,7 @@ use super::report::{Checked, Custom, Finding, Subject, Violation};
 ///
 /// ```
 /// use archivindex_warc::record::Record;
-/// use archivindex_warc_ops::lint::{Custom, Findings, Rule};
+/// use archivindex_warc_linter::{Custom, Findings, Rule};
 ///
 /// /// Every record of a file should carry a target URI.
 /// #[derive(Default)]

@@ -85,9 +85,10 @@ platform's default SVG viewer.
 cargo run --manifest-path tools/cli/Cargo.toml -- lint -i archive.warc.gz
 ```
 
-Checks WARC requirements and additional conventions, including header order, capture-record
-relationships, digests, and record-at-a-time gzip framing. Use `--format json` for JSON Lines
-output. The command exits with status 1 when it finds problems.
+Uses [`archivindex-warc-linter`](../../crates/linter/) to check WARC requirements and additional
+conventions, including header order, capture-record relationships, digests, and record-at-a-time
+gzip framing. Use `--format json` for JSON Lines output. The command exits with status 1 when it
+finds problems.
 
 ## load-revisit-index
 

@@ -197,6 +197,7 @@ dependencies = [
  "archivindex-cli-support",
  "archivindex-test-support",
  "archivindex-warc",
+ "archivindex-warc-linter",
  "archivindex-warc-ops",
  "archivindex-warc-revisit-index",
  "clap",
@@ -229,6 +230,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "archivindex-warc-linter"
+version = "0.1.0"
+dependencies = [
+ "archivindex-warc",
+ "flate2",
+ "fluent-uri",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "archivindex-warc-ops"
 version = "0.1.0"
 dependencies = [
@@ -236,10 +249,7 @@ dependencies = [
  "archivindex-test-support",
  "archivindex-warc",
  "flate2",
- "fluent-uri",
  "log",
- "serde",
- "serde_json",
  "tempfile",
  "thiserror",
 ]

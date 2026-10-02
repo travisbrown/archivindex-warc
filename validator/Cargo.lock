@@ -159,9 +159,7 @@ dependencies = [
  "archivindex-publication",
  "archivindex-warc",
  "flate2",
- "fluent-uri",
  "log",
- "serde",
  "thiserror",
 ]
 

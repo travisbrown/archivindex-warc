@@ -98,7 +98,7 @@ impl From<Custom> for Violation {
 
 /// A rule a record breaks.
 ///
-/// The module documentation lists the rules. The fields carry what the rule expected and what the
+/// The crate documentation lists the rules. The fields carry what the rule expected and what the
 /// record had, where that is not obvious from the variant.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, thiserror::Error)]
 #[serde(tag = "rule", rename_all = "snake_case")]
@@ -391,14 +391,14 @@ impl Violation {
 /// A value serialized as its printed form.
 struct AsDisplay<'a, T>(&'a T);
 
-impl<T: Display> serde::Serialize for AsDisplay<'_, T> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+impl<T: Display> serde::ser::Serialize for AsDisplay<'_, T> {
+    fn serialize<S: serde::ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(self.0)
     }
 }
 
 /// Serialize a value as its printed form.
-fn serialize_display<T: Display, S: serde::Serializer>(
+fn serialize_display<T: Display, S: serde::ser::Serializer>(
     value: &T,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
@@ -410,7 +410,7 @@ fn serialize_display<T: Display, S: serde::Serializer>(
     clippy::ref_option,
     reason = "`serialize_with` hands the field over as it is declared"
 )]
-fn serialize_optional_display<T: Display, S: serde::Serializer>(
+fn serialize_optional_display<T: Display, S: serde::ser::Serializer>(
     value: &Option<T>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
@@ -421,7 +421,7 @@ fn serialize_optional_display<T: Display, S: serde::Serializer>(
 }
 
 /// Serialize values as a sequence of their printed forms.
-fn serialize_display_sequence<T: Display, S: serde::Serializer>(
+fn serialize_display_sequence<T: Display, S: serde::ser::Serializer>(
     values: &[T],
     serializer: S,
 ) -> Result<S::Ok, S::Error> {

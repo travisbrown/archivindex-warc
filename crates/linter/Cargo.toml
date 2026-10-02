@@ -1,24 +1,23 @@
 [package]
-name = "archivindex-warc-ops"
+name = "archivindex-warc-linter"
 version.workspace = true
-description = "Higher-level operations for WARC files"
+description = "Lint WARC files against standard requirements and additional conventions"
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
-publish = false
 
 [lints]
 workspace = true
 
 [dependencies]
-archivindex-publication.workspace = true
 archivindex-warc.workspace = true
-flate2.workspace = true
-log.workspace = true
+fluent-uri.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-archivindex-test-support.workspace = true
-tempfile.workspace = true
+flate2.workspace = true
+serde_json.workspace = true

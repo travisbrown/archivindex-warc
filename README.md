@@ -83,6 +83,9 @@ The [digest crate](crates/digest/) handles labelled digests independently of WAR
 [revisit index](crates/revisit-index/) stores payload sources and conditional-request state in
 SQLite.
 
+The [linter](crates/linter/) checks WARC requirements and additional conventions, including digests,
+capture relationships, and gzip framing. The [WARC CLI](tools/cli/) exposes it through `lint`.
+
 The [`archivindex-archiver` package](crates/archiver/) captures HTTP exchanges into WARC files. Its
 README describes usage and the [record ID scheme](crates/archiver/README.md#record-ids) its records
 use.

@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use archivindex_cli_support::{CommandOutcome, Verbosity, exit_code, plural};
 use archivindex_warc::io::write::{DEFAULT_GZIP_COMPRESSION_LEVEL, MAX_GZIP_COMPRESSION_LEVEL};
 use archivindex_warc::value::{Text, TextError};
-use archivindex_warc_ops::lint::{Finding, Linter};
+use archivindex_warc_linter::{Finding, Linter};
 use archivindex_warc_ops::merge::WarcinfoDifference;
 use archivindex_warc_ops::rewrite::WarcinfoValues;
 use archivindex_warc_revisit_index::{Index, LoadSummary};
