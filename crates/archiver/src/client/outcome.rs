@@ -16,7 +16,7 @@ use http::header::{
 use http::{Method, StatusCode};
 use url::{Position, Url};
 
-use super::challenge::{self, Challenge};
+use super::challenge;
 use super::collection::Collection;
 use crate::backend::CapturedExchange;
 use crate::session::Request;
@@ -348,10 +348,26 @@ impl Archiver {
                 Err(error) => return CaptureOutcome::Failed { exchanges, error },
             };
             let status = exchange.status;
+            let recognize = follow_up.is_none()
+                && answered < MAX_CHALLENGE_ANSWERS
+                && exchange.captured.truncated.is_none();
+            let challenge = recognize
+                .then(|| challenge::recognize(&exchange.captured, &current, deadline))
+                .flatten();
             exchanges.push(exchange);
+            if recognize && deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return CaptureOutcome::Failed {
+                    exchanges,
+                    error: std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "capture deadline elapsed",
+                    )
+                    .into(),
+                };
+            }
 
             match follow_up {
-                Some(FollowUp::Request(next)) if redirects < self.config.max_redirects => {
+                Some(next) if redirects < self.config.max_redirects => {
                     redirects += 1;
                     redirect_request(
                         &current,
@@ -363,15 +379,17 @@ impl Archiver {
                     );
                     current = next;
                 }
-                Some(FollowUp::Challenge(challenge)) if answered < MAX_CHALLENGE_ANSWERS => {
-                    // A challenge is answered by repeating the request that met it.
+                Some(_) => break,
+                None => {
+                    let Some(challenge) = challenge else {
+                        break;
+                    };
                     match self.answer(&current, challenge, &mut exchanges, deadline) {
                         Ok(true) => answered += 1,
                         Ok(false) => break,
                         Err(error) => return CaptureOutcome::Failed { exchanges, error },
                     }
                 }
-                Some(FollowUp::Request(_) | FollowUp::Challenge(_)) | None => break,
             }
         }
 
@@ -390,7 +408,7 @@ impl Archiver {
         body: Option<&[u8]>,
         revalidate: Option<&Collection>,
         deadline: Option<Instant>,
-    ) -> Result<(Exchange, Option<FollowUp>), Error> {
+    ) -> Result<(Exchange, Option<Url>), Error> {
         if !url.username().is_empty() || url.password().is_some() {
             return Err(Error::CredentialedUrl(redact_credentials(url)));
         }
@@ -438,12 +456,7 @@ impl Archiver {
             .response_metadata
             .header("location")
             .and_then(|value| std::str::from_utf8(value).ok());
-        // A redirect is followed as it stands; only a response that is going nowhere is examined
-        // for a challenge, which a host serves in place of the representation asked for.
-        let follow_up = next_location(url, status, location).map_or_else(
-            || challenge::recognize(&captured, url).map(FollowUp::Challenge),
-            |next| Some(FollowUp::Request(next)),
-        );
+        let follow_up = next_location(url, status, location);
         let revalidated = original
             .filter(|_| status == StatusCode::NOT_MODIFIED.as_u16())
             .map(|original| original.target);
@@ -497,14 +510,6 @@ fn redirect_request(
         headers.remove(CONTENT_TYPE);
         headers.remove(TRANSFER_ENCODING);
     }
-}
-
-/// What a captured exchange leaves to be requested next.
-enum FollowUp {
-    /// A redirect target.
-    Request(Url),
-    /// A challenge to answer before repeating the request that met it.
-    Challenge(Challenge),
 }
 
 /// Whether a status redirects to the response's `Location`.
@@ -564,11 +569,75 @@ pub fn redact_credentials(url: &Url) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use archivindex_test_support::prop;
     use http::header::{ACCEPT_LANGUAGE, USER_AGENT};
     use proptest::prelude::*;
 
     use super::*;
+
+    /// An exhausted challenge deadline retains the response and reports failure. A backend's
+    /// timed-out partial response is still a successful truncated capture.
+    #[test]
+    fn expired_challenge_deadlines_preserve_the_exchange() {
+        use archivindex_warc::record::header::truncated_type::TruncatedType;
+        use archivindex_warc::record::http::ResponseMetadata;
+
+        #[derive(Debug)]
+        struct Canned(CapturedExchange);
+
+        impl crate::backend::Backend for Canned {
+            fn fetch_within(
+                &self,
+                _: &Method,
+                _: &http::Uri,
+                _: &HeaderMap,
+                _: Option<&[u8]>,
+                _: Option<Instant>,
+            ) -> Result<CapturedExchange, crate::backend::Error> {
+                Ok(self.0.clone())
+            }
+        }
+
+        for truncated in [None, Some(TruncatedType::Time)] {
+            let response = b"HTTP/1.1 200 OK\r\n\r\nretained".to_vec();
+            let captured = CapturedExchange {
+                request: b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".to_vec(),
+                response_metadata: ResponseMetadata::parse(&response).unwrap(),
+                response,
+                request_protocols: Vec::new(),
+                response_protocols: Vec::new(),
+                target_uri: Uri::parse("https://example.com/".to_owned()).unwrap(),
+                ip_address: None,
+                date: chrono::Utc::now(),
+                fetch_time: Duration::ZERO,
+                truncated: truncated.clone(),
+            };
+            let archiver = Archiver::with_backend(
+                crate::Config {
+                    max_capture_time: Some(Duration::ZERO),
+                    ..crate::Config::default()
+                },
+                Arc::new(Canned(captured.clone())),
+            )
+            .unwrap();
+            let outcome = archiver.capture("https://example.com/", None);
+            let exchanges = match (truncated, outcome) {
+                (None, CaptureOutcome::Failed { exchanges, error }) => {
+                    assert!(
+                        matches!(error, Error::Io(error) if error.kind() == std::io::ErrorKind::TimedOut)
+                    );
+                    exchanges
+                }
+                (Some(_), CaptureOutcome::Captured { exchanges, .. }) => exchanges,
+                _ => panic!("unexpected capture outcome"),
+            };
+            assert_eq!(exchanges.len(), 1);
+            assert_eq!(exchanges[0].captured, captured);
+        }
+    }
 
     #[proptest::property_test]
     fn request_targets_are_uris_without_a_fragment(#[strategy = prop::http_url()] url: Url) {

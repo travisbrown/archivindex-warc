@@ -4,6 +4,8 @@
 //! have. The winning nonce is posted back to a verification endpoint, which answers with the
 //! clearance cookie the host then expects.
 
+use std::time::Instant;
+
 use http::header::HeaderValue;
 use sha2::{Digest, Sha256};
 use url::Url;
@@ -44,7 +46,11 @@ impl ProofOfWork {
 }
 
 /// Recognize and solve a bounded Simply.com challenge without executing its JavaScript.
-pub fn recognize(captured: &CapturedExchange, request_url: &Url) -> Option<Challenge> {
+pub fn recognize(
+    captured: &CapturedExchange,
+    request_url: &Url,
+    deadline: Option<Instant>,
+) -> Option<Challenge> {
     // Simply-hosted sites may put another reverse proxy (notably Cloudflare) in front of the
     // challenge, so the response's `Server` field is not a reliable identifier. The distinctive
     // status and the validated challenge protocol below provide the useful recognition signals.
@@ -87,7 +93,7 @@ pub fn recognize(captured: &CapturedExchange, request_url: &Url) -> Option<Chall
     }
 
     Some(Challenge::ProofOfWork(ProofOfWork {
-        nonce: solve(&token, difficulty)?,
+        nonce: solve(&token, difficulty, deadline)?,
         token,
         timestamp,
         verification_url,
@@ -122,13 +128,15 @@ pub fn clearance_cookie(
 }
 
 /// Search for a nonce whose digest has at least `difficulty` leading zero bits.
-fn solve(token: &str, difficulty: u32) -> Option<u64> {
+fn solve(token: &str, difficulty: u32, deadline: Option<Instant>) -> Option<u64> {
     let mut prefix = Sha256::new();
     prefix.update(token.as_bytes());
     prefix.update(b":");
 
-    super::pow::solve(&prefix, |digest| leading_zero_bits(digest) >= difficulty)
-        .map(|(nonce, _)| nonce)
+    super::pow::solve(&prefix, deadline, |digest| {
+        leading_zero_bits(digest) >= difficulty
+    })
+    .map(|(nonce, _)| nonce)
 }
 
 fn leading_zero_bits(bytes: &[u8]) -> u32 {
@@ -158,7 +166,7 @@ mod tests {
     #[test]
     fn proof_of_work_has_the_requested_leading_zero_bits() {
         let token = "021c7f24e8c1ed8c4472a22aa9b441b223a08cb15fa889293574500e190960dc";
-        let nonce = solve(token, 12).expect("a bounded solution");
+        let nonce = solve(token, 12, None).expect("a bounded solution");
         let digest = sha2::Sha256::digest(format!("{token}:{nonce}"));
 
         assert!(leading_zero_bits(&digest) >= 12);

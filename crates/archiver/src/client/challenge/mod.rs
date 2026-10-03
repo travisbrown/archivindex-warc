@@ -6,7 +6,7 @@
 //! Three challenges are recognized: Sucuri `CloudProxy`'s cookie challenge, whose page states the
 //! cookie in a script that is decoded rather than run, and the proofs of work of the Varnish
 //! hexadecimal-prefix challenge and Simply.com, which are solved by a SHA-256 search bounded by an
-//! attempt count rather than the clock.
+//! attempt count and the capture deadline.
 //!
 //! Every exchange a challenge causes is recorded like any other, so the WARC file documents how the
 //! eventual response was obtained. Answering a challenge is not a redirect: a host that meets each
@@ -30,10 +30,6 @@ mod simply;
 mod sucuri;
 mod varnish_pow;
 
-/// The recognizers, tried in order.
-const RECOGNIZERS: [fn(&CapturedExchange, &Url) -> Option<Challenge>; 3] =
-    [sucuri::recognize, varnish_pow::recognize, simply::recognize];
-
 /// A recognized challenge, and what answering it requires.
 pub enum Challenge {
     /// The cookie the host expects, which it stated in the challenge page.
@@ -43,10 +39,17 @@ pub enum Challenge {
 }
 
 /// Recognize the challenge a response carries, when it is one this crate reads.
-pub fn recognize(captured: &CapturedExchange, url: &Url) -> Option<Challenge> {
-    RECOGNIZERS
-        .iter()
-        .find_map(|recognize| recognize(captured, url))
+pub fn recognize(
+    captured: &CapturedExchange,
+    url: &Url,
+    deadline: Option<Instant>,
+) -> Option<Challenge> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return None;
+    }
+    sucuri::recognize(captured, url)
+        .or_else(|| varnish_pow::recognize(captured, url, deadline))
+        .or_else(|| simply::recognize(captured, url, deadline))
 }
 
 impl Archiver {

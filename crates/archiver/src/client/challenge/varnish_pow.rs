@@ -4,6 +4,8 @@
 //! digits of `SHA-256(nonce || issued_at || candidate)` must equal a given digit. The host expects
 //! the winning candidate back in a cookie, alongside the trace cookie it set on the challenge.
 
+use std::time::Instant;
+
 use data_encoding::HEXLOWER;
 use http::header::HeaderValue;
 use sha2::{Digest, Sha256};
@@ -19,7 +21,11 @@ const CHALLENGE_STATUS: u16 = 202;
 const MAX_DIFFICULTY: usize = 5;
 
 /// Solve a recognized challenge and return the trace and bypass cookies for the reload.
-pub fn recognize(captured: &CapturedExchange, request_url: &Url) -> Option<Challenge> {
+pub fn recognize(
+    captured: &CapturedExchange,
+    request_url: &Url,
+    deadline: Option<Instant>,
+) -> Option<Challenge> {
     if captured.response_metadata.status != CHALLENGE_STATUS
         || captured
             .response_metadata
@@ -54,12 +60,6 @@ pub fn recognize(captured: &CapturedExchange, request_url: &Url) -> Option<Chall
         return None;
     }
 
-    let (candidate, digest) = solve(
-        &nonce,
-        &issued_at,
-        difficulty_char.as_bytes()[0],
-        difficulty,
-    )?;
     let trace = captured.response_metadata.header("set-cookie")?;
     let trace = std::str::from_utf8(trace).ok()?.split(';').next()?.trim();
     let trace_value = trace.strip_prefix("pow_trace=")?;
@@ -76,6 +76,13 @@ pub fn recognize(captured: &CapturedExchange, request_url: &Url) -> Option<Chall
         return None;
     }
 
+    let (candidate, digest) = solve(
+        &nonce,
+        &issued_at,
+        difficulty_char.as_bytes()[0],
+        difficulty,
+        deadline,
+    )?;
     let cookie = format!("{trace}; pow_bypass={nonce}|{issued_at}|{candidate}|{digest}|{hmac}");
     Some(Challenge::Cookie(StoredCookie {
         value: HeaderValue::from_str(&cookie).ok()?,
@@ -101,6 +108,7 @@ fn solve(
     issued_at: &str,
     difficulty_char: u8,
     difficulty: usize,
+    deadline: Option<Instant>,
 ) -> Option<(u64, String)> {
     // A single hexadecimal digit, so its value fits in a nibble.
     let nibble = u8::try_from(char::from(difficulty_char).to_digit(16)?).ok()?;
@@ -108,7 +116,7 @@ fn solve(
     prefix.update(nonce.as_bytes());
     prefix.update(issued_at.as_bytes());
 
-    super::pow::solve(&prefix, |digest| {
+    super::pow::solve(&prefix, deadline, |digest| {
         starts_with_nibble(digest, nibble, difficulty)
     })
     .map(|(candidate, digest)| (candidate, HEXLOWER.encode(&digest)))
@@ -148,8 +156,14 @@ mod tests {
 
     #[test]
     fn solution_has_the_requested_hexadecimal_prefix() {
-        let (candidate, digest) = solve("83462578e314e3b20855f1cb32d30a09", "1787485140", b'b', 2)
-            .expect("a bounded solution");
+        let (candidate, digest) = solve(
+            "83462578e314e3b20855f1cb32d30a09",
+            "1787485140",
+            b'b',
+            2,
+            None,
+        )
+        .expect("a bounded solution");
 
         assert!(candidate > 0);
         assert!(digest.starts_with("bb"));
