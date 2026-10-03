@@ -19,7 +19,7 @@
 //! 9. Each `WARC-Block-Digest` is the digest of the record's block, and each
 //!    `WARC-Payload-Digest` the digest of the payload that block determines. A digest under an
 //!    algorithm this build does not compute is not checked, and neither is the payload digest of a
-//!    segment or of a record declaring its block truncated.
+//!    segment or a truncated record whose payload cannot be extracted.
 //! 10. The first record is warcinfo.
 //! 11. Each other record references the most recent warcinfo in `WARC-Warcinfo-ID`.
 //! 12. Each warcinfo body has an `isPartOf` collection identifier: host, optional path parts, and

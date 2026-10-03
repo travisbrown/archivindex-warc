@@ -106,6 +106,18 @@ mod tests {
     const EMPTY_DIGEST: &str = "sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ";
 
     #[test]
+    fn truncated_resources_still_report_incorrect_payload_digests() {
+        let record = resource(OTHER_ID)
+            .with("WARC-Truncated", "length")
+            .set("WARC-Payload-Digest", EMPTY_DIGEST);
+        assert!(
+            findings(&[record])
+                .iter()
+                .any(|(_, finding)| matches!(finding, Violation::PayloadDigestMismatch { .. }))
+        );
+    }
+
+    #[test]
     fn records_with_payloads_carry_payload_digests() {
         let mut records = capture();
         records[2] = records[2].clone().without("WARC-Payload-Digest");

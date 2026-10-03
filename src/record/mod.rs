@@ -823,7 +823,7 @@ impl<E: Extension> Record<E> {
 
     /// Check the declared payload digest and return its failure, if any.
     ///
-    /// Returns `None` for a segment or truncated record, for a payload
+    /// Returns `None` for a segment, for a payload
     /// [`payload_bytes`](Self::payload_bytes) does not determine, and when no supported digest can
     /// be checked. A malformed HTTP message is reported where a digest is declared over it. The
     /// payload is recomputed on every call.
@@ -900,7 +900,7 @@ impl<E: Extension> Record<E> {
     ///
     /// A record declaring no `WARC-Block-Digest` is given one, and a `WARC-Payload-Digest` is added
     /// to a record whose payload [`payload_bytes`](Self::payload_bytes) determines, unless it is a
-    /// segment or truncated. The algorithm is chosen at the type level ([`Supported`]), so an
+    /// segment. The algorithm is chosen at the type level ([`Supported`]), so an
     /// algorithm this build cannot compute is a compile error. Declared digests are checked exactly
     /// as [`into_raw`](Self::into_raw) checks them.
     ///

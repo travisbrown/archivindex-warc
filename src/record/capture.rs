@@ -106,7 +106,7 @@ impl<E: Extension> CaptureEvent<E> {
     /// Set the response or `revisit` record's `WARC-Truncated` reason.
     ///
     /// An `identical-payload-digest` revisit ignores this reason; a non-empty response head uses
-    /// `length`. A truncated record's payload digest is not checked when rendered.
+    /// `length`. A truncated response's digest describes its retained payload.
     #[must_use]
     pub fn truncated(mut self, reason: TruncatedType<E::TruncatedReasons>) -> Self {
         self.truncated = Some(reason);
@@ -541,7 +541,7 @@ mod tests {
         records
             .response
             .into_raw()
-            .expect("a renderable truncated response despite the mismatched digest");
+            .expect_err("a truncated response still checks its retained payload digest");
     }
 
     const NOT_MODIFIED_BLOCK: &[u8] = b"HTTP/1.1 304 Not Modified\r\netag: \"1\"\r\n\r\n";

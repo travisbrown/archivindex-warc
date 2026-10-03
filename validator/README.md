@@ -20,7 +20,8 @@ once at each of its three representation levels:
 - `archivindex untyped` reads each field value against its grammar.
 - `archivindex record` checks each record against the standard's rules for its type and declared
   version. It also checks declared block and payload digests when their algorithms are supported and
-  the content is available. Payload digests on segmented or truncated records are not checked.
+  the content is available. Segmented payloads and truncated payloads that cannot be extracted are
+  not checked.
 
 A layer reports one line per record it could not read, numbered by the record's position in the
 file. Framing and stream failures stop a read, so a file the raw layer refuses is reported as

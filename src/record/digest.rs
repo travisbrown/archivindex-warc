@@ -114,7 +114,7 @@ pub fn verify_payload_digest(declared: &LabelledDigest, payload: &[u8]) -> Resul
 /// Validate a declared payload digest or compute one to add during rendering.
 ///
 /// Returns a newly computed digest only when the record needs one and `added` supplies a format. A
-/// valid declared digest, a segment or truncated record, an undetermined payload, or a `None`
+/// valid declared digest, a segment, an undetermined payload, or a `None`
 /// format yields `None`. A malformed HTTP message is an error only when a payload digest is
 /// declared.
 pub fn check_payload_digest<E: Extension>(
@@ -124,7 +124,7 @@ pub fn check_payload_digest<E: Extension>(
     let Some(headers) = record.payload() else {
         return Ok(None);
     };
-    if record.segment_number().is_some() || record.core().truncated.is_some() {
+    if record.segment_number().is_some() {
         return Ok(None);
     }
 
@@ -135,6 +135,11 @@ pub fn check_payload_digest<E: Extension>(
     let payload = match record.payload_bytes() {
         Ok(Some(payload)) => payload,
         Ok(None) | Err(payload::Error::UnsupportedTransferCoding(_)) => return Ok(None),
+        Err(payload::Error::IncompleteChunkedBody | payload::Error::UnterminatedHeaders)
+            if record.core().truncated.is_some() =>
+        {
+            return Ok(None);
+        }
         Err(error) => {
             return if declared.is_some() {
                 Err(error.into())

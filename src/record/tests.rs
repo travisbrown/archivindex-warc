@@ -925,30 +925,86 @@ fn a_payload_digest_over_a_block_framing_no_payload_is_reported() {
     assert_eq!(written(&raw, "WARC-Payload-Digest"), None);
 }
 
-/// Partial records preserve declared payload digests and do not receive new ones.
+/// Segments preserve logical payload digests and do not receive locally computed ones.
 #[test]
-fn the_payload_digest_of_a_partial_record_is_left_alone() {
-    for line in [("WARC-Segment-Number", "1"), ("WARC-Truncated", "length")] {
-        let declared = "sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ";
-        let raw = payload_record(
-            "response",
-            &[line, ("WARC-Payload-Digest", declared)],
-            RESPONSE_BLOCK,
-        )
+fn the_payload_digest_of_a_segment_is_left_alone() {
+    let line = ("WARC-Segment-Number", "1");
+    let declared = "sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ";
+    let raw = payload_record(
+        "response",
+        &[line, ("WARC-Payload-Digest", declared)],
+        RESPONSE_BLOCK,
+    )
+    .into_raw()
+    .expect("renderable record");
+
+    assert_eq!(
+        written(&raw, "WARC-Payload-Digest").as_deref(),
+        Some(declared)
+    );
+
+    let raw = payload_record("response", &[line], RESPONSE_BLOCK)
         .into_raw()
         .expect("renderable record");
 
+    assert_eq!(written(&raw, "WARC-Payload-Digest"), None);
+}
+
+#[test]
+fn truncated_payloads_are_validated_and_receive_missing_digests() {
+    for (kind, body) in [
+        ("resource", b"hello".as_slice()),
+        ("response", RESPONSE_BLOCK),
+        (
+            "response",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+        ),
+    ] {
+        let incorrect = payload_record(
+            kind,
+            &[
+                ("WARC-Truncated", "length"),
+                (
+                    "WARC-Payload-Digest",
+                    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                ),
+            ],
+            body,
+        );
+        assert!(matches!(
+            incorrect.incorrect_payload_digest(),
+            Some(BlockError::PayloadDigestMismatch { .. })
+        ));
+        assert!(incorrect.into_raw().is_err());
+        let raw = payload_record(kind, &[("WARC-Truncated", "length")], body)
+            .into_raw_with_digests(marker::Sha256)
+            .unwrap();
         assert_eq!(
             written(&raw, "WARC-Payload-Digest").as_deref(),
-            Some(declared),
-            "{line:?}"
+            Some(ADDED_PAYLOAD_DIGEST)
         );
+    }
+}
 
-        let raw = payload_record("response", &[line], RESPONSE_BLOCK)
-            .into_raw()
-            .expect("renderable record");
-
-        assert_eq!(written(&raw, "WARC-Payload-Digest"), None, "{line:?}");
+#[test]
+fn unextractable_truncated_payloads_remain_unchecked() {
+    for body in [
+        b"HTTP/1.1 200 OK\r\n".as_slice(),
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhel",
+    ] {
+        let record = payload_record(
+            "response",
+            &[
+                ("WARC-Truncated", "disconnect"),
+                (
+                    "WARC-Payload-Digest",
+                    "sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ",
+                ),
+            ],
+            body,
+        );
+        assert_eq!(record.incorrect_payload_digest(), None);
+        assert!(record.into_raw().is_ok());
     }
 }
 

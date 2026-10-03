@@ -47,7 +47,7 @@ enum Kept {
 /// Each `request` or `response` record with an HTTP or HTTPS target and a `Content-Type` of
 /// `application/http` or none that declares `WARC-Payload-Digest` has it recomputed over the
 /// message body as framed, transfer-coding included, under the algorithm and encoding it declares,
-/// keeping the label as read. A segmented or truncated record, a record whose digest is malformed
+/// keeping the label as read. A segmented record, a record whose digest is malformed
 /// or names an algorithm this build does not compute, and a record whose message has no end of
 /// header section are copied as read, the last three with a warning. Every other record is copied
 /// as read. A path with a `.gz` extension names a gzip-compressed file; a compressed output holds
@@ -120,11 +120,9 @@ fn has_http_target(header: &raw::RecordHeader) -> bool {
 }
 
 /// The index of the `WARC-Payload-Digest` field in a header block, unless the record is a segment
-/// or truncated, whose declared digest covers more than its block.
+/// whose declared digest covers the logical record.
 fn payload_digest_position(header: &raw::RecordHeader) -> Option<usize> {
-    if header.get(Field::SegmentNumber.standard_name()).is_some()
-        || header.get(Field::Truncated.standard_name()).is_some()
-    {
+    if header.get(Field::SegmentNumber.standard_name()).is_some() {
         return None;
     }
 
@@ -357,13 +355,7 @@ mod tests {
             ],
             CHUNKED,
         );
-        contents.extend_from_slice(&response(
-            &[
-                ("WARC-Truncated", "length"),
-                ("WARC-Payload-Digest", &digest),
-            ],
-            CHUNKED,
-        ));
+
         contents.extend_from_slice(&response(
             &[("WARC-Payload-Digest", "sha1:not-a-digest")],
             CHUNKED,
@@ -389,7 +381,7 @@ mod tests {
 
         let (summary, records) = rewritten(&contents);
 
-        assert_eq!(summary.records, 6);
+        assert_eq!(summary.records, 5);
         assert_eq!(summary.rewritten, 0);
         assert_eq!(
             records
@@ -398,12 +390,28 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 format!(" {digest}").as_bytes(),
-                format!(" {digest}").as_bytes(),
                 b" sha1:not-a-digest",
                 b" unheard-of:VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N",
                 b" sha1 VL2MMHO4YXUKFWV63YHTWSBM3GXKSQ2N",
                 format!(" {digest}").as_bytes(),
             ]
+        );
+    }
+
+    #[test]
+    fn rewrites_the_retained_body_digest_of_a_truncated_response() {
+        let contents = response(
+            &[
+                ("WARC-Truncated", "length"),
+                ("WARC-Payload-Digest", &format!("sha1:{ENTITY_BASE32}")),
+            ],
+            CHUNKED,
+        );
+        let (summary, records) = rewritten(&contents);
+        assert_eq!(summary.rewritten, 1);
+        assert_eq!(
+            payload_digest(&records[0]),
+            Some(format!(" sha1:{FRAMED_BASE32}").as_bytes())
         );
     }
 
