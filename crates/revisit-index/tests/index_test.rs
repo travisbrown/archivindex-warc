@@ -474,7 +474,7 @@ fn incompatible_schema_version_is_rejected_clearly() -> Result<(), Box<dyn StdEr
     assert!(matches!(
         Index::open(path),
         Err(OpenError::SchemaVersion {
-            expected: 6,
+            expected: 7,
             found: 99
         })
     ));
@@ -987,7 +987,7 @@ fn load_records_indexes_each_record_and_skips_malformed_ones() -> Result<(), Box
         LoadSummary {
             records: 2,
             payloads: 1,
-            resources: 1,
+            resources: 0,
             skipped: 1,
         }
     );
@@ -996,6 +996,43 @@ fn load_records_indexes_each_record_and_skips_malformed_ones() -> Result<(), Box
     assert_eq!(skipped[0].1, located(10, ()).location);
     assert!(skipped[0].2.starts_with("malformed archived HTTP response"));
     assert!(index.lookup_payload(&sha256(b"hello"))?.is_some());
+    Ok(())
+}
+
+#[test]
+fn bulk_loading_only_revalidates_proven_get_captures() -> Result<(), Box<dyn StdError>> {
+    for method in ["GET", "HEAD", "POST"] {
+        for reverse in [false, true] {
+            let mut index = Index::open_in_memory()?;
+            let mut request = Record::<NoExtension>::request(URI_A, date("2025-01-01T00:00:00Z"))?
+                .record_id(uri(RECORD_B));
+            if reverse {
+                request = request.concurrent_to(uri(RECORD_A));
+            }
+            let request =
+                request.body(format!("{method} /a HTTP/1.1\r\nHost: example.com\r\n\r\n"))?;
+            let mut response = response(
+                URI_A,
+                RECORD_A,
+                "2025-01-01T00:00:00Z",
+                "ETag: \"v1\"\r\n",
+                b"",
+            )?;
+            if !reverse && let Record::Response { header, .. } = &mut response {
+                header.concurrent_to.push(uri(RECORD_B));
+            }
+            let summary = index.load_records(
+                [located(0, Ok(request)), located(10, Ok(response))],
+                |_, error| panic!("{error}"),
+            )?;
+            assert_eq!(summary.resources, usize::from(method == "GET"));
+            assert_eq!(
+                index.lookup_resource(&key(URI_A))?.is_some(),
+                method == "GET"
+            );
+            assert_eq!(summary.payloads, 1);
+        }
+    }
     Ok(())
 }
 

@@ -151,7 +151,7 @@ mod tests {
             LoadSummary {
                 records: 2,
                 payloads: 1,
-                resources: 1,
+                resources: 0,
                 skipped: 1,
             }
         );

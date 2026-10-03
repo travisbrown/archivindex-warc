@@ -39,7 +39,8 @@ impl Handle for rusqlite::Transaction<'_> {
 /// ingestion may hold the write lock for an entire file.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-const SCHEMA_VERSION: u32 = 6;
+// Earlier indexes may contain HEAD or POST responses as GET representations.
+const SCHEMA_VERSION: u32 = 7;
 
 const SCHEMA: &str = include_str!("schema.sql");
 

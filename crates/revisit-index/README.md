@@ -46,16 +46,18 @@ a digest remains canonical. Truncated and segmented responses cannot establish p
 Digests are verified when their algorithm is enabled; disabled algorithms are trusted as declared.
 
 Resource state holds one representation per target URI, for conditional GET requests. `Variance`
-tracks the request fields named by `Vary`. Record ingestion does not resolve linked requests, so
-it cannot recover the request method or selecting field values. Load only archives whose response
-records are suitable as GET representations when using their resource state for revalidation.
-A declared nonempty `Vary` prevents reuse when the selecting request is unknown. Callers must keep
-authorization and cookie identities in separate indexes, since servers need not declare those
-fields in `Vary`.
+tracks the request fields named by `Vary`. Bulk loading updates resource state only for captures
+linked to an earlier complete GET request for the same target. Unresolved requests, HEAD, and other
+methods do not establish GET state; response payloads remain eligible for deduplication. The
+single-record `index_record` method requires the caller to establish suitability for GET. A declared
+nonempty `Vary` prevents reuse because ingestion does not retain selecting field values. Callers
+must keep authorization and cookie identities in separate indexes, since servers need not declare
+those fields in `Vary`.
 
 The index is derived state. Incompatible schema versions require rebuilding it from the archives;
-there is no schema migration. It stores record identities, not file paths or byte offsets, so
-retrieving the referenced payload remains the caller's responsibility.
+there is no schema migration. Version 7 also requires rebuilding older indexes that could have
+accepted HEAD or POST responses as GET representations. It stores record identities, not file paths
+or byte offsets, so retrieving the referenced payload remains the caller's responsibility.
 
 ## License
 

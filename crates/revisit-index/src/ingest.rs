@@ -1,13 +1,15 @@
 //! Convenience ingestion from semantic WARC records.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 use archivindex_warc::io::read::{self, Located};
 use archivindex_warc::record::Record;
 use archivindex_warc::record::extension::Extension;
 use archivindex_warc::record::header::{RevisitHeader, RevisitProfile};
-use archivindex_warc::record::http::ResponseMetadata;
+use archivindex_warc::record::http::{RequestMetadata, ResponseMetadata};
 use archivindex_warc::value::LabelledDigest;
+use fluent_uri::Uri;
 use rusqlite::Connection;
 
 use crate::db::{
@@ -17,11 +19,62 @@ use crate::payload::RevisitTarget;
 use crate::resource::{ResourceKey, ResourceStateUpdate, Variance, declared_vary};
 use crate::{Index, IndexRecordOutcome, IngestError, LoadError, LoadSummary, Store};
 
+/// Request identities and forward capture links seen during a streaming load.
+#[derive(Default)]
+struct Requests {
+    by_id: HashMap<Uri<String>, Option<Uri<String>>>,
+    by_capture: HashMap<Uri<String>, Option<Uri<String>>>,
+}
+
+impl Requests {
+    fn observe<E: Extension>(&mut self, record: &Record<E>) -> bool {
+        if let Record::Request { header, body } = record {
+            let target = (header.core.truncated.is_none()
+                && !header.segment_origin
+                && RequestMetadata::parse(body).is_some_and(|request| request.method() == "GET"))
+            .then(|| header.target_uri.clone());
+            // Repeated identities or conflicting capture links cannot prove a request method.
+            self.by_id
+                .entry(header.core.record_id.clone())
+                .and_modify(|entry| *entry = None)
+                .or_insert_with(|| target.clone());
+            for capture in &header.concurrent_to {
+                self.by_capture
+                    .entry(capture.clone())
+                    .and_modify(|entry| {
+                        if *entry != target {
+                            *entry = None;
+                        }
+                    })
+                    .or_insert_with(|| target.clone());
+            }
+            false
+        } else {
+            let mut candidates = record
+                .concurrent_to()
+                .iter()
+                .filter_map(|id| self.by_id.get(id))
+                .chain(self.by_capture.get(&record.core().record_id));
+            candidates.next().is_some_and(|first| {
+                first
+                    .as_ref()
+                    .is_some_and(|target| Some(target) == record.target_uri())
+                    && candidates.all(|target| target == first)
+            })
+        }
+    }
+}
+
 impl Index {
     /// Index a sequence of located semantic WARC records, as a reader yields them, in one
     /// transaction.
     ///
-    /// Each record is indexed as by [`Store::index_record`]. A record with a malformed HTTP head or
+    /// Resource state is updated only for captures linked to an earlier complete GET request for
+    /// the same target. Either direction of `WARC-Concurrent-To` is accepted. Unresolved requests,
+    /// including requests appearing later in the stream, cannot establish conditional GET state.
+    /// Their response payloads remain eligible for deduplication.
+    ///
+    /// A record with a malformed HTTP head or
     /// WARC payload is counted as skipped and passed to `skipped` with its error, rather than
     /// ending the load. The transaction is committed once the records run out.
     ///
@@ -37,6 +90,7 @@ impl Index {
     ) -> Result<LoadSummary, LoadError> {
         let transaction = self.begin()?;
         let mut summary = LoadSummary::default();
+        let mut requests = Requests::default();
 
         for Located {
             location,
@@ -53,7 +107,8 @@ impl Index {
                 })?,
             };
             summary.records += 1;
-            match transaction.index_record(&located.value) {
+            let get = requests.observe(&located.value);
+            match index_record(transaction.connection(), &located.value, get) {
                 Ok(outcome) => {
                     summary.payloads += usize::from(outcome.payload_inserted);
                     summary.resources += usize::from(outcome.resource_updated);
@@ -110,13 +165,14 @@ impl<C: Handle> Store<C> {
         &self,
         record: &Record<E>,
     ) -> Result<IndexRecordOutcome, IngestError> {
-        index_record(self.connection(), record)
+        index_record(self.connection(), record, true)
     }
 }
 
 fn index_record<E: Extension>(
     connection: &Connection,
     record: &Record<E>,
+    get: bool,
 ) -> Result<IndexRecordOutcome, IngestError> {
     match record {
         Record::Response { header, body } if body.starts_with(b"HTTP/") => {
@@ -124,9 +180,9 @@ fn index_record<E: Extension>(
                 return Ok(IndexRecordOutcome::default());
             }
 
-            index_response(connection, record)
+            index_response(connection, record, get)
         }
-        Record::Revisit { header, body } => {
+        Record::Revisit { header, body } if get => {
             if is_unindexable(header.payload.payload_digest.as_ref()) {
                 return Ok(IndexRecordOutcome::default());
             }
@@ -145,6 +201,7 @@ fn is_unindexable(payload_digest: Option<&LabelledDigest>) -> bool {
 fn index_response<E: Extension>(
     connection: &Connection,
     record: &Record<E>,
+    get: bool,
 ) -> Result<IndexRecordOutcome, IngestError> {
     let Record::Response { header, body } = record else {
         unreachable!("index_response is only called for response records");
@@ -190,7 +247,7 @@ fn index_response<E: Extension>(
         false
     };
 
-    let resource_updated = if metadata.status == 200 {
+    let resource_updated = if get && metadata.status == 200 {
         let key = ResourceKey::new(header.target_uri.clone());
         update_resource(
             connection,
