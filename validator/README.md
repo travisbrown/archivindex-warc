@@ -54,8 +54,9 @@ Warchaeology release archive for the current platform against the digest its rel
 JWAT-Tools archive against the digest of the Maven Central artifact, and the warcio and `six`
 distributions through pip's `--require-hashes`.
 
-An external validator is killed after `--timeout` seconds, 600 by default, and reported as unable to
-run. The warcat-rs 0.3.4 decoder never returns on a CR that no LF follows in a header block, on
+An external validator and its descendants are killed after `--timeout` seconds, 600 by default,
+and reported as unable to run. This limit includes collecting stdout and stderr after the launcher
+exits. The warcat-rs 0.3.4 decoder never returns on a CR that no LF follows in a header block, on
 input that ends inside a record, or on a gzip member that ends inside a record, so a file with any
 of these is reported as an error without running it (a later warcat-rs release may make this
 unnecessary).

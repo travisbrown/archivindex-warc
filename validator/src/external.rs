@@ -5,6 +5,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use archivindex_cli_support::plural;
+use process_wrap::std::CommandWrap;
 use tempfile::tempdir;
 
 use crate::install::ToolResolver;
@@ -149,7 +150,7 @@ pub fn run_warcio(file: &Path, resolver: &ToolResolver, timeout: Timeout) -> Val
     }
 }
 
-/// Run a validator to completion, killing it when the timeout elapses.
+/// Wait for the validator and its output, killing its process group when the timeout elapses.
 fn run_with_timeout(mut command: Command, Timeout(timeout): Timeout) -> io::Result<Output> {
     const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -157,18 +158,28 @@ fn run_with_timeout(mut command: Command, Timeout(timeout): Timeout) -> io::Resu
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn()?;
-    let stdout = read_in_background(child.stdout.take());
-    let stderr = read_in_background(child.stderr.take());
+    let mut command = CommandWrap::from(command);
+    #[cfg(unix)]
+    command.wrap(process_wrap::std::ProcessGroup::leader());
+    #[cfg(windows)]
+    command.wrap(process_wrap::std::JobObject);
     let deadline = Instant::now() + timeout;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
+    let mut child = command.spawn()?;
+    let stdout = read_in_background(child.stdout().take());
+    let stderr = read_in_background(child.stderr().take());
+    let mut status = None;
+    let result = loop {
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(exited) => status = exited,
+                Err(error) => break Err(error),
+            }
+        }
+        if let Some(status) = status.filter(|_| stdout.is_finished() && stderr.is_finished()) {
+            break Ok(status);
         }
         if Instant::now() >= deadline {
-            child.kill()?;
-            child.wait()?;
-            return Err(io::Error::new(
+            break Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
                     "validator did not finish within {} seconds",
@@ -176,10 +187,16 @@ fn run_with_timeout(mut command: Command, Timeout(timeout): Timeout) -> io::Resu
                 ),
             ));
         }
-        thread::sleep(POLL_INTERVAL);
+        thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
     };
+    if result.is_err() {
+        // Terminate descendants even when the launcher has exited. Readers are joined only after
+        // EOF; an escaped descendant holding a pipe must not extend the timeout.
+        child.start_kill()?;
+        child.wait()?;
+    }
     Ok(Output {
-        status,
+        status: result?,
         stdout: join_reader(stdout)?,
         stderr: join_reader(stderr)?,
     })
@@ -344,6 +361,48 @@ fn summary_value(output: &str, name: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn collects_both_output_streams() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf output; printf error >&2"]);
+        let output = run_with_timeout(command, Timeout(Duration::from_secs(5))).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"output");
+        assert_eq!(output.stderr, b"error");
+    }
+
+    /// Both a waiting launcher and one that exits immediately must leave no descendant writing
+    /// output after the deadline. Each descendant also holds the inherited output pipes open.
+    #[test]
+    #[cfg(unix)]
+    fn timeout_kills_descendants_even_after_the_launcher_exits() {
+        let scratch = tempdir().unwrap();
+        for launcher in ["wait", "exit 0"] {
+            let started = scratch.path().join(format!("started-{launcher}"));
+            let survived = scratch.path().join(format!("survived-{launcher}"));
+            let mut command = Command::new("sh");
+            command
+                .arg("-c")
+                .arg(format!(
+                    "(printf started > \"$1\"; sleep 2; printf survived > \"$2\") & {launcher}"
+                ))
+                .arg("validator")
+                .arg(&started)
+                .arg(&survived);
+            let start = Instant::now();
+            let error = run_with_timeout(command, Timeout(Duration::from_millis(250)))
+                .expect_err("descendant holds output pipes open");
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert!(start.elapsed() < Duration::from_secs(2));
+            assert!(started.exists(), "descendant ran before the timeout");
+        }
+        thread::sleep(Duration::from_secs(2));
+        for launcher in ["wait", "exit 0"] {
+            assert!(!scratch.path().join(format!("survived-{launcher}")).exists());
+        }
+    }
 
     #[test]
     fn parses_jwat_job_summary() {
