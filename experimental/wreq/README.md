@@ -3,8 +3,9 @@
 An experimental [`archivindex-archiver`](../../crates/archiver) capture backend that performs
 byte-exact HTTP/1 capture and reconstructed HTTP/2 capture through BoringSSL with browser-derived
 TLS emulation. It is unpublished and lives outside the repository's root workspace, so its
-dependency tree cannot constrain the published library crates. Building it needs Rust 1.98 and a
-native BoringSSL toolchain: a C and C++ compiler, CMake, and libclang for bindgen.
+dependency tree cannot constrain the published library crates. Building it needs the Rust version
+specified in the [workspace manifest](../Cargo.toml) and a native BoringSSL toolchain: a C and C++
+compiler, CMake, and libclang for bindgen.
 
 ```rust
 use std::sync::Arc;
@@ -41,47 +42,13 @@ concern rather than a key in the archiver's config file.
 
 ## The wreq fork
 
-This crate needs an observer API that upstream `wreq` has not released, so the workspace manifest
-patches `wreq` to a fork branch:
+This backend uses a `wreq` fork to observe plaintext connection traffic and negotiated TLS versions.
+The [workspace manifest](../Cargo.toml) declares the required `wreq` and `btls` patches, and the
+[lockfile](../Cargo.lock) pins their revisions. No local checkout is needed.
 
-```toml
-[patch.crates-io]
-wreq = { git = "https://github.com/travisbrown/wreq", branch = "topic/archivindex-observer" }
-btls = { git = "https://github.com/0x676e67/btls", rev = "de7ab84fdb58641a2bdfdf9d8ebd7db1dcf4b29b" }
-btls-sys = { git = "https://github.com/0x676e67/btls", rev = "de7ab84fdb58641a2bdfdf9d8ebd7db1dcf4b29b" }
-```
-
-Cargo pins the exact commit in this workspace's lockfile, so builds are reproducible and no local
-checkout is needed. A patch rather than a plain dependency, because it must also redirect the copy
-of `wreq` reached through `wreq-util`; with two `wreq` crates in the graph the build does not even
-compile. The root workspace has no `wreq` dependency and is unaffected.
-
-The fork also requires unpublished `btls` APIs. The workspace patches `btls` and `btls-sys` to
-revision `de7ab84fdb58641a2bdfdf9d8ebd7db1dcf4b29b`, matching the fork's lockfile. An upstream
-release containing the observer and these APIs is the preferred endpoint. Cargo does not propagate
-these patches to dependent workspaces; applications using this backend must declare all three
-patches in their own workspace manifest. This crate stays unpublished.
-
-The fork adds a public `connection_observer` module, a `ClientBuilder::connection_observer`
-setter, and an internal `conn::observe` layer that the connector installs only when a client
-supplies an observer. The existing verbose tracing wrapper is untouched, so unobserved
-connections and all trace output are exactly what upstream produces. The fork also exposes the
-negotiated TLS version through `TlsInfo::protocol_version()` and the observer's connected event.
-
-`ConnectionObserver::observe` receives connection ID, available socket addresses, HTTP/2
-negotiation, negotiated TLS version, newly read bytes, successful writes, EOF, read, write, flush
-and shutdown errors, and wrapper disposal. Callbacks borrow their data, must not block or panic, and
-can run concurrently across connections. The read wrapper excludes prefilled `ReadBuf` bytes and
-reports nothing if a reader shrinks the filled region; vectored writes report only the successfully
-accepted prefix. A panic from the final `Closed` callback is contained so a drop during unwinding
-cannot abort the process. Observation works independently of tracing and does not log secrets. Proxy
-tunnel setup and TLS handshakes are below the hook. The connected event reports the negotiated TLS
-version independently of the response TLS-info setting; through a SOCKS tunnel it describes the
-origin.
-
-A failed write or flush fails an unfinished capture here, because the request never reached the
-peer in full. A failed shutdown does not: closing the write half can fail after a complete
-response, and a connection that is genuinely gone reports that again on the read side.
+Applications using this backend in another workspace must copy the manifest's `[patch.crates-io]`
+entries into their own workspace manifest. Cargo does not propagate dependency patches, and
+`wreq-util` must resolve to the same patched `wreq` as this backend.
 
 ## Capture contract and costs
 
@@ -106,7 +73,9 @@ when the request has no `Connection` header, as with the built-in recorder.
 HTTP/1 request and response blocks retain observed wire bytes, including reason phrases, header
 formatting, duplicates, chunk extensions, and trailers. The shared `backend::ResponseCapture`
 parser discards interim responses and retains only the final response. A codec error fails an
-unfinished capture unless the observer already found the wire boundary or truncation.
+unfinished capture unless the observer already found the wire boundary or truncation. A failed
+write or flush also fails an unfinished capture; a failed shutdown does not invalidate a complete
+response.
 
 HTTP/2 records follow the repeated-field form of
 [IIPC proposal 42](https://github.com/iipc/warc-specifications/issues/42), also adopted by
@@ -145,26 +114,12 @@ Failures before usable headers fail; timeouts or disconnects after them preserve
 prefix. Completion or a capture limit cancels the operation and disposes its connection. Concurrent
 captures cannot share observer state or connections.
 
-This crate requires Rust 1.98 and native BoringSSL tooling (C/C++ compiler, CMake, and libclang
-for bindgen). The root workspace keeps its own lower MSRV, which this workspace does not affect. The
-first native build is substantially heavier; no performance/access-improvement benchmark has been
-claimed.
-
 ## Validation
 
-The archiver's exactness contract lives in
-[`backend_conformance.rs`](../../crates/archiver/tests/support/backend_conformance.rs) and is
-included by both the built-in recorder's loopback suite and this crate's, so both backends are
-held to identical HTTP/1 framing, truncation, and bytes. It covers trusted HTTPS, request equality,
-chunk and trailer framing, interim and duplicate headers, cap edges, cancellation, timeouts,
-disconnects, and concurrency. Additional tests here cover invocation inside Tokio, the absence of
-hidden redirects and retries, profile-name validation, and byte-for-byte WARC readback of a
-redirect followed by a Sucuri challenge and answer. The fork carries its own unit and integration
-tests for observation itself. Local TLS HTTP/2 fixtures additionally verify negotiation, finalized
-request headers and bodies, duplicate response headers and trailers, bodyless responses, cap edges,
-timeouts, stream resets, and protocol fields on WARC request, response, and revisit records,
-including a revisit whose TLS version differs from its original's. TLS fixtures verify that HTTP/1
-captures record TLS 1.2 and 1.3, directly and through a SOCKS tunnel.
+The built-in recorder and this backend share an
+[HTTP/1 conformance suite](../../crates/archiver/tests/support/backend_conformance.rs) covering
+framing, truncation, timeouts, proxies, and concurrency. Tests here also cover HTTP/2 reconstruction,
+negotiated TLS versions, and WARC output. The fork tests connection observation itself.
 
 CI runs this workspace as its own job, the way it runs the validator. Run it locally with:
 

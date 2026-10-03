@@ -361,20 +361,19 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bindgen"
-version = "0.72.1"
+version = "0.73.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
+checksum = "787ef8ef523575546b106a58213d6e6b06198a05c2f757258c68a74273670cfa"
 dependencies = [
  "bitflags",
  "cexpr",
  "clang-sys",
- "itertools",
  "proc-macro2",
  "quote",
  "regex",
  "rustc-hash",
- "shlex 1.3.0",
- "syn 2.0.119",
+ "shlex",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -455,7 +454,7 @@ dependencies = [
 [[package]]
 name = "btls"
 version = "0.5.6"
-source = "git+https://github.com/0x676e67/btls?rev=de7ab84fdb58641a2bdfdf9d8ebd7db1dcf4b29b#de7ab84fdb58641a2bdfdf9d8ebd7db1dcf4b29b"
+source = "git+https://github.com/0x676e67/btls?rev=9d859deefab0183e2fccf91204c818c8d1805b27#9d859deefab0183e2fccf91204c818c8d1805b27"
 dependencies = [
  "bitflags",
  "btls-sys",
@@ -467,7 +466,7 @@ dependencies = [
 [[package]]
 name = "btls-sys"
 version = "0.5.6"
-source = "git+https://github.com/0x676e67/btls?rev=de7ab84fdb58641a2bdfdf9d8ebd7db1dcf4b29b#de7ab84fdb58641a2bdfdf9d8ebd7db1dcf4b29b"
+source = "git+https://github.com/0x676e67/btls?rev=9d859deefab0183e2fccf91204c818c8d1805b27#9d859deefab0183e2fccf91204c818c8d1805b27"
 dependencies = [
  "bindgen",
  "cmake",
@@ -496,7 +495,7 @@ dependencies = [
  "find-msvc-tools",
  "jobserver",
  "libc",
- "shlex 2.0.1",
+ "shlex",
 ]
 
 [[package]]
@@ -1373,15 +1372,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
-name = "itertools"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2058,12 +2048,6 @@ dependencies = [
 
 [[package]]
 name = "shlex"
-version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
-
-[[package]]
-name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
@@ -2309,8 +2293,7 @@ dependencies = [
 [[package]]
 name = "tokio-btls"
 version = "0.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e1fd638ec35427faf3b8f412e0fdd6fae76591d79dba40f38fa667d22bc44dd"
+source = "git+https://github.com/0x676e67/btls?rev=9d859deefab0183e2fccf91204c818c8d1805b27#9d859deefab0183e2fccf91204c818c8d1805b27"
 dependencies = [
  "btls",
  "tokio",
@@ -2873,7 +2856,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 [[package]]
 name = "wreq"
 version = "0.16.1"
-source = "git+https://github.com/travisbrown/wreq?branch=topic%2Farchivindex-observer#927a076eb2d25f5972ca3372757debd1f993a89d"
+source = "git+https://github.com/travisbrown/wreq?branch=topic%2Farchivindex-observer#108701e00f33b40132e78d28abce8b4f6e3a6b19"
 dependencies = [
  "btls",
  "btls-sys",
