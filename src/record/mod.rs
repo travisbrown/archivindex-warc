@@ -356,9 +356,13 @@ impl<F: fields::Field> FieldsBlock<F> {
     fn read(
         content_type: Option<&MediaType>,
         truncated: bool,
+        segmented: bool,
         body: Vec<u8>,
     ) -> Result<Self, BlockError> {
-        if !content_type.is_some_and(|media_type| media_type.is("application", "warc-fields")) {
+        // Segment boundaries can split field names or values. Interpret fields after reassembly.
+        if segmented
+            || !content_type.is_some_and(|media_type| media_type.is("application", "warc-fields"))
+        {
             return Ok(Self::Raw(body));
         }
 
@@ -1082,8 +1086,8 @@ impl<E: Extension> RecordHeader<E> {
     /// Pair this header with a content block to create a record.
     ///
     /// A `warcinfo` or `metadata` block declared as `application/warc-fields` is parsed into
-    /// fields. Other blocks remain raw, as does such a block that does not parse when the record
-    /// declares it truncated.
+    /// fields, unless it is a segment awaiting reassembly. Other blocks remain raw, as does a
+    /// field block that does not parse when the record declares it truncated.
     ///
     /// A declared `Content-Length` must match the block. The resulting record stores its actual
     /// length.
@@ -1096,7 +1100,7 @@ impl<E: Extension> RecordHeader<E> {
     ///
     /// Returns [`BlockError::ContentLengthMismatch`] if the header block declares a
     /// `Content-Length` the given block does not have, and [`BlockError::Fields`] if the block is
-    /// declared `application/warc-fields`, is not, and is not declared truncated.
+    /// declared `application/warc-fields`, does not parse, and is neither segmented nor truncated.
     pub fn with_body(mut self, body: Vec<u8>) -> Result<Record<E>, BlockError> {
         // A block is held in memory, so its length is a `usize` that fits a `u64` on every platform
         // this crate builds for.
@@ -1109,6 +1113,7 @@ impl<E: Extension> RecordHeader<E> {
                 let body = FieldsBlock::read(
                     header.core.content_type.as_ref(),
                     header.core.truncated.is_some(),
+                    header.segment_origin,
                     body,
                 )?;
                 Record::Warcinfo { header, body }
@@ -1117,6 +1122,7 @@ impl<E: Extension> RecordHeader<E> {
                 let body = FieldsBlock::read(
                     header.core.content_type.as_ref(),
                     header.core.truncated.is_some(),
+                    header.segment_origin,
                     body,
                 )?;
                 Record::Metadata { header, body }

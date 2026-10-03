@@ -1075,6 +1075,31 @@ fn a_malformed_warc_fields_body_declared_truncated_is_read_as_it_stands() {
     assert_eq!(body, FieldsBlock::Raw(BLOCK.to_vec()));
 }
 
+#[test]
+fn segmented_field_blocks_remain_raw_until_reassembled() {
+    for kind in ["warcinfo", "metadata"] {
+        for block in [b"descr".as_slice(), b"description: first\r\n"] {
+            let record = lift_grammar(grammar_of(
+                WarcVersion::V1_1,
+                kind,
+                &[
+                    ("Content-Type", "application/warc-fields"),
+                    ("WARC-Segment-Number", "1"),
+                ],
+                block,
+            ))
+            .unwrap();
+            let body = match &record {
+                Record::Warcinfo { body, .. } => matches!(body, FieldsBlock::Raw(_)),
+                Record::Metadata { body, .. } => matches!(body, FieldsBlock::Raw(_)),
+                _ => unreachable!(),
+            };
+            assert!(body);
+            assert_eq!(record.into_raw().unwrap().body, block);
+        }
+    }
+}
+
 /// A URI is held as the URI it names, and written back in the brackets the declared version
 /// calls for: WARC 1.0 brackets every one of them, and WARC 1.1 only the five whose value is a
 /// record identifier.
