@@ -1,7 +1,7 @@
 //! Digest calculation and validation for record blocks and payloads.
 
 use crate::record::extension::Extension;
-use crate::record::{BlockError, Record, payload};
+use crate::record::{BlockError, Record};
 use crate::value::{Algorithm, DigestFormat, LabelledDigest};
 
 /// Compute a digest in the given format.
@@ -134,10 +134,13 @@ pub fn check_payload_digest<E: Extension>(
     }
     let payload = match record.payload_bytes() {
         Ok(Some(payload)) => payload,
-        Ok(None) | Err(payload::Error::UnsupportedTransferCoding(_)) => return Ok(None),
-        Err(payload::Error::IncompleteChunkedBody | payload::Error::UnterminatedHeaders)
-            if record.core().truncated.is_some() =>
-        {
+        Ok(None) | Err(archivindex_http::body::Error::UnsupportedTransferCoding(_)) => {
+            return Ok(None);
+        }
+        Err(
+            archivindex_http::body::Error::IncompleteChunkedBody
+            | archivindex_http::body::Error::UnterminatedHeaders,
+        ) if record.core().truncated.is_some() => {
             return Ok(None);
         }
         Err(error) => {

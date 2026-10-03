@@ -35,10 +35,13 @@ allow = [
 # Every package but the `archivindex-warc` library and its digest crate uses GPL-3.0-only; those two
 # and the third-party dependencies use only the licenses allowed above.
 exceptions = [
+  { crate = "archivindex-http-client-challenge", allow = [
+    "GPL-3.0-only",
+  ] },
   { crate = "archivindex-archiver", allow = [
     "GPL-3.0-only",
   ] },
-  { crate = "archivindex-archiver-wreq", allow = [
+  { crate = "archivindex-http-client", allow = [
     "GPL-3.0-only",
   ] },
   { crate = "archivindex-archiver-cli", allow = [
@@ -68,7 +71,7 @@ exceptions = [
 unknown-registry = "deny"
 unknown-git = "deny"
 # The support packages shared across the Archivindex repositories, and the observer-enabled `wreq`
-# fork and unreleased btls APIs required by the experimental capture backend.
+# fork and unreleased btls APIs required by the optional wreq capture backend.
 allow-git = [
   "https://github.com/travisbrown/archivindex",
   "https://github.com/travisbrown/wreq",

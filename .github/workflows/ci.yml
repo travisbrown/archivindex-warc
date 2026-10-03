@@ -28,8 +28,6 @@ jobs:
         run: cargo +nightly fmt --all -- --check
       - name: Check validator formatting
         run: cargo +nightly fmt --manifest-path validator/Cargo.toml --all -- --check
-      - name: Check experimental formatting
-        run: cargo +nightly fmt --manifest-path experimental/Cargo.toml --all -- --check
 
   markdown:
     name: Markdown formatting
@@ -72,8 +70,6 @@ jobs:
         run: cargo archivindex-build check
       - name: Check the validator
         run: cargo archivindex-build check --manifest-path validator/Cargo.toml
-      - name: Check the experimental workspace
-        run: cargo archivindex-build check --manifest-path experimental/Cargo.toml
 
   build:
     name: Build, test, lint, and document
@@ -87,10 +83,11 @@ jobs:
         with:
           workspaces: . -> target
       - uses: taiki-e/install-action@cargo-hack
-      # Every package on its own, with no features, its defaults, and each pair of features.
+      # The wreq job checks browser emulation with its native toolchain.
+      # Check every other feature combination up to pairs here.
       - name: Lint every feature combination
         run: >-
-          cargo hack clippy --locked --workspace --feature-powerset --depth 2
+          cargo hack clippy --locked --workspace --feature-powerset --depth 2 --exclude-features wreq
           --all-targets -- -D warnings
       - name: Lint library with all features
         run: >-
@@ -149,18 +146,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
-      # Build the tarballs to check that publishable crates contain everything they need.
-      # These crates can resolve their dependencies on the registry.
-      - name: Package registry-resolvable crates
-        run: >-
-          cargo package --locked --workspace
-          --exclude archivindex-warc-ops
-          --exclude archivindex-warc-cli
-          --exclude archivindex-archiver
-      # The archiver depends on archivindex-publication, currently available only from Git. Until
-      # that dependency is published, check package contents without creating a tarball.
-      - name: Inspect archiver package contents
-        run: cargo package --locked -p archivindex-archiver --list
+      # The digest crate is independent of the unpublished HTTP client dependency.
+      - name: Package the digest crate
+        run: cargo package --locked -p archivindex-warc-digest
+      - name: Inspect packages with source dependencies
+        run: cargo package --locked --workspace --list
 
   deny:
     name: Check the dependency policy
@@ -174,9 +164,6 @@ jobs:
       # The validator resolves on its own, so its tree is checked against the same policy.
       - name: Check the validator
         run: cargo deny --manifest-path validator/Cargo.toml --config deny.toml check
-      # So does the experimental workspace, whose tree includes the `wreq` fork.
-      - name: Check the experimental workspace
-        run: cargo deny --manifest-path experimental/Cargo.toml --config deny.toml check
 
   validator:
     name: Build, test, and lint the validator
@@ -212,8 +199,8 @@ jobs:
               "$fixture" || exit 1
           done
 
-  experimental:
-    name: Build, test, and lint the experimental workspace
+  wreq:
+    name: Build, test, and lint with wreq
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -221,34 +208,29 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: experimental -> target
+      - uses: taiki-e/install-action@cargo-hack
       # The capture backend builds BoringSSL from source, which bindgen needs libclang for.
       - name: Install the native toolchain
         run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev
-      - name: Lint the experimental workspace
+      - name: Lint every archiver CLI feature combination
         run: >-
-          cargo clippy --locked --manifest-path experimental/Cargo.toml --workspace
-          --all-targets --features archivindex-archiver-cli/wreq -- -D warnings
-      - name: Test the experimental workspace
-        run: >-
-          cargo test --locked --manifest-path experimental/Cargo.toml --workspace
-          --features archivindex-archiver-cli/wreq
-      - name: Document the capture backend
+          cargo hack clippy --locked -p archivindex-archiver-cli --feature-powerset
+          --all-targets -- -D warnings
+      - name: Test workspace with all features
+        run: cargo test --locked --workspace --all-features
+      - name: Document workspace with all features
         env:
           RUSTDOCFLAGS: -D warnings
-        run: >-
-          cargo doc --locked --manifest-path experimental/Cargo.toml
-          -p archivindex-archiver-wreq --no-deps
+        run: cargo doc --locked --workspace --all-features --no-deps
 
   msrv:
-    name: Rust 1.88 compatibility
+    name: Rust 1.98 compatibility
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.88.0
+          toolchain: 1.98.0
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
@@ -287,6 +269,8 @@ jobs:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
+      - name: Install the native toolchain
+        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev
       - name: Generate workspace coverage
         run: >-
           cargo llvm-cov --locked --workspace --all-features --lcov

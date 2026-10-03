@@ -1,23 +1,25 @@
 [workspace]
 members = [
   ".",
-  "crates/archiver",
-  "crates/digest",
-  "crates/identifier",
-  "crates/linter",
-  "crates/ops",
-  "crates/revisit-index",
-  "tools/cli",
+  "crates/archivindex-archiver",
+  "crates/archivindex-warc-digest",
+  "crates/archivindex-warc-identifier",
+  "crates/archivindex-warc-linter",
+  "crates/archivindex-warc-ops",
+  "crates/archivindex-warc-revisit-index",
+  "tools/archivindex-archiver-cli",
+  "tools/archivindex-warc-cli",
 ]
 default-members = [
   ".",
-  "crates/archiver",
-  "crates/digest",
-  "crates/identifier",
-  "crates/linter",
-  "crates/ops",
-  "crates/revisit-index",
-  "tools/cli",
+  "crates/archivindex-archiver",
+  "crates/archivindex-warc-digest",
+  "crates/archivindex-warc-identifier",
+  "crates/archivindex-warc-linter",
+  "crates/archivindex-warc-ops",
+  "crates/archivindex-warc-revisit-index",
+  "tools/archivindex-archiver-cli",
+  "tools/archivindex-warc-cli",
 ]
 resolver = "3"
 
@@ -25,21 +27,24 @@ resolver = "3"
 version = "0.1.0"
 authors = ["Travis Brown <travisrobertbrown@gmail.com>"]
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.98"
 readme = "README.md"
 license = "GPL-3.0-only"
 repository = "https://github.com/travisbrown/archivindex-warc"
 
 [workspace.dependencies]
+archivindex-archiver = { version = "0.1.0", path = "crates/archivindex-archiver" }
 archivindex-cli-support = { git = "https://github.com/travisbrown/archivindex" }
+archivindex-http = { version = "0.1.0", git = "https://github.com/travisbrown/archivindex" }
+archivindex-http-client = { version = "0.1.0", git = "https://github.com/travisbrown/archivindex" }
+archivindex-http-client-challenge = { version = "0.1.0", git = "https://github.com/travisbrown/archivindex" }
 archivindex-publication = { version = "0.1.0", git = "https://github.com/travisbrown/archivindex" }
 archivindex-test-support = { git = "https://github.com/travisbrown/archivindex" }
 archivindex-warc = { version = "0.1.0", path = "." }
-archivindex-warc-identifier = { version = "0.1.0", path = "crates/identifier" }
-archivindex-warc-linter = { version = "0.1.0", path = "crates/linter" }
+archivindex-warc-identifier = { version = "0.1.0", path = "crates/archivindex-warc-identifier" }
+archivindex-warc-linter = { version = "0.1.0", path = "crates/archivindex-warc-linter" }
 chrono = "0.4"
 clap = { version = "4.5", features = ["derive"] }
-criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 data-encoding = "2"
 flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
 fluent-uri = "0.4"
@@ -53,6 +58,16 @@ tempfile = "3"
 thiserror = "2"
 url = "2"
 wiremock = "0.6.5"
+
+# The optional wreq backend needs observer hooks from a fork. Repeat the HTTP client
+# workspace patches here because Cargo ignores patches declared by dependencies.
+[patch.crates-io]
+wreq = { git = "https://github.com/travisbrown/wreq", rev = "108701e00f33b40132e78d28abce8b4f6e3a6b19" }
+
+# The fork uses btls APIs not yet published in 0.5.6. Keep its TLS crates at one revision.
+btls = { git = "https://github.com/0x676e67/btls", rev = "9d859deefab0183e2fccf91204c818c8d1805b27" }
+btls-sys = { git = "https://github.com/0x676e67/btls", rev = "9d859deefab0183e2fccf91204c818c8d1805b27" }
+tokio-btls = { git = "https://github.com/0x676e67/btls", rev = "9d859deefab0183e2fccf91204c818c8d1805b27" }
 
 [[workspace.metadata.archivindex-build.exemptions]]
 package = "archivindex-warc"
@@ -108,20 +123,19 @@ default = ["gzip"]
 # Enable every supported digest algorithm.
 all-digests = ["archivindex-warc-digest/all-digests"]
 gzip = ["dep:flate2"]
-http = ["dep:http"]
 # `serde` supplies `IgnoredAny` for validating JSON without building a document.
 payload-identification = ["dep:file-format", "dep:serde", "dep:serde_json"]
 # Enables Serde derives and conversion between types and `application/warc-fields` bodies.
 serde = ["dep:serde", "archivindex-warc-digest/serde"]
 
 [dependencies]
-archivindex-warc-digest = { version = "0.1.0", path = "crates/digest" }
+archivindex-http.workspace = true
+archivindex-warc-digest = { version = "0.1.0", path = "crates/archivindex-warc-digest" }
 chrono.workspace = true
 # `reader` adds content-based checks for formats that signatures alone cannot identify.
 file-format = { version = "0.29", optional = true, features = ["reader"] }
 flate2 = { workspace = true, optional = true }
 fluent-uri.workspace = true
-http = { workspace = true, optional = true }
 # Vectorized newline scanning in the reader's line loop.
 memchr = "2.8"
 serde = { workspace = true, optional = true }
@@ -133,18 +147,12 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 data-encoding.workspace = true
 proptest.workspace = true
-# The request-reconstruction test compares against bytes sent by a real loopback client.
-reqwest = { version = "0.13", default-features = false, features = ["blocking"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 tempfile.workspace = true
 # Only the `read_filtered` example parses URLs.
 url.workspace = true
 # Pin the upstream implementation used by `warc_crate_roundtrip` for reproducible comparisons.
 warc = "=0.4.0"
-
-[[test]]
-name = "reconstruct_request_echo"
-required-features = ["http"]
 
 # Gzip examples require the `gzip` feature. Other examples are auto-discovered.
 [[example]]

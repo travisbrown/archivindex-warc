@@ -1,0 +1,65 @@
+[package]
+name = "archivindex-archiver-cli"
+description = "A command-line tool for archiving URLs into WARC files"
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "archivindex-archiver"
+path = "src/main.rs"
+# Avoid a rustdoc output-filename collision with the `archivindex-archiver` library crate.
+doc = false
+
+[features]
+# Browser-derived TLS emulation with HTTP/2 support. Compiles BoringSSL from source.
+wreq = ["dep:archivindex-http-client", "archivindex-http-client/wreq", "dep:wreq-util", "dep:wreq"]
+# Compile SQLite from source rather than linking the system library.
+bundled = ["archivindex-archiver/bundled"]
+
+[dependencies]
+anyhow = "1"
+archivindex-archiver.workspace = true
+archivindex-cli-support.workspace = true
+archivindex-http-client = { workspace = true, optional = true }
+archivindex-warc.workspace = true
+archivindex-warc-identifier.workspace = true
+archivindex-warc-ops = { path = "../../crates/archivindex-warc-ops" }
+clap.workspace = true
+fluent-uri.workspace = true
+log.workspace = true
+thiserror.workspace = true
+wreq = { version = "=0.16.1", default-features = false, optional = true }
+wreq-util = { version = "=0.2.0", default-features = false, optional = true, features = [
+  "emulation",
+] }
+
+[dev-dependencies]
+archivindex-test-support.workspace = true
+data-encoding.workspace = true
+h2 = "0.4.19"
+http.workspace = true
+rcgen = "0.14"
+rustls = "0.23.45"
+tempfile.workspace = true
+tokio = { version = "1", features = ["rt", "time", "sync", "macros", "net"] }
+tokio-rustls = "0.26.5"
+
+[[test]]
+name = "wreq_archive"
+required-features = ["wreq"]
+
+[[test]]
+name = "wreq_tls"
+required-features = ["wreq"]
+
+[[test]]
+name = "wreq_http2"
+required-features = ["wreq"]

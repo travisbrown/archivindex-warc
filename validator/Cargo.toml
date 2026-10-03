@@ -7,7 +7,7 @@ resolver = "3"
 version = "0.1.0"
 authors = ["Travis Brown <travisrobertbrown@gmail.com>"]
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.98"
 license = "GPL-3.0-only"
 repository = "https://github.com/travisbrown/archivindex-warc"
 
@@ -42,7 +42,7 @@ anyhow = "1"
 archivindex-cli-support = { git = "https://github.com/travisbrown/archivindex" }
 # The crate under test, read from its own source tree rather than from a published release.
 archivindex-warc = { path = ".." }
-archivindex-warc-ops = { path = "../crates/ops" }
+archivindex-warc-ops = { path = "../crates/archivindex-warc-ops" }
 # warcat 0.3.4 enables blake3's experimental digest traits, which became incompatible with its
 # digest 0.10 dependency in later blake3 releases.
 blake3 = { version = "=1.5.4", features = ["pure", "traits-preview"] }

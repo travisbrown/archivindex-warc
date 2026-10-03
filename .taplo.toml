@@ -1,6 +1,6 @@
 # Configuration for `taplo`, which formats and lints the TOML files in continuous integration.
 
-exclude = ["target/**", "validator/target/**", "experimental/target/**"]
+exclude = ["target/**", "validator/target/**"]
 
 [formatting]
 # Matches the rustfmt default that the Rust sources follow.

@@ -9,13 +9,11 @@
 //! pass the result to
 //! [`identified_payload_type`](crate::record::builder::ResponseBuilder::identified_payload_type).
 
+use archivindex_http::message::{RequestMetadata, ResponseMetadata};
 use file_format::FileFormat;
 
-use crate::parsing::{is_lws, next_line, split_field_line};
 use crate::record::payload;
 use crate::value::MediaType;
-
-const CONTENT_TYPE: &[u8] = b"content-type";
 
 /// Identify the media type of a payload by examining its bytes.
 ///
@@ -71,40 +69,13 @@ fn declares_json(declared: &MediaType) -> bool {
 ///
 /// A value that does not parse yields no type, and a later field is not read.
 fn declared_content_type(message: &[u8]) -> Option<MediaType> {
-    // Skip the HTTP start line.
-    let mut offset = next_line(message, 0)?.next;
-    let mut value: Option<Vec<u8>> = None;
-    let mut folding = false;
-
-    loop {
-        let line = next_line(message, offset)?;
-        let content = &message[offset..line.end];
-        offset = line.next;
-
-        if content.is_empty() {
-            break;
-        }
-
-        if content.first().copied().is_some_and(is_lws) {
-            // A fold represents whitespace; media-type parsing decides whether it is valid here.
-            if folding && let Some(value) = &mut value {
-                value.push(b' ');
-                value.extend_from_slice(content.trim_ascii());
-            }
-            continue;
-        }
-
-        folding = false;
-        if value.is_none()
-            && let Some((name, colon)) = split_field_line(content)
-            && name.eq_ignore_ascii_case(CONTENT_TYPE)
-        {
-            value = Some(content[colon + 1..].trim_ascii().to_vec());
-            folding = true;
-        }
+    if message.starts_with(b"HTTP/") {
+        ResponseMetadata::parse(message)
+            .and_then(|metadata| MediaType::parse(metadata.header("content-type")?).ok())
+    } else {
+        RequestMetadata::parse(message)
+            .and_then(|metadata| MediaType::parse(metadata.header("content-type")?).ok())
     }
-
-    MediaType::parse(&value?).ok()
 }
 
 #[cfg(test)]
@@ -201,6 +172,13 @@ mod tests {
         ] {
             assert_eq!(http_payload_type(message), None, "{message:?}");
         }
+    }
+
+    /// Request bodies use the same declaration handling as responses.
+    #[test]
+    fn request_payloads_use_their_declared_content_type() {
+        let message = b"POST / HTTP/1.1\r\nContent-Type: application/json\r\n\r\n{\"key\": [1, 2]}";
+        assert_eq!(http_payload_type(message), Some(MediaType::JSON));
     }
 
     /// The declaration is the first `Content-Type` when it is well-formed, with folds joined.

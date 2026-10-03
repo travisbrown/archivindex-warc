@@ -1,0 +1,25 @@
+[package]
+name = "archivindex-warc-ops"
+version.workspace = true
+description = "Higher-level operations for WARC files"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+archivindex-http.workspace = true
+archivindex-publication.workspace = true
+archivindex-warc.workspace = true
+flate2.workspace = true
+log.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+archivindex-test-support.workspace = true
+tempfile.workspace = true

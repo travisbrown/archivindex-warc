@@ -1,0 +1,89 @@
+# archivindex-archiver
+
+A Rust library for archiving web pages over HTTP into WARC files, built on
+[`archivindex-warc`](../../README.md). It captures the wire bytes of HTTP/1.1 requests and
+responses, including redirect hops, and records capture metadata. Eligible duplicate payloads can be
+stored as `revisit` records referring to an earlier capture.
+
+## Usage
+
+```rust,no_run
+use archivindex_archiver::{Archiver, Config};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let archiver = Archiver::new(Config::default())?;
+    let summary = archiver.archive_to_path(["https://www.example.com/"], "example.warc")?;
+    assert!(summary.is_complete());
+    Ok(())
+}
+```
+
+The `session` module supports driver-steered crawls, retries, and a persistent revisit index for
+deduplication and HTTP revalidation across runs. For a command-line interface, see
+[`archivindex-archiver-cli`](../../tools/archivindex-archiver-cli/README.md).
+
+Path output is written to `<output>.partial`, then published once complete. A failed run retains
+the partial file for recovery. Move or remove it before retrying with the same output path.
+
+## Proxies
+
+Set `Config::proxy` to route every request through a SOCKS5 proxy, including redirects, challenge
+responses, and session retries:
+
+```rust,no_run
+use archivindex_archiver::{Archiver, Config};
+
+let archiver = Archiver::new(Config {
+    proxy: Some("socks5h://127.0.0.1:1080".to_owned()),
+    ..Config::default()
+})?;
+# Ok::<(), archivindex_archiver::ConfigError>(())
+```
+
+Use `socks5h://` to resolve destination hostnames through the proxy, or `socks5://` for local DNS.
+The default proxy port is 1080. Username/password authentication is supported with
+`socks5h://user:password@host:port`; percent-encode reserved characters in credentials. The recorder
+rejects other proxy schemes. No proxy is used by default, and environment proxy settings are
+ignored.
+A proxy failure never falls back to a direct connection. Socket timeouts and capture deadlines also
+bound SOCKS negotiation; local DNS resolution remains outside those bounds.
+
+Proxied captures omit `WARC-IP-Address`: the socket peer is the proxy, and SOCKS does not reliably
+identify the origin IP. `CapturedExchange::ip_address` is therefore optional. HTTP capture bytes
+exclude proxy negotiation and authentication. The `warcinfo` body records the configured proxy URI
+as `archivindex-proxy`, with username and password removed. This custom field preserves the proxy
+scheme, host, and port when specified, and is absent when no proxy is configured. It describes the
+configured endpoint, not the proxy's public exit address.
+
+HTTP transport and challenge handling use `archivindex-http-client` and
+`archivindex-http-client-challenge`. One deadline covers redirects and challenges, and the challenge
+answer budget spans the whole sequence. Cookies are resolved before the archiver selects WARC
+revalidation state. For standalone captures, set `Recorder::proxy` and call the HTTP crate's
+`Client` trait with a `Request`. When supplying another backend with
+`Archiver::with_backend`, apply the same proxy to that backend and `Config::proxy` so the recorded
+configuration matches the transport. All supplied clients validate proxy URIs when configured. The
+CLI applies its configuration and `--proxy` option to either supported backend.
+
+## Record IDs
+
+The archiver assigns content-derived IDs to the records it writes. This is the archiver's identity
+policy, not a generic fingerprint of every WARC property. The WARC library's standalone builders
+retain their UUID defaults.
+
+The versioned API and byte format are documented in
+[`archivindex-warc-identifier`](../archivindex-warc-identifier/README.md).
+
+## Benchmarks
+
+Run the response-framing benchmarks from the workspace root:
+
+```sh
+cargo bench -p archivindex-archiver --bench response_capture
+```
+
+The cases cover small responses, long headers, and long chunk extensions, each delivered in
+1-byte, 16-byte, and 8 KiB fragments. They use in-memory messages and make no network requests.
+
+## License
+
+Licensed under the GNU General Public License, version 3. See [LICENSE](LICENSE).

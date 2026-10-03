@@ -63,7 +63,6 @@ Unsupported digest algorithms are preserved without verification.
 | Feature                  | Purpose                                                           | Default |
 | ------------------------ | ----------------------------------------------------------------- | ------- |
 | `gzip`                   | Read gzip members and write one member per record                 | Yes     |
-| `http`                   | Parse HTTP metadata and reconstruct HTTP message blocks           | No      |
 | `payload-identification` | Identify payload media types from their contents                  | No      |
 | `serde`                  | Serialize supported values and convert typed `warc-fields` bodies | No      |
 | `all-digests`            | Enable every supported digest algorithm                           | No      |
@@ -73,30 +72,36 @@ Disabling this crate's default features removes gzip support.
 
 ## Repository
 
-The workspace's supporting library crates live under [`crates`](crates/), and the WARC
-command-line application under [`tools`](tools/). The [`validator`](validator/) and
-[`experimental`](experimental/) directories are separate Rust projects, so that their dependency
-trees do not constrain the workspace. The archiver's command-line tool and its alternative
-capture backends live in the latter.
+The workspace's supporting library crates live under [`crates`](crates/), and its command-line
+applications under [`tools`](tools/). The [validator](validator/) is a separate
+Rust project so that its dependency tree does not constrain the workspace.
 
-The [digest crate](crates/digest/) handles labelled digests independently of WARC records. The
-[revisit index](crates/revisit-index/) stores payload sources and conditional-request state in
-SQLite.
+The [digest crate](crates/archivindex-warc-digest/) handles labelled digests independently of WARC
+records. The [revisit index](crates/archivindex-warc-revisit-index/) stores payload sources and
+conditional-request state in SQLite.
 
-The [linter](crates/linter/) checks WARC requirements and additional conventions, including digests,
-capture relationships, and gzip framing. The [WARC CLI](tools/cli/) exposes it through `lint`.
+The [linter](crates/archivindex-warc-linter/) checks WARC requirements and additional conventions,
+including digests, capture relationships, and gzip framing. The
+[WARC CLI](tools/archivindex-warc-cli/) exposes it through `lint`.
 
-The [`archivindex-archiver` package](crates/archiver/) captures HTTP exchanges into WARC files. The
-[identifier crate](crates/identifier/) provides the versioned identity scheme its records use.
+The [`archivindex-archiver` package](crates/archivindex-archiver/) captures HTTP exchanges into WARC
+files. The [identifier crate](crates/archivindex-warc-identifier/) provides the versioned identity
+scheme its records use.
 
 ## Development
 
-The workspace requires Rust 1.88 or later. Its SQLite dependency can use a system library or compile
+The workspace requires Rust 1.98 or later. Its SQLite dependency can use a system library or compile
 from source with the revisit index's `bundled` feature, as in the commands below. The archiver's
-command-line tool and its experimental capture backends build in their own workspace under
-[experimental/](experimental), so their dependency trees cannot constrain the library crates. Those
-members need Rust 1.98 and a native BoringSSL toolchain; see
-[the backend notes](experimental/wreq/README.md).
+command-line tool lives under [tools/archivindex-archiver-cli](tools/archivindex-archiver-cli/). Its
+optional `wreq` feature needs a native BoringSSL toolchain; see
+[the CLI notes](tools/archivindex-archiver-cli/README.md).
+
+Stored HTTP message parsing and body extraction come from `archivindex-http`. HTTP clients,
+redirects, retry policy, validators, and challenge handling come from `archivindex-http-client`
+and `archivindex-http-client-challenge`. These crates are Git dependencies from the
+[Archivindex repository](https://github.com/travisbrown/archivindex).
+Use `archivindex_http::message` and `archivindex_http_client::reconstruct` in place of the former
+`archivindex_warc::record::http` module and `http` feature.
 
 Run the workspace tests and build its documentation with:
 

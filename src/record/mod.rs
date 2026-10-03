@@ -32,9 +32,6 @@ mod digest;
 pub mod extension;
 pub mod fields;
 pub mod header;
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-pub mod http;
 #[cfg(feature = "payload-identification")]
 #[cfg_attr(docsrs, doc(cfg(feature = "payload-identification")))]
 pub mod identify;
@@ -112,7 +109,7 @@ pub enum BlockError {
     },
     /// The declared payload digest cannot be checked because the HTTP message is malformed.
     #[error("the record's payload cannot be read from its block: {0}")]
-    Payload(#[from] payload::Error),
+    Payload(#[from] archivindex_http::body::Error),
     /// A nonempty identical-payload-digest revisit block lacks `WARC-Truncated: length`.
     #[error(
         "a `revisit` record under the identical payload digest profile carries a block of {0} \
@@ -790,7 +787,7 @@ impl<E: Extension> Record<E> {
     /// # Errors
     ///
     /// Returns an error if an HTTP block cannot be parsed far enough to extract its entity-body.
-    pub fn payload_bytes(&self) -> Result<Option<Cow<'_, [u8]>>, payload::Error> {
+    pub fn payload_bytes(&self) -> Result<Option<Cow<'_, [u8]>>, archivindex_http::body::Error> {
         match self {
             Self::Resource { body, .. } | Self::Conversion { body, .. } => {
                 Ok(Some(Cow::Borrowed(body)))

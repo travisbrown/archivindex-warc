@@ -915,7 +915,9 @@ fn a_payload_digest_over_a_block_framing_no_payload_is_reported() {
 
     assert_eq!(
         record.incorrect_payload_digest(),
-        Some(BlockError::Payload(payload::Error::UnterminatedHeaders))
+        Some(BlockError::Payload(
+            archivindex_http::body::Error::UnterminatedHeaders
+        ))
     );
 
     let raw = payload_record("response", &[], DIGESTED_BLOCK)
