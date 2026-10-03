@@ -215,27 +215,23 @@ impl ResponseCapture {
 
     /// Close the capture because the transport ended or ran out of time.
     ///
-    /// A close-delimited response ends complete; any other unfinished response is truncated,
-    /// with a reason of `time` when `timed_out` and `disconnect` otherwise. Calling this on a
-    /// capture that is already done changes nothing.
+    /// Pass `None` for a clean EOF, or the reason the transport stopped abnormally. Only a clean
+    /// EOF completes a close-delimited response; other unfinished responses are truncated.
+    /// Calling this on a capture that is already done changes nothing.
     ///
     /// # Errors
     ///
     /// Fails when no complete response header section was ever received.
-    pub fn end(&mut self, timed_out: bool) -> Result<(), ResponseError> {
+    pub fn end(&mut self, reason: Option<TruncatedType>) -> Result<(), ResponseError> {
         if self.done {
             return Ok(());
         }
         if self.framing.is_none() {
             return Err(ResponseError::IncompleteHeaderSection);
         }
-        self.finish(if timed_out {
-            Some(TruncatedType::Time)
-        } else if matches!(self.framing, Some(BodyFraming::Close)) {
-            None
-        } else {
-            Some(TruncatedType::Disconnect)
-        });
+        self.finish(reason.or_else(|| {
+            (!matches!(self.framing, Some(BodyFraming::Close))).then_some(TruncatedType::Disconnect)
+        }));
         Ok(())
     }
 
@@ -249,8 +245,10 @@ impl ResponseCapture {
 enum ReadEvent {
     /// Number of bytes read into the supplied buffer.
     Data(usize),
-    /// The connection closed, cleanly or not.
+    /// The connection closed cleanly.
     Closed,
+    /// The transport failed after delivering any preceding bytes.
+    Disconnected,
     /// The read timed out.
     TimedOut,
 }
@@ -265,7 +263,14 @@ fn fill(source: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<ReadEvent>
             Ok(0) => Ok(ReadEvent::Closed),
             Ok(read) => Ok(ReadEvent::Data(read)),
             Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-            Err(error) if error.kind() == ErrorKind::UnexpectedEof => Ok(ReadEvent::Closed),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::UnexpectedEof | ErrorKind::ConnectionReset
+                ) =>
+            {
+                Ok(ReadEvent::Disconnected)
+            }
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 Ok(ReadEvent::TimedOut)
             }
@@ -285,8 +290,9 @@ pub fn read_response(
     while !capture.is_done() {
         match fill(source, &mut bytes)? {
             ReadEvent::Data(read) => capture.push(&bytes[..read])?,
-            ReadEvent::Closed => capture.end(false)?,
-            ReadEvent::TimedOut => capture.end(true)?,
+            ReadEvent::Closed => capture.end(None)?,
+            ReadEvent::Disconnected => capture.end(Some(TruncatedType::Disconnect))?,
+            ReadEvent::TimedOut => capture.end(Some(TruncatedType::Time))?,
         }
     }
     Ok(capture.into_parts())
@@ -628,6 +634,32 @@ mod tests {
 
         assert_eq!(recorded, response);
         assert_eq!(truncated, Some(TruncatedType::Disconnect));
+    }
+
+    #[test]
+    fn a_reset_retains_partial_responses_but_does_not_complete_close_delimited_ones() {
+        struct Reset;
+        impl Read for Reset {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(ErrorKind::ConnectionReset.into())
+            }
+        }
+        for response in [
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nabc".as_slice(),
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n8\r\nabc",
+            b"HTTP/1.1 200 OK\r\n\r\nabc",
+        ] {
+            let (bytes, truncated) =
+                read_response(&mut response.chain(Reset), false, None).unwrap();
+            assert_eq!(bytes, response);
+            assert_eq!(truncated, Some(TruncatedType::Disconnect));
+        }
+        assert!(read_response(&mut b"HTTP/1.1".as_slice().chain(Reset), false, None).is_err());
+        let complete = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc";
+        assert_eq!(
+            read_response(&mut complete.as_slice().chain(Reset), false, None).unwrap(),
+            (complete.to_vec(), None)
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use archivindex_archiver::backend::{CapturedExchange, Error, ResponseCapture, ResponseError};
 use archivindex_warc::record::header::protocol::Protocol;
+use archivindex_warc::record::header::truncated_type::TruncatedType;
 use archivindex_warc::record::http::{ResponseMetadata, reconstruct_request};
 use chrono::Utc;
 use http::{HeaderMap, Method, Uri, Version, header};
@@ -93,8 +94,8 @@ impl WreqBackend {
         tokio::select! {
             biased;
             () = tap.done.notified() => {},
-            () = expire => tap.end(true),
-            () = tap.idle(self.io_timeout) => tap.end(true),
+            () = expire => tap.end(Some(TruncatedType::Time)),
+            () = tap.idle(self.io_timeout) => tap.end(Some(TruncatedType::Time)),
             result = operation => {
                 if let Err(error) = result {
                     tap.fail(error);
@@ -176,9 +177,9 @@ impl State {
     }
 
     /// Close the capture because the transport ended or ran out of time.
-    fn end(&mut self, timed_out: bool) {
+    fn end(&mut self, reason: Option<TruncatedType>) {
         if self.error.is_none()
-            && let Err(error) = self.response.end(timed_out)
+            && let Err(error) = self.response.end(reason)
         {
             self.error = Some(error.into());
         }
@@ -282,7 +283,7 @@ impl Tap {
                 // The reconstructed head is already stored, so a stream error truncates the
                 // response. HTTP/1 disconnects reach the connection observer instead.
                 Err(_) if h2 => {
-                    self.end(false);
+                    self.end(None);
                     return Ok(());
                 }
                 Err(error) => return Err(backend_error(error)),
@@ -322,8 +323,8 @@ impl Tap {
         }
     }
 
-    fn end(&self, timed_out: bool) {
-        self.state().end(timed_out);
+    fn end(&self, reason: Option<TruncatedType>) {
+        self.state().end(reason);
         self.done.notify_one();
     }
 
@@ -347,10 +348,12 @@ impl ConnectionObserver for Tap {
             ConnectionEvent::Eof { .. } | ConnectionEvent::ReadError { .. } if state.http2 => {
                 return;
             }
-            ConnectionEvent::Eof { .. } => state.end(false),
+            ConnectionEvent::Eof { .. } => state.end(None),
             ConnectionEvent::ReadError { error, .. } => match error.kind() {
-                ErrorKind::UnexpectedEof | ErrorKind::ConnectionReset => state.end(false),
-                ErrorKind::TimedOut | ErrorKind::WouldBlock => state.end(true),
+                ErrorKind::UnexpectedEof | ErrorKind::ConnectionReset => {
+                    state.end(Some(TruncatedType::Disconnect));
+                }
+                ErrorKind::TimedOut | ErrorKind::WouldBlock => state.end(Some(TruncatedType::Time)),
                 _ => state.fail(io::Error::new(error.kind(), error.to_string()).into()),
             },
             // The request did not reach the peer in full, so no exchange can be attributed to it.
