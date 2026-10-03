@@ -1196,6 +1196,27 @@ mod tests {
         LabelledDigest::new("sha1", "3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ").expect("a labelled digest")
     }
 
+    #[test]
+    fn segment_builders_only_compute_block_digests() {
+        let logical = added_digest(Algorithm::Sha256.into(), b"first segment and the rest");
+        for declared in [None, Some(logical)] {
+            let mut builder = Record::<NoExtension>::resource(TARGET_URI, date())
+                .unwrap()
+                .segment_origin()
+                .digests(marker::Sha256);
+            if let Some(digest) = declared.clone() {
+                builder = builder.payload_digest(digest);
+            }
+            let record = builder.body("first segment").unwrap();
+            assert_eq!(record.payload().unwrap().payload_digest, declared);
+            assert_eq!(
+                record.core().block_digest,
+                Some(added_digest(Algorithm::Sha256.into(), b"first segment"))
+            );
+            assert_eq!(round_trip(&record), record);
+        }
+    }
+
     /// The value a written record carries for the named field, as text.
     pub(super) fn written(record: &raw::Record, name: &str) -> Option<String> {
         record

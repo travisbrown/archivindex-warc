@@ -24,10 +24,13 @@ pub fn add_block_digest<E: Extension>(record: &mut Record<E>, algorithm: Algorit
 
 /// Add a payload digest when the record's payload is determined and it declares none.
 ///
-/// This builder helper uses any successfully extracted payload, including partial payloads.
-/// Rendering separately skips payload digest checks and additions for segmented or truncated
-/// records.
+/// Truncated payloads are digested as retained. Segments require the logical record's payload,
+/// which is unavailable until reassembly, so their payload digests must be supplied by the caller.
 pub fn add_payload_digest<E: Extension>(record: &mut Record<E>, algorithm: Algorithm) {
+    if record.segment_number().is_some() {
+        return;
+    }
+
     let digest = match record.payload() {
         Some(headers) if headers.payload_digest.is_none() => match record.payload_bytes() {
             Ok(Some(payload)) => added_digest(algorithm.into(), &payload),
