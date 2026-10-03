@@ -11,8 +11,7 @@ use archivindex_warc::record::header::{RevisitHeader, RevisitProfile};
 use crate::lint::{Linter, Violation};
 
 impl<R: BufRead> Linter<'_, R> {
-    /// Check that a `revisit` record declares the truncation its block is, carries every
-    /// `WARC-Refers-To` field, and names in `WARC-Refers-To` a record that precedes it.
+    /// Check revisit truncation declarations and references to earlier records.
     pub(crate) fn check_revisit(&mut self, index: usize, record: &Record) {
         let Record::Revisit { header, body } = record else {
             return;
@@ -32,7 +31,10 @@ impl<R: BufRead> Linter<'_, R> {
         }
 
         if let Some(refers_to) = &header.refers_to
-            && !self.record_ids.contains_key(refers_to)
+            && self
+                .record_ids
+                .get(refers_to)
+                .is_none_or(|&earlier| earlier >= index)
         {
             self.fault(
                 index,
@@ -161,6 +163,21 @@ mod tests {
                     }
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn a_revisit_cannot_refer_to_itself() {
+        let mut records = capture();
+        records[2] = revisit_of(records[2].clone(), RESPONSE_ID);
+        assert_eq!(
+            findings(&records),
+            [(
+                2,
+                Violation::RefersToUnknownRecord {
+                    found: uri(RESPONSE_ID)
+                }
+            )]
         );
     }
 }
