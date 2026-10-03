@@ -98,6 +98,10 @@ pub enum Error {
     /// The input's warcinfo records differed between the planning and writing passes.
     #[error("warcinfo records changed between reads")]
     WarcinfoRecordsChanged,
+
+    /// Concatenation would give an unscoped input record an implicit warcinfo association.
+    #[error("cannot preserve a record without warcinfo after the first input's warcinfo")]
+    UnscopedMergedRecord,
 }
 
 /// A result returned by a higher-level WARC operation.

@@ -4,6 +4,7 @@
 //! of the second. Warcinfo records that match up to incidental fields are merged: the matching
 //! record with the earliest `WARC-Date` is written where the first of them stood, the rest are
 //! dropped, and every reference to a dropped record is redirected to the kept one.
+//! Implicit associations that would change receive an explicit `WARC-Warcinfo-ID`.
 //!
 //! Two warcinfo records match when they declare the same WARC version, carry the same body after
 //! ignored fields are removed, and carry the same header fields other than `WARC-Record-ID`,
@@ -18,13 +19,15 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use archivindex_warc::parse::raw;
+use archivindex_warc::parse::untyped::name::Field;
 use archivindex_warc::record::fields::warcinfo::WarcinfoBody;
 use archivindex_warc::value::WarcDate;
 use archivindex_warc::version::WarcVersion;
 
 use crate::file::{compression, is_stdin, open, transform};
 use crate::header::{
-    is_warcinfo, normalize_id, output_filename, record_date, redirect_references, set_filename,
+    insert_field, is_warcinfo, normalize_id, output_filename, record_date, redirect_references,
+    set_filename,
 };
 use crate::{Error, Result};
 
@@ -77,7 +80,8 @@ pub enum WarcinfoDifference {
 /// Returns an error when the output path is also an input path, either input is standard input (the
 /// operation reads both inputs twice), a file cannot be opened, a record cannot be read or written,
 /// a duplicate's references must be redirected but the surviving warcinfo record has no
-/// `WARC-Record-ID`, or the output cannot be moved into place.
+/// `WARC-Record-ID`, an unscoped record would inherit the first input's warcinfo, or the output
+/// cannot be moved into place.
 pub fn merge(first: &Path, second: &Path, output: &Path) -> Result<MergeSummary> {
     merge_ignoring_warcinfo_fields(first, second, output, &[] as &[&str])
 }
@@ -109,12 +113,16 @@ enum WarcinfoAction {
     /// Write this record in place of the one read.
     Emit(raw::Record),
     /// Drop the record read.
-    Skip,
+    Skip {
+        scope: usize,
+        record_id: Option<Vec<u8>>,
+    },
 }
 
 /// The fate of each warcinfo record, in stream order, and the reference values to rewrite.
 struct MergePlan {
     actions: Vec<WarcinfoAction>,
+    first_records: usize,
     redirects: HashMap<Vec<u8>, Vec<u8>>,
     distinct_warcinfo: usize,
     warcinfo_differences: Vec<WarcinfoDifference>,
@@ -124,8 +132,17 @@ impl MergePlan {
     /// Read the warcinfo records of both files and decide which survive.
     fn build<S: AsRef<str>>(first: &Path, second: &Path, ignored_fields: &[S]) -> Result<Self> {
         let mut records = Vec::new();
-        for path in [first, second] {
-            for result in open(path)?.filter_raw_records(is_warcinfo).records() {
+        let mut first_records = 0;
+        for (input, path) in [first, second].into_iter().enumerate() {
+            for result in open(path)?
+                .filter_raw_records(|header| {
+                    if input == 0 {
+                        first_records += 1;
+                    }
+                    is_warcinfo(header)
+                })
+                .records()
+            {
                 records.push(result.map_err(|source| Error::Read {
                     path: path.to_owned(),
                     source,
@@ -161,7 +178,14 @@ impl MergePlan {
             }
         }
 
-        let mut actions: Vec<_> = records.iter().map(|_| WarcinfoAction::Skip).collect();
+        let mut actions: Vec<_> = records
+            .iter()
+            .enumerate()
+            .map(|(scope, record)| WarcinfoAction::Skip {
+                scope,
+                record_id: record_id(record).map(<[u8]>::to_vec),
+            })
+            .collect();
         let mut redirects = HashMap::new();
 
         for members in groups.into_values() {
@@ -199,11 +223,18 @@ impl MergePlan {
                 }
             }
 
+            for &member in &members {
+                actions[member] = WarcinfoAction::Skip {
+                    scope: members[0],
+                    record_id: kept_id.map(<[u8]>::to_vec),
+                };
+            }
             actions[members[0]] = WarcinfoAction::Emit(records[kept].clone());
         }
 
         Ok(Self {
             actions,
+            first_records,
             redirects,
             distinct_warcinfo,
             warcinfo_differences,
@@ -214,22 +245,37 @@ impl MergePlan {
     fn write(self, first: &Path, second: &Path, output: &Path) -> Result<MergeSummary> {
         let Self {
             actions,
+            first_records,
             redirects,
             distinct_warcinfo,
             warcinfo_differences,
         } = self;
-        let mut actions = actions.into_iter();
+        let mut actions = actions.into_iter().enumerate();
+        let mut input_scope = None;
+        let mut output_scope = None;
         let mut merged = 0;
         let filename = output_filename(output);
         let summary = transform(
             &[first, second],
             output,
             compression(output),
-            |_, mut record| {
+            |index, mut record| {
+                if index == first_records {
+                    input_scope = None;
+                }
                 if is_warcinfo(&record.header) {
-                    match actions.next().ok_or(Error::WarcinfoRecordsChanged)? {
-                        WarcinfoAction::Emit(kept) => record = kept,
-                        WarcinfoAction::Skip => {
+                    let (position, action) = actions.next().ok_or(Error::WarcinfoRecordsChanged)?;
+                    match action {
+                        WarcinfoAction::Emit(kept) => {
+                            input_scope = Some((position, record_id(&kept).map(<[u8]>::to_vec)));
+                            output_scope = Some(position);
+                            record = kept;
+                        }
+                        WarcinfoAction::Skip {
+                            scope,
+                            record_id: id,
+                        } => {
+                            input_scope = Some((scope, id));
                             log::debug!(
                                 "dropping the duplicate warcinfo record {}",
                                 String::from_utf8_lossy(record_id(&record).unwrap_or_default())
@@ -241,6 +287,19 @@ impl MergePlan {
                     }
 
                     set_filename(&mut record.header, filename.as_deref());
+                } else if record
+                    .header
+                    .get(Field::WarcinfoID.standard_name())
+                    .is_none()
+                    && input_scope.as_ref().map(|(scope, _)| *scope) != output_scope
+                {
+                    let (_, id) = input_scope.as_ref().ok_or(Error::UnscopedMergedRecord)?;
+                    let id = id.as_ref().ok_or(Error::MissingWarcinfoRecordId)?;
+                    insert_field(
+                        &mut record.header,
+                        Field::WarcinfoID,
+                        [b" ".as_slice(), id].concat(),
+                    );
                 }
 
                 redirect_references(&mut record.header, &redirects);
@@ -414,6 +473,48 @@ mod tests {
             .header
             .get(name)
             .map(|value| String::from_utf8(value.trim_ascii().to_vec()).unwrap())
+    }
+
+    #[test]
+    fn interleaved_warcinfo_groups_preserve_implicit_associations() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = |id, software| {
+            render(
+                &[("WARC-Type", "warcinfo"), ("WARC-Record-ID", id)],
+                software,
+            )
+        };
+        let resource = render(&[("WARC-Type", "resource")], "payload");
+        let first = write_file(
+            dir.path(),
+            "first.warc",
+            &[
+                info("<urn:a>", "software: A\r\n"),
+                info("<urn:b>", "software: B\r\n"),
+            ]
+            .concat(),
+        );
+        let second = write_file(
+            dir.path(),
+            "second.warc",
+            &[info("<urn:a2>", "software: A\r\n"), resource.clone()].concat(),
+        );
+        let output = dir.path().join("out.warc");
+        merge(&first, &second, &output).unwrap();
+        let records = read_records(&output);
+        assert_eq!(records.len(), 3);
+        assert_eq!(
+            trimmed(&records[2], "WARC-Warcinfo-ID").as_deref(),
+            Some("<urn:a>")
+        );
+        assert_eq!(records[2].body, b"payload");
+
+        // The second input's scope starts afresh, even if the first input ended with warcinfo.
+        std::fs::write(&second, resource).unwrap();
+        assert!(matches!(
+            merge(&first, &second, &output),
+            Err(Error::UnscopedMergedRecord)
+        ));
     }
 
     /// The record with the earliest date survives at the first record's position, references to the
