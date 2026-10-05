@@ -8,7 +8,6 @@
 //! payload. Sessions retry transient failures, archiving the exchanges of every attempt, and
 //! preserve completed work when a later recording failure ends the crawl.
 
-use std::borrow::Cow;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -50,7 +49,7 @@ pub struct Capture<'a> {
     pub payload: &'a [u8],
     /// The complete recorded HTTP response.
     pub response: &'a [u8],
-    pub(crate) response_metadata: Cow<'a, archivindex_http::message::ResponseMetadata>,
+    response_metadata: archivindex_http::message::ResponseMetadata<'a>,
 }
 
 impl<'a> Capture<'a> {
@@ -74,7 +73,7 @@ impl<'a> Capture<'a> {
             status: response_metadata.status,
             payload,
             response,
-            response_metadata: Cow::Owned(response_metadata),
+            response_metadata,
         })
     }
 

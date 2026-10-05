@@ -7,7 +7,7 @@ use archivindex_archiver::{Archiver, Config};
 use archivindex_http::message::ResponseMetadata;
 use archivindex_http_client::framing::Truncation;
 use archivindex_http_client::{
-    CapturedExchange, Client, Fidelity, HttpProtocol, Request, TlsVersion,
+    Client, Exchange as HttpExchange, Fidelity, HttpProtocol, Request, TlsVersion,
 };
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::extension::NoExtension;
@@ -15,14 +15,14 @@ use archivindex_warc::record::header::protocol::Protocol;
 use archivindex_warc::record::header::truncated_type::TruncatedType;
 
 #[derive(Debug)]
-struct Captured(CapturedExchange);
+struct Captured(HttpExchange);
 
 impl Client for Captured {
     fn fetch_within(
         &self,
         _: Request<'_>,
         _: Option<Instant>,
-    ) -> Result<CapturedExchange, archivindex_http_client::Error> {
+    ) -> Result<HttpExchange, archivindex_http_client::Error> {
         Ok(self.0.clone())
     }
 }
@@ -62,9 +62,10 @@ fn transport_metadata_is_recorded_on_the_correct_warc_records() {
             let response = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello".to_vec();
             let request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".to_vec();
             let ip_address = Some("192.0.2.1".parse().unwrap());
-            let captured = CapturedExchange {
+            let captured = HttpExchange {
                 request: request.clone(),
-                response_metadata: ResponseMetadata::parse(&response).unwrap(),
+                status: 200,
+                response_body_offset: ResponseMetadata::parse(&response).unwrap().body_offset,
                 response: response.clone(),
                 fidelity: Fidelity::Reconstructed,
                 http_protocol,

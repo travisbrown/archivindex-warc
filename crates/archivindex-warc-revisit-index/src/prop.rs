@@ -146,7 +146,11 @@ fn variance() -> impl Strategy<Value = Variance> {
         Some("User-Agent"),
         Some("*"),
     ])
-    .prop_map(|vary| Variance::declared(vary, |name| (name == "user-agent").then_some("Archivist")))
+    .prop_map(|vary| {
+        Variance::declared(vary, |name| {
+            Ok((name == "user-agent").then_some("Archivist"))
+        })
+    })
 }
 
 /// A resource-state transition of either kind.

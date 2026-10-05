@@ -106,7 +106,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "archivindex-cli-support"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#a2101d4f162be29e3be04371e71884e39a61c6a8"
+source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
 dependencies = [
  "clap",
  "ctrlc",
@@ -122,7 +122,7 @@ dependencies = [
 [[package]]
 name = "archivindex-http"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#a2101d4f162be29e3be04371e71884e39a61c6a8"
+source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
 dependencies = [
  "thiserror",
 ]
@@ -130,7 +130,7 @@ dependencies = [
 [[package]]
 name = "archivindex-publication"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#a2101d4f162be29e3be04371e71884e39a61c6a8"
+source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
 dependencies = [
  "tempfile",
  "thiserror",

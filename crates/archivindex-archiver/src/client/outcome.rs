@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::time::Instant;
 
-use archivindex_http_client::CapturedExchange;
+use archivindex_http_client::Exchange as HttpExchange;
 use archivindex_http_client::conditional::{Validators, declared_vary, request_field};
 use archivindex_http_client::prepare::{merged_headers, target};
 use archivindex_http_client_challenge::{FetchError, Observer, RequestKind};
@@ -87,13 +87,13 @@ pub struct Exchange {
     /// The earlier capture that this `304 Not Modified` response, answering a conditional request,
     /// confirms unchanged.
     pub revalidated: Option<RevisitTarget>,
-    pub captured: CapturedExchange,
+    pub captured: HttpExchange,
 }
 
 impl Exchange {
     /// Record a captured exchange, decoding and digesting its entity body once.
     pub fn new(
-        captured: CapturedExchange,
+        captured: HttpExchange,
         method: &Method,
         revalidated: Option<RevisitTarget>,
         format: DigestFormat,
@@ -107,7 +107,7 @@ impl Exchange {
                 Cow::Owned(decoded) => Some(decoded),
                 // Keep a borrowed body only when it differs from the stored body.
                 Cow::Borrowed(body) => {
-                    (body.len() != captured.stored_body().len()).then(|| body.to_vec())
+                    (body.len() != captured.message_body().len()).then(|| body.to_vec())
                 }
             };
             (decoded, Some(hasher.finalize_labelled_in(format.encoding)))
@@ -116,7 +116,7 @@ impl Exchange {
         Self {
             date: WarcDate::new(captured.date, DATE_PRECISION),
             method: method.clone(),
-            status: captured.response_metadata.status,
+            status: captured.status,
             decoded,
             payload_digest,
             revalidated,
@@ -158,7 +158,9 @@ impl Exchange {
     /// selecting field the server named; see
     /// [`declared_vary`](archivindex_http_client::conditional::declared_vary).
     pub fn response_vary(&self) -> Option<String> {
-        declared_vary(&self.captured.response_metadata)
+        self.captured
+            .response_metadata()
+            .and_then(|metadata| declared_vary(&metadata))
     }
 
     /// Return a readable response field value exactly as received.
@@ -167,18 +169,19 @@ impl Exchange {
     /// list-valued field sent as several lines needs [`response_vary`](Self::response_vary)'s
     /// combining instead.
     pub fn response_field(&self, name: &str) -> Option<String> {
-        self.captured
-            .response_metadata
-            .header(name)
-            .and_then(|value| std::str::from_utf8(value).ok())
-            .map(str::to_owned)
+        self.captured.response_metadata().and_then(|metadata| {
+            metadata
+                .header(name)
+                .and_then(|value| std::str::from_utf8(value).ok())
+                .map(str::to_owned)
+        })
     }
 
     /// The entity body, or the stored body when transfer decoding fails.
     pub fn payload(&self) -> &[u8] {
         self.decoded
             .as_deref()
-            .unwrap_or_else(|| self.captured.stored_body())
+            .unwrap_or_else(|| self.captured.message_body())
     }
 
     /// The length of [`payload`](Self::payload).
@@ -358,11 +361,11 @@ impl Observer for CaptureObserver<'_> {
         Ok(())
     }
 
-    fn captured(&mut self, captured: CapturedExchange, method: &Method) {
+    fn captured(&mut self, captured: HttpExchange, method: &Method) {
         let revalidated = self
             .original
             .take()
-            .filter(|_| captured.response_metadata.status == StatusCode::NOT_MODIFIED.as_u16())
+            .filter(|_| captured.status == StatusCode::NOT_MODIFIED.as_u16())
             .map(|original| original.target);
         self.exchanges
             .push(Exchange::new(captured, method, revalidated, self.format));
@@ -389,14 +392,14 @@ mod tests {
         use archivindex_http_client::framing::Truncation;
 
         #[derive(Debug)]
-        struct Canned(CapturedExchange);
+        struct Canned(HttpExchange);
 
         impl archivindex_http_client::Client for Canned {
             fn fetch_within(
                 &self,
                 _: archivindex_http_client::Request<'_>,
                 _: Option<Instant>,
-            ) -> Result<CapturedExchange, archivindex_http_client::Error> {
+            ) -> Result<HttpExchange, archivindex_http_client::Error> {
                 std::thread::sleep(Duration::from_millis(20));
                 Ok(self.0.clone())
             }
@@ -404,9 +407,10 @@ mod tests {
 
         for truncated in [None, Some(Truncation::Time)] {
             let response = b"HTTP/1.1 200 OK\r\n\r\nretained".to_vec();
-            let captured = CapturedExchange {
+            let captured = HttpExchange {
                 request: b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".to_vec(),
-                response_metadata: ResponseMetadata::parse(&response).unwrap(),
+                status: 200,
+                response_body_offset: ResponseMetadata::parse(&response).unwrap().body_offset,
                 response,
                 fidelity: archivindex_http_client::Fidelity::Exact,
                 http_protocol: archivindex_http_client::HttpProtocol::Http1,

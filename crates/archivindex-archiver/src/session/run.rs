@@ -1,6 +1,5 @@
 //! The request loop, driver dispatch, and retry policy.
 
-use std::borrow::Cow;
 use std::thread;
 
 use archivindex_http_client::retry::{
@@ -146,14 +145,14 @@ impl Session<'_> {
         let last = exchanges
             .last()
             .expect("a capture without an error has at least one exchange");
-        let Inspection { title, error } = self.driver.inspect(&Capture {
+        let capture = Capture::new(
             url,
-            final_url: last.captured.target_uri.as_str(),
-            status: last.status,
-            payload: last.payload(),
-            response: &last.captured.response,
-            response_metadata: Cow::Borrowed(&last.captured.response_metadata),
-        });
+            last.captured.target_uri.as_str(),
+            last.payload(),
+            &last.captured.response,
+        )
+        .expect("a captured exchange has a complete response head");
+        let Inspection { title, error } = self.driver.inspect(&capture);
 
         (
             title,

@@ -160,7 +160,7 @@ dependencies = [
 [[package]]
 name = "archivindex-cli-support"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#a2101d4f162be29e3be04371e71884e39a61c6a8"
+source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
 dependencies = [
  "clap",
  "ctrlc",
@@ -176,7 +176,7 @@ dependencies = [
 [[package]]
 name = "archivindex-http"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#a2101d4f162be29e3be04371e71884e39a61c6a8"
+source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -184,7 +184,7 @@ dependencies = [
 [[package]]
 name = "archivindex-http-client"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#a2101d4f162be29e3be04371e71884e39a61c6a8"
+source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
 dependencies = [
  "archivindex-http",
  "chrono",
@@ -206,7 +206,7 @@ dependencies = [
 [[package]]
 name = "archivindex-http-client-challenge"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#a2101d4f162be29e3be04371e71884e39a61c6a8"
+source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
 dependencies = [
  "archivindex-http-client",
  "data-encoding",
@@ -221,7 +221,7 @@ dependencies = [
 [[package]]
 name = "archivindex-publication"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#a2101d4f162be29e3be04371e71884e39a61c6a8"
+source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
 dependencies = [
  "tempfile",
  "thiserror 2.0.21",
@@ -230,7 +230,7 @@ dependencies = [
 [[package]]
 name = "archivindex-test-support"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#a2101d4f162be29e3be04371e71884e39a61c6a8"
+source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
 dependencies = [
  "futures",
  "proptest",
@@ -2008,9 +2008,9 @@ dependencies = [
 
 [[package]]
 name = "powerfmt"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
+checksum = "4a6394b9e965e73d0a289ee54f589087e2c676aedf60885baf52c76b771e4958"
 
 [[package]]
 name = "ppv-lite86"

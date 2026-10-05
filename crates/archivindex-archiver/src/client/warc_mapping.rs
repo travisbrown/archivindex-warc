@@ -3,7 +3,7 @@
 use std::io::{BufWriter, Write};
 
 use archivindex_http_client::framing::Truncation;
-use archivindex_http_client::{CapturedExchange, HttpProtocol, TlsVersion};
+use archivindex_http_client::{Exchange as HttpExchange, HttpProtocol, TlsVersion};
 use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::record::Record;
 use archivindex_warc::record::capture::{CaptureEvent, CaptureRecords, RevisitOriginal};
@@ -145,14 +145,14 @@ struct CaptureContext<'a> {
 /// With a revisit target, the response is replaced by a `revisit` record written under `profile`,
 /// carrying the response head alone and naming the target's payload digest as its own.
 fn capture_records(
-    captured: CapturedExchange,
+    captured: HttpExchange,
     date: WarcDate,
     payload_digest: Option<&LabelledDigest>,
     context: CaptureContext<'_>,
     revisit: Option<(&RevisitTarget, RevisitProfile)>,
 ) -> Result<(CaptureRecords, Uri<String>), Error> {
-    let body_offset = captured.response_metadata.body_offset;
-    let CapturedExchange {
+    let body_offset = captured.response_body_offset;
+    let HttpExchange {
         request,
         mut response,
         http_protocol,
@@ -163,7 +163,8 @@ fn capture_records(
         date: _,
         fetch_time,
         truncated,
-        response_metadata: _,
+        status: _,
+        response_body_offset: _,
     } = captured;
     // A revisit does not repeat the payload, so the original's digest describes what it stands for.
     let payload_digest = revisit

@@ -49,7 +49,7 @@ A proxy failure never falls back to a direct connection. Socket timeouts and cap
 bound SOCKS negotiation; local DNS resolution remains outside those bounds.
 
 Proxied captures omit `WARC-IP-Address`: the socket peer is the proxy, and SOCKS does not reliably
-identify the origin IP. `CapturedExchange::ip_address` is therefore optional. HTTP capture bytes
+identify the origin IP. `Exchange::ip_address` is therefore optional. HTTP capture bytes
 exclude proxy negotiation and authentication. The `warcinfo` body records the configured proxy URI
 as `archivindex-proxy`, with username and password removed. This custom field preserves the proxy
 scheme, host, and port when specified, and is absent when no proxy is configured. It describes the

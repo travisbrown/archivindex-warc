@@ -511,7 +511,7 @@ fn resource_state_for_another_variant_does_not_drive_revalidation()
             warc_date: Some(original_date),
             observed_at: original_date,
             variance: Variance::declared(Some("User-Agent"), |name| {
-                (name == "user-agent").then_some(DESKTOP_AGENT)
+                Ok((name == "user-agent").then_some(DESKTOP_AGENT))
             }),
         },
     )?;
@@ -547,12 +547,12 @@ fn resource_state_for_another_variant_does_not_drive_revalidation()
     assert!(
         state
             .variance
-            .matches(|name| (name == "user-agent").then_some(DESKTOP_AGENT))
+            .matches(|name| Ok((name == "user-agent").then_some(DESKTOP_AGENT)))
     );
     assert!(
         !state
             .variance
-            .matches(|name| (name == "user-agent").then_some(MOBILE_AGENT))
+            .matches(|name| Ok((name == "user-agent").then_some(MOBILE_AGENT)))
     );
 
     Ok(())
@@ -2413,5 +2413,47 @@ fn a_not_modified_response_can_change_vary() -> Result<(), Box<dyn std::error::E
     assert_eq!(requests[0].header("if-none-match"), None);
     assert_eq!(requests[1].header("if-none-match"), Some("\"a\""));
     assert_eq!(requests[2].header("if-none-match"), None);
+    Ok(())
+}
+
+/// An unreadable selecting field must neither match an absent field nor establish reusable state.
+/// Once a readable request establishes new state, its validators can be sent again.
+#[test]
+fn unreadable_selecting_headers_prevent_revalidation() -> Result<(), Box<dyn std::error::Error>> {
+    let server = serve_with(4, |request| {
+        (
+            response(200, &[("vary", "X-Variant"), ("etag", "\"v1\"")], "body"),
+            request.clone(),
+        )
+    })?;
+    let url = format!("http://127.0.0.1:{}/page", server.port());
+    let directory = tempfile::tempdir()?;
+    let output = directory.path().join("unreadable-vary.warc.gz");
+    let mut headers = http::HeaderMap::new();
+    headers.insert("x-variant", http::HeaderValue::from_bytes(b"\xff")?);
+    let summary = Session::new(
+        archiver(gzip_config()),
+        "unreadable-vary",
+        Crawl::new([
+            session::Request::seed(&url),
+            session::Request::seed(&url).with_headers(headers),
+            session::Request::seed(&url),
+            session::Request::seed(&url),
+        ]),
+        &output,
+    )?
+    .run()?;
+    let requests = server.finish();
+
+    assert!(summary.is_complete());
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[1].headers["x-variant"].as_bytes(), b"\xff");
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.header("if-none-match"))
+            .collect::<Vec<_>>(),
+        [None, None, None, Some("\"v1\"")],
+    );
     Ok(())
 }

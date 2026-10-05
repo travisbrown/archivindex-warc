@@ -147,7 +147,7 @@ fn framed_digest(
         .encoding()
         .ok_or_else(|| Kept::Undecodable(declared.value().to_owned()))?;
     let digest = algorithm
-        .digest(archivindex_http::body::stored_body(&record.body)?)
+        .digest(archivindex_http::body::message_body(&record.body)?)
         .ok_or_else(|| Kept::UnsupportedAlgorithm(declared.algorithm_as_read().into_owned()))?;
 
     if declared.decoded().as_deref() == Some(&*digest) {

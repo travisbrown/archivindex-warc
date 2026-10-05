@@ -65,20 +65,11 @@ pub fn decode(stored: Option<String>) -> Result<Variance, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn request<'a>(fields: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<&'a str> {
-        move |name| {
-            fields
-                .iter()
-                .find(|(key, _)| *key == name)
-                .map(|(_, value)| *value)
-        }
-    }
     #[test]
     fn variances_round_trip_through_their_encoding() {
-        let selected = Variance::declared(
-            Some("User-Agent, Accept-Encoding"),
-            request(&[("user-agent", "Desktop=!")]),
-        );
+        let selected = Variance::declared(Some("User-Agent, Accept-Encoding"), |name| {
+            Ok((name == "user-agent").then_some("Desktop=!"))
+        });
 
         for variance in [Variance::Invariant, Variance::Unselectable, selected] {
             assert_eq!(decode(encode(&variance)).ok(), Some(variance));
