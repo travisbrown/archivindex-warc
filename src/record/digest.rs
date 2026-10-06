@@ -134,7 +134,7 @@ pub fn check_payload_digest<E: Extension>(
     }
     let payload = match record.payload_bytes() {
         Ok(Some(payload)) => payload,
-        Ok(None) | Err(archivindex_http::body::Error::UnsupportedTransferCoding(_)) => {
+        Ok(None) | Err(archivindex_http::body::Error::UnsupportedTransferEncoding(_)) => {
             return Ok(None);
         }
         Err(
