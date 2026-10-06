@@ -70,9 +70,9 @@ pub fn warcinfo_record(warc_name: &str, options: &WarcinfoOptions<'_>) -> Result
         builder = builder.operator(&operator.name, operator.email.as_deref())?;
     }
     if let Some(proxy) = options.proxy {
-        let proxy = url::Url::parse(proxy).map_err(|_| {
-            ConfigError::InvalidProxy(archivindex_http_client::InvalidProxy("malformed URI"))
-        })?;
+        let proxy = url::Url::parse(proxy)
+            .map_err(archivindex_http_client::InvalidProxy::from)
+            .map_err(ConfigError::from)?;
         builder = builder.field(
             WarcinfoField::from("archivindex-proxy"),
             &redact_credentials(&proxy),
@@ -111,4 +111,27 @@ pub fn metadata_record(
     let mut record = builder.build();
     assign_record_id(&mut record)?;
     Ok(record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A malformed proxy URL retains its parse error when preparing the archive metadata.
+    #[test]
+    fn malformed_proxy_metadata_preserves_the_parse_error() {
+        let config = Config {
+            proxy: Some("socks5h://[invalid".to_owned()),
+            ..Config::default()
+        };
+        let result = warcinfo_record("capture.warc", &WarcinfoOptions::archiver(&config));
+        assert!(matches!(
+            result,
+            Err(Error::InvalidConfig(ConfigError::InvalidProxy(
+                archivindex_http_client::InvalidProxy::InvalidUrl(
+                    url::ParseError::InvalidIpv6Address
+                )
+            )))
+        ));
+    }
 }

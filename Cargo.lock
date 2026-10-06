@@ -160,7 +160,7 @@ dependencies = [
 [[package]]
 name = "archivindex-cli-support"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
+source = "git+https://github.com/travisbrown/archivindex#78570bcea23b855592d285b120e1c65fabcfa7ff"
 dependencies = [
  "clap",
  "ctrlc",
@@ -176,7 +176,7 @@ dependencies = [
 [[package]]
 name = "archivindex-http"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
+source = "git+https://github.com/travisbrown/archivindex#78570bcea23b855592d285b120e1c65fabcfa7ff"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -184,13 +184,14 @@ dependencies = [
 [[package]]
 name = "archivindex-http-client"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
+source = "git+https://github.com/travisbrown/archivindex#78570bcea23b855592d285b120e1c65fabcfa7ff"
 dependencies = [
  "archivindex-http",
  "chrono",
  "fluent-uri",
  "http",
  "http-body-util",
+ "hyper",
  "reqwest",
  "rustls",
  "serde",
@@ -206,7 +207,7 @@ dependencies = [
 [[package]]
 name = "archivindex-http-client-challenge"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
+source = "git+https://github.com/travisbrown/archivindex#78570bcea23b855592d285b120e1c65fabcfa7ff"
 dependencies = [
  "archivindex-http-client",
  "data-encoding",
@@ -221,7 +222,7 @@ dependencies = [
 [[package]]
 name = "archivindex-publication"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
+source = "git+https://github.com/travisbrown/archivindex#78570bcea23b855592d285b120e1c65fabcfa7ff"
 dependencies = [
  "tempfile",
  "thiserror 2.0.21",
@@ -230,7 +231,7 @@ dependencies = [
 [[package]]
 name = "archivindex-test-support"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#811a74a768c9f56d59bc07a0360b3ec8b9a28dc0"
+source = "git+https://github.com/travisbrown/archivindex#78570bcea23b855592d285b120e1c65fabcfa7ff"
 dependencies = [
  "futures",
  "proptest",

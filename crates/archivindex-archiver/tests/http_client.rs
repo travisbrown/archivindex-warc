@@ -18,7 +18,7 @@ use archivindex_warc::record::header::truncated_type::TruncatedType;
 struct Captured(HttpExchange);
 
 impl Client for Captured {
-    fn fetch_within(
+    fn fetch_with_deadline(
         &self,
         _: Request<'_>,
         _: Option<Instant>,
@@ -62,6 +62,9 @@ fn transport_metadata_is_recorded_on_the_correct_warc_records() {
             let response = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello".to_vec();
             let request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".to_vec();
             let ip_address = Some("192.0.2.1".parse().unwrap());
+            let started_at = "2026-10-06T12:34:56.123456Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap();
             let captured = HttpExchange {
                 request: request.clone(),
                 status: 200,
@@ -72,7 +75,7 @@ fn transport_metadata_is_recorded_on_the_correct_warc_records() {
                 tls_version,
                 target_uri: target.to_owned().parse().unwrap(),
                 ip_address,
-                date: chrono::Utc::now(),
+                started_at,
                 fetch_time: Duration::from_millis(25),
                 truncated,
             };
@@ -96,6 +99,8 @@ fn transport_metadata_is_recorded_on_the_correct_warc_records() {
                 .iter()
                 .find(|r| r.type_name() == "response")
                 .unwrap();
+            assert_eq!(request_record.core().date.date_time(), started_at);
+            assert_eq!(response_record.core().date.date_time(), started_at);
             assert_eq!(request_record.protocols(), protocols);
             assert_eq!(response_record.protocols(), protocols);
             assert_eq!(request_record.core().truncated, None);

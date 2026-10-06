@@ -305,7 +305,7 @@ impl From<archivindex_http_client::prepare::Error> for Error {
 /// The configuration cannot be used by an archiver.
 ///
 /// See [`Archiver::new`].
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     /// The proxy URI is malformed or unsupported by the recorder.
     #[error(transparent)]

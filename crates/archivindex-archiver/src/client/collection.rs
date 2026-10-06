@@ -4,7 +4,6 @@ use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
 use std::path::{Path, PathBuf};
 
-use archivindex_http::message::RequestMetadata;
 use archivindex_http_client::conditional::{Variance, request_field};
 use archivindex_publication::{Policy, Publication};
 use archivindex_warc::io::write::{Compression, WarcWriter};
@@ -296,7 +295,7 @@ impl Collection {
             let last_modified = exchange.response_field("last-modified");
             // The request as sent carries fields the configuration does not, in particular the
             // cookie a challenge issued, so a declared `Vary` is resolved against it.
-            let sent = RequestMetadata::parse(&exchange.captured.request);
+            let sent = exchange.captured.request_metadata();
             let vary = exchange.response_vary();
             let variance = Variance::declared(vary.as_deref(), |name| match &sent {
                 Some(sent) => sent.combined_header(name),

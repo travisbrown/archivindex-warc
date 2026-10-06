@@ -114,7 +114,7 @@ impl Exchange {
         });
 
         Self {
-            date: WarcDate::new(captured.date, DATE_PRECISION),
+            date: WarcDate::new(captured.started_at, DATE_PRECISION),
             method: method.clone(),
             status: captured.status,
             decoded,
@@ -395,7 +395,7 @@ mod tests {
         struct Canned(HttpExchange);
 
         impl archivindex_http_client::Client for Canned {
-            fn fetch_within(
+            fn fetch_with_deadline(
                 &self,
                 _: archivindex_http_client::Request<'_>,
                 _: Option<Instant>,
@@ -417,7 +417,7 @@ mod tests {
                 tls_version: None,
                 target_uri: Uri::parse("https://example.com/".to_owned()).unwrap(),
                 ip_address: None,
-                date: chrono::Utc::now(),
+                started_at: chrono::Utc::now(),
                 fetch_time: Duration::ZERO,
                 truncated,
             };

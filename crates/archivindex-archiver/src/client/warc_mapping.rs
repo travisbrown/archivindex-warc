@@ -160,7 +160,7 @@ fn capture_records(
         fidelity: _,
         target_uri,
         ip_address,
-        date: _,
+        started_at: _,
         fetch_time,
         truncated,
         status: _,
