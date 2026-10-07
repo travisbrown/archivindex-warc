@@ -133,7 +133,7 @@ dependencies = [
 [[package]]
 name = "archivindex-cli-support"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#f6e131cb8255090c5384f6cdcb099348247ad1ff"
+source = "git+https://github.com/travisbrown/archivindex#d74752b93eed2cfaa42f0d7195180cf6bf18d8be"
 dependencies = [
  "clap",
  "ctrlc",
@@ -149,7 +149,7 @@ dependencies = [
 [[package]]
 name = "archivindex-publication"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#f6e131cb8255090c5384f6cdcb099348247ad1ff"
+source = "git+https://github.com/travisbrown/archivindex#d74752b93eed2cfaa42f0d7195180cf6bf18d8be"
 dependencies = [
  "tempfile",
  "thiserror",
@@ -158,7 +158,7 @@ dependencies = [
 [[package]]
 name = "archivindex-test-support"
 version = "0.1.0"
-source = "git+https://github.com/travisbrown/archivindex#f6e131cb8255090c5384f6cdcb099348247ad1ff"
+source = "git+https://github.com/travisbrown/archivindex#d74752b93eed2cfaa42f0d7195180cf6bf18d8be"
 dependencies = [
  "futures",
  "proptest",
@@ -3077,9 +3077,9 @@ dependencies = [
 
 [[package]]
 name = "xxhash-rust"
-version = "0.8.18"
+version = "0.8.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aee1b19627c7c60102ab80d3a9cbe18de90bfe03bfa6c3715447681f0e8c8af6"
+checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
 
 [[package]]
 name = "yasna"
