@@ -65,7 +65,7 @@ jobs:
       - name: Install the policy checker
         run: >-
           cargo install --locked --git https://github.com/travisbrown/archivindex
-          --rev 78570bcea23b855592d285b120e1c65fabcfa7ff cargo-archivindex-build
+          --rev 83ece6e453374d4fd066b92fb6920f2c2cab996f cargo-archivindex-build
       - name: Check the workspace
         run: cargo archivindex-build check
       - name: Check the validator

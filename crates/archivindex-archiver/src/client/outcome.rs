@@ -395,6 +395,10 @@ mod tests {
         struct Canned(HttpExchange);
 
         impl archivindex_http_client::Client for Canned {
+            fn engine(&self) -> archivindex_http_client::Engine {
+                archivindex_http_client::Engine::RECORDER
+            }
+
             fn fetch_with_deadline(
                 &self,
                 _: archivindex_http_client::Request<'_>,

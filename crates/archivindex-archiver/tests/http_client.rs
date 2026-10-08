@@ -3,21 +3,31 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use archivindex_archiver::config::Software;
 use archivindex_archiver::{Archiver, Config};
 use archivindex_http::message::ResponseMetadata;
 use archivindex_http_client::framing::Truncation;
 use archivindex_http_client::{
-    Client, Exchange as HttpExchange, Fidelity, HttpProtocol, Request, TlsVersion,
+    Client, Engine, Exchange as HttpExchange, Fidelity, HttpProtocol, Request, TlsVersion,
 };
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::extension::NoExtension;
 use archivindex_warc::record::header::protocol::Protocol;
 use archivindex_warc::record::header::truncated_type::TruncatedType;
+use archivindex_warc::record::{FieldsBlock, Record};
 
 #[derive(Debug)]
 struct Captured(HttpExchange);
 
 impl Client for Captured {
+    fn engine(&self) -> Engine {
+        Engine {
+            name: "captured",
+            version: None,
+            profile: None,
+        }
+    }
+
     fn fetch_with_deadline(
         &self,
         _: Request<'_>,
@@ -145,5 +155,47 @@ fn reqwest_exchanges_can_be_archived_without_an_adapter() {
     assert_eq!(
         response.payload_bytes().unwrap().unwrap().as_ref(),
         b"hello"
+    );
+}
+
+/// The `software` field of the `warcinfo` record an archiver writes. Archiving no URLs still
+/// writes that record.
+fn warcinfo_software(archiver: &Archiver) -> String {
+    let mut bytes = Vec::new();
+    archiver.archive([""; 0], &mut bytes).unwrap();
+    let record = WarcReader::new(bytes.as_slice())
+        .iter_records::<NoExtension>()
+        .records()
+        .next()
+        .unwrap()
+        .unwrap();
+    let Record::Warcinfo {
+        body: FieldsBlock::Fields(fields),
+        ..
+    } = record
+    else {
+        panic!("the first record should be a warcinfo record with warc-fields");
+    };
+
+    fields.software().unwrap().to_owned()
+}
+
+/// The recorder is the archiver's own backend, so the software field names only the software.
+/// Any other backend's engine follows it.
+#[test]
+fn a_backend_other_than_the_recorder_is_named_in_warcinfo() {
+    use archivindex_http_client::reqwest::ReqwestClient;
+
+    let Software { name, version } = Software::default();
+    let reqwest =
+        Archiver::with_backend(Config::default(), Arc::new(ReqwestClient::new())).unwrap();
+
+    assert_eq!(
+        warcinfo_software(&Archiver::new(Config::default()).unwrap()),
+        format!("{name}/{version}")
+    );
+    assert_eq!(
+        warcinfo_software(&reqwest),
+        format!("{name}/{version} {}", Engine::REQWEST)
     );
 }

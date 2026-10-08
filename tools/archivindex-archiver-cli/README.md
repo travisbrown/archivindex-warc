@@ -95,7 +95,9 @@ name = "Example Operator"
 email = "operator@example.com"
 ```
 
-The software defaults to this tool's name and version, and no operator is named by default.
+The software defaults to this tool's name and version, and no operator is named by default. With
+`--backend wreq`, the backend and its profile follow the software, as in
+`example-crawler/2.0 wreq/0.16.1 (chrome_136)`.
 
 A response whose payload duplicates an earlier capture is stored as a `revisit` record unless the
 payload is shorter than `min-revisit-payload-length`, 256 bytes by default. Library crawl sessions

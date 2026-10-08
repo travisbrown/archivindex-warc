@@ -49,7 +49,7 @@ pub mod session;
 use std::sync::Arc;
 use std::time::Duration;
 
-use archivindex_http_client::Client;
+use archivindex_http_client::{Client, Engine};
 use archivindex_warc::record::BlockError;
 use archivindex_warc::value::Algorithm;
 use config::{DigestConfig, DigestFormats, Operator, SessionConfig, Software};
@@ -68,6 +68,8 @@ pub struct Archiver {
     /// Clones of an archiver share one jar, so clearance obtained by one capture thread is used by
     /// the others.
     client: archivindex_http_client_challenge::Session<Arc<dyn Client>>,
+    /// The engine of the capture backend, written to `warcinfo` unless it is the recorder.
+    engine: Engine,
     config: Config,
     /// The digest formats the configuration resolves to, checked to be supported by this build.
     digests: DigestFormats,
@@ -189,6 +191,9 @@ pub struct Config {
     ///
     /// The default is this crate's own name and version. [`Archiver::new`] rejects names and
     /// versions holding control characters, which cannot be written as a `warc-fields` value.
+    ///
+    /// The [`Engine`] of a backend other than the built-in recorder follows the software in the
+    /// field, as in `name/version wreq/0.16.1 (chrome_136)`.
     pub software: Software,
     /// The operator named in the `warcinfo` record of every WARC file, when set.
     ///
@@ -316,8 +321,8 @@ pub enum ConfigError {
     /// A configured digest algorithm is not enabled in this build.
     #[error("digest algorithm {0} is not enabled in this build")]
     UnsupportedDigestAlgorithm(Algorithm),
-    /// The configured software or operator holds a control character, so it cannot be written to
-    /// the `warcinfo` record.
+    /// The configured software or operator, or the backend's engine, holds a control character,
+    /// so it cannot be written to the `warcinfo` record.
     #[error(transparent)]
     UnwritableWarcinfoField(#[from] archivindex_warc::record::fields::Error),
 }

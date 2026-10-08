@@ -65,6 +65,10 @@ impl Archiver {
     /// digests, limits, and session behavior. Proxy settings, timeouts, and the response-length
     /// limit must be applied when constructing the backend.
     ///
+    /// The backend's [`engine`](Client::engine) follows
+    /// [`Config::software`](crate::Config::software) in the `software` field of the `warcinfo`
+    /// record, unless it is the built-in recorder's.
+    ///
     /// # Errors
     ///
     /// Fails for the same configuration reasons as [`Archiver::new`], except proxy validation,
@@ -72,7 +76,8 @@ impl Archiver {
     pub fn with_backend(config: Config, backend: Arc<dyn Client>) -> Result<Self, ConfigError> {
         let user_agent = HeaderValue::from_str(&config.user_agent)
             .map_err(|_| UserAgentError(config.user_agent.clone()))?;
-        check_warcinfo_fields(&config)?;
+        let engine = backend.engine();
+        check_warcinfo_fields(&config, engine)?;
         let digests = config.digest.formats();
         if let Some(unsupported) = [digests.block, digests.payload]
             .into_iter()
@@ -88,6 +93,7 @@ impl Archiver {
         Ok(Self {
             client: archivindex_http_client_challenge::Session::new(backend)
                 .max_redirects(config.max_redirects),
+            engine,
             headers,
             config,
             digests,
@@ -204,6 +210,7 @@ impl Archiver {
                 warcinfo: WarcinfoOptions {
                     user_agent: &self.config.user_agent,
                     software,
+                    engine: self.engine,
                     operator,
                     session_id: Some(id),
                     proxy: self.config.proxy.as_deref(),
@@ -227,7 +234,7 @@ impl Archiver {
         let options = || CollectionOptions {
             warc_name,
             gzip,
-            warcinfo: WarcinfoOptions::archiver(&self.config),
+            warcinfo: WarcinfoOptions::archiver(&self.config, self.engine),
             request_headers: self.headers.clone(),
             persistent_index: None,
             digests: self.digests,

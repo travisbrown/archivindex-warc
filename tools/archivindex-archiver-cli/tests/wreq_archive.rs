@@ -1,15 +1,19 @@
 //! WARC integration and application-exchange attribution for the optional backend.
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use archivindex_archiver::config::Software;
 use archivindex_archiver::{Archiver, Config};
+use archivindex_http_client::Engine;
 use archivindex_http_client::wreq::WreqClient;
 use archivindex_test_support::http::proxy::RecordingProxy;
 use archivindex_test_support::http::{RequestExt as _, response, serve_with};
 use archivindex_warc::io::read::WarcReader;
 use archivindex_warc::record::extension::NoExtension;
+use archivindex_warc::record::{FieldsBlock, Record};
 use data_encoding::BASE64;
 use wreq_util::Profile;
 
+/// The software field of the `warcinfo` record ends with the backend and the profile it emulates.
 #[test]
 fn redirects_and_challenge_answers_are_archived_exactly_once() {
     let script = "v='clearance';document.cookie='sucuri_cloudproxy_uuid_test=' + v + ';path=/;max-age=86400;SameSite=Lax'; location.reload();";
@@ -80,6 +84,20 @@ fn redirects_and_challenge_answers_are_archived_exactly_once() {
         assert_eq!(request.body_bytes().as_ref(), exchange.request);
         assert_eq!(response.body_bytes().as_ref(), exchange.response);
     }
+    let Record::Warcinfo {
+        body: FieldsBlock::Fields(fields),
+        ..
+    } = &records[0]
+    else {
+        panic!("the first record should be a warcinfo record with warc-fields");
+    };
+    let Software { name, version } = Software::default();
+    let engine = Engine::wreq_with_profile(Profile::Chrome136);
+    assert_eq!(engine.profile, Some("chrome_136"));
+    assert_eq!(
+        fields.software(),
+        Some(format!("{name}/{version} {engine}").as_str())
+    );
 }
 
 #[test]
