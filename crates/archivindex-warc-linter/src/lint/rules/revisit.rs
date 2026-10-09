@@ -1,4 +1,4 @@
-//! Rules 16–18: required revisit truncation declarations, complete reference fields, and references
+//! Rules 17–19: required revisit truncation declarations, complete reference fields, and references
 //! to earlier records.
 
 use std::io::BufRead;

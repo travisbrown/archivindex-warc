@@ -6,6 +6,7 @@ pub(super) mod capture;
 pub(super) mod digest;
 pub(super) mod framing;
 pub(super) mod header;
+pub(super) mod identity;
 pub(super) mod revisit;
 pub(super) mod warcinfo;
 

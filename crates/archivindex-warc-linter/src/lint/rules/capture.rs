@@ -1,4 +1,4 @@
-//! Rules 14 and 15: request, response or revisit, then metadata. The response and metadata link to
+//! Rules 15 and 16: request, response or revisit, then metadata. The response and metadata link to
 //! their predecessors and repeat the target URI; other records must not use `WARC-Concurrent-To`.
 
 use std::io::BufRead;
@@ -299,9 +299,10 @@ mod tests {
         let mut records = capture();
         records.insert(2, copies(&[request()], 1).remove(0));
         // The response names the request it follows, which is now the second one.
-        records[3] = records[3]
-            .clone()
-            .set("WARC-Concurrent-To", &format!("<{REQUEST_ID}-1>"));
+        records[3] = records[3].clone().set(
+            "WARC-Concurrent-To",
+            &format!("<{}>", copy_id(REQUEST_ID, 1)),
+        );
 
         assert_eq!(
             findings(&records),

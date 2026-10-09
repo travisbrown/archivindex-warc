@@ -13,6 +13,9 @@ use sha2::{Digest, Sha256};
 
 mod read;
 
+/// The prefix of every identifier under the scheme. The hash follows it in lowercase hexadecimal.
+pub const RECORD_ID_PREFIX: &str = "https://archivindex.org/record/";
+
 /// A record could not be identified under this scheme.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
@@ -117,7 +120,7 @@ impl<'a> IdentityV1<'a> {
         let mut hash = Sha256::new();
         self.encode_preimage(|part| hash.update(part));
         Uri::parse(format!(
-            "https://archivindex.org/record/{}",
+            "{RECORD_ID_PREFIX}{}",
             data_encoding::HEXLOWER.encode(&hash.finalize())
         ))
         .expect("the record ID is a valid HTTPS URI")

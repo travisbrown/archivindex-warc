@@ -1,5 +1,6 @@
 //! Records and lint passes shared by the tests of the rules.
 
+use std::collections::HashMap;
 use std::io::Write;
 
 use archivindex_warc::io::read::WarcReader;
@@ -208,6 +209,11 @@ pub(super) fn other_id(nonce: usize) -> String {
     format!("urn:uuid:eeeeeeee-0000-4000-8000-0000000001{nonce:02}")
 }
 
+/// The identifier of copy `nonce` of the record `id` identifies.
+pub(super) fn copy_id(id: &str, nonce: usize) -> String {
+    format!("{}{nonce:02}", &id[..id.len() - 2])
+}
+
 /// Copies of `records` under identifiers of their own, keeping the references among them.
 ///
 /// A field naming a record outside the copy, such as the `warcinfo` record a capture belongs to,
@@ -222,13 +228,53 @@ pub(super) fn copies(records: &[TestRecord], nonce: usize) -> Vec<TestRecord> {
             for (_, value) in &mut copy.headers {
                 if own.contains(&*value) {
                     // Identifiers are written between brackets, which the copy keeps.
-                    value.insert_str(value.len() - 1, &format!("-{nonce}"));
+                    *value = format!("<{}>", copy_id(&value[1..value.len() - 1], nonce));
                 }
             }
 
             copy
         })
         .collect()
+}
+
+/// Copies of `records` under the identifiers the Archivindex identity scheme derives from them,
+/// keeping the references among them.
+pub(super) fn identified(records: &[TestRecord]) -> Vec<TestRecord> {
+    let derived = records
+        .iter()
+        .map(|record| (declared_id(record), format!("<{}>", derived_id(record))))
+        .collect::<HashMap<_, _>>();
+
+    records
+        .iter()
+        .map(|record| {
+            let mut copy = record.clone();
+            for (_, value) in &mut copy.headers {
+                if let Some(id) = derived.get(value) {
+                    value.clone_from(id);
+                }
+            }
+
+            copy
+        })
+        .collect()
+}
+
+/// The identifier the Archivindex identity scheme derives from a record.
+///
+/// The record is identified as it is written, without being parsed, where the linter identifies
+/// the record it has parsed.
+pub(super) fn derived_id(record: &TestRecord) -> Uri<String> {
+    let mut file = Vec::new();
+    record.render(&mut file);
+    let raw = WarcReader::new(&file[..])
+        .iter_raw_records()
+        .records()
+        .next()
+        .expect("one record is written")
+        .expect("the record reads");
+
+    archivindex_warc_identifier::record_id(&raw).expect("the scheme identifies the record")
 }
 
 /// The identifier a record declares, as its field is written.

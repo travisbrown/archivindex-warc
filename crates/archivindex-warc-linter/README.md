@@ -28,6 +28,9 @@ Use `WarcReader::from_path` for uncompressed input. A reader created with `from_
 Read errors are returned separately from lint findings. A malformed record is skipped, while a
 stream or framing error ends the pass.
 
+A record identifier must be a UUID URN or the one the Archivindex identity scheme derives from its
+record. `Linter::require_archivindex_ids` refuses the UUID.
+
 Add project-specific checks with `Linter::with_rule` and the `Rule` trait. Findings implement
 `Display` for text output and `serde::Serialize` for JSON output. The
 [`archivindex-warc` CLI](../../tools/archivindex-warc-cli/README.md#lint) uses this library for its

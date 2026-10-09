@@ -319,6 +319,7 @@ name = "archivindex-warc-linter"
 version = "0.1.0"
 dependencies = [
  "archivindex-warc",
+ "archivindex-warc-identifier",
  "flate2",
  "fluent-uri",
  "serde",

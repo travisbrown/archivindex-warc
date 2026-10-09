@@ -18,6 +18,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 archivindex-warc.workspace = true
+archivindex-warc-identifier.workspace = true
 fluent-uri.workspace = true
 serde.workspace = true
 thiserror.workspace = true

@@ -86,9 +86,10 @@ cargo run --manifest-path tools/archivindex-warc-cli/Cargo.toml -- lint -i archi
 ```
 
 Uses [`archivindex-warc-linter`](../../crates/archivindex-warc-linter/) to check WARC requirements
-and additional conventions, including header order, capture-record relationships, digests, and
-record-at-a-time gzip framing. Use `--format json` for JSON Lines output. The command exits with
-status 1 when it finds problems.
+and additional conventions, including header order, capture-record relationships, digests,
+content-derived record identifiers, and record-at-a-time gzip framing. A record identifier may also
+be a UUID unless `--require-archivindex-ids` is given. Use `--format json` for JSON Lines output.
+The command exits with status 1 when it finds problems.
 
 ## load-revisit-index
 

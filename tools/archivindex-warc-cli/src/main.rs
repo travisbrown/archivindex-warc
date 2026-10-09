@@ -121,6 +121,11 @@ enum Command {
         /// How to write the findings.
         #[arg(long, value_name = "FORMAT", default_value_t = LintFormat::Text)]
         format: LintFormat,
+
+        /// Refuse a UUID as a record identifier, so that every record must carry the identifier
+        /// the Archivindex identity scheme derives from it.
+        #[arg(long)]
+        require_archivindex_ids: bool,
     },
 
     /// Load the records of WARC files into a revisit index.
@@ -330,7 +335,11 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
                 }
             }
         }
-        Command::Lint { input, format } => return lint(&input, format, quiet),
+        Command::Lint {
+            input,
+            format,
+            require_archivindex_ids,
+        } => return lint(&input, format, require_archivindex_ids, quiet),
         Command::LoadRevisitIndex { input, database } => {
             load_revisit_index(&database, &input, quiet)?;
         }
@@ -578,8 +587,14 @@ fn default_compress_output(input: &Path) -> PathBuf {
 }
 
 /// Report every finding in `input`, returning the outcome the findings call for.
-fn lint(input: &Path, format: LintFormat, quiet: bool) -> Result<CommandOutcome> {
-    let mut linter = Linter::new(archivindex_warc_ops::file::open(input)?);
+fn lint(
+    input: &Path,
+    format: LintFormat,
+    require_archivindex_ids: bool,
+    quiet: bool,
+) -> Result<CommandOutcome> {
+    let mut linter = Linter::new(archivindex_warc_ops::file::open(input)?)
+        .require_archivindex_ids(require_archivindex_ids);
     let mut problems = 0;
 
     while let Some(item) = linter.next() {
@@ -878,18 +893,34 @@ mod tests {
             "json",
         ])
         .unwrap();
+        let strict = Cli::try_parse_from([
+            "archivindex-warc",
+            "lint",
+            "-i",
+            "input.warc",
+            "--require-archivindex-ids",
+        ])
+        .unwrap();
 
         assert!(matches!(
             cli.command,
             Command::Lint {
                 input,
-                format: LintFormat::Text
+                format: LintFormat::Text,
+                require_archivindex_ids: false,
             } if input.as_path() == Path::new("input.warc.gz")
         ));
         assert!(matches!(
             json.command,
             Command::Lint {
                 format: LintFormat::Json,
+                ..
+            }
+        ));
+        assert!(matches!(
+            strict.command,
+            Command::Lint {
+                require_archivindex_ids: true,
                 ..
             }
         ));

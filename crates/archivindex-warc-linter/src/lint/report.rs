@@ -208,6 +208,27 @@ pub enum Violation {
         /// Why the block does not yield a payload.
         reason: String,
     },
+    /// A record's `WARC-Record-ID` is neither a UUID URN nor an identifier under the Archivindex
+    /// identity scheme.
+    #[error("`WARC-Record-ID` is neither a UUID nor an identifier under the Archivindex scheme")]
+    UnrecognizedRecordId,
+    /// A record's `WARC-Record-ID` is not the identifier the Archivindex identity scheme derives
+    /// from the record. The identifier is under the scheme, or the pass requires one that is.
+    #[error(
+        "`WARC-Record-ID` should be {computed}, which the Archivindex scheme derives from the record"
+    )]
+    RecordIdMismatch {
+        /// The identifier the scheme derives from the record.
+        #[serde(serialize_with = "serialize_display")]
+        computed: Uri<String>,
+    },
+    /// The Archivindex identity scheme derives no identifier from a record. The record's
+    /// `WARC-Record-ID` is under the scheme, or the pass requires one that is.
+    #[error("the Archivindex scheme derives no `WARC-Record-ID` from the record: {reason}")]
+    UnderivableRecordId {
+        /// Why the scheme derives no identifier from the record.
+        reason: String,
+    },
     /// The first record of the file is not a `warcinfo` record.
     #[error("the first record is a `{found}` record, not a `warcinfo` record")]
     FirstRecordNotWarcinfo {
@@ -356,6 +377,9 @@ impl Violation {
             Self::PayloadDigestMismatch { .. } => "payload_digest_mismatch",
             Self::MalformedDigest { .. } => "malformed_digest",
             Self::UnreadablePayload { .. } => "unreadable_payload",
+            Self::UnrecognizedRecordId => "unrecognized_record_id",
+            Self::RecordIdMismatch { .. } => "record_id_mismatch",
+            Self::UnderivableRecordId { .. } => "underivable_record_id",
             Self::FirstRecordNotWarcinfo { .. } => "first_record_not_warcinfo",
             Self::MissingWarcinfoId => "missing_warcinfo_id",
             Self::WrongWarcinfoId { .. } => "wrong_warcinfo_id",

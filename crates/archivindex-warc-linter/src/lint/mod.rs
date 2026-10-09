@@ -28,6 +28,8 @@ pub struct Linter<'a, R> {
     records: UntypedIter<R>,
     /// Whether the records are read from a gzip stream, which the file is named for.
     gzip: bool,
+    /// Whether a UUID is refused as a record identifier.
+    require_archivindex_ids: bool,
     /// The rules added to the pass, run after the rules this crate defines.
     rules: Vec<Box<dyn Rule + 'a>>,
     /// The position of the next record read.
@@ -68,6 +70,7 @@ impl<'a, R: BufRead> Linter<'a, R> {
         Self {
             gzip: records.is_gzip(),
             records,
+            require_archivindex_ids: false,
             rules: Vec::new(),
             index: 0,
             member_first: 0,
@@ -82,6 +85,17 @@ impl<'a, R: BufRead> Linter<'a, R> {
             deferred: None,
             finished: false,
         }
+    }
+
+    /// Set whether every record identifier must be the one the
+    /// [Archivindex identity scheme](archivindex_warc_identifier) derives from its record.
+    ///
+    /// A pass accepts a UUID URN as well unless this is set.
+    #[must_use]
+    pub const fn require_archivindex_ids(mut self, require: bool) -> Self {
+        self.require_archivindex_ids = require;
+
+        self
     }
 
     /// Check every record against `rule` as well, after the rules this crate defines.
@@ -119,6 +133,7 @@ impl<'a, R: BufRead> Linter<'a, R> {
         self.check_header(index, record, order_violation);
         self.check_block(index, record);
         self.check_digests(index, record);
+        self.check_identity(index, record);
         self.check_warcinfo(index, record);
         self.check_capture(index, record, expected);
         self.check_revisit(index, record);

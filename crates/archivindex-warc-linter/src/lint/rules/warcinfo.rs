@@ -1,4 +1,4 @@
-//! Rules 10, 11, 12, and 13: the `warcinfo` record that opens a file, the one each record names,
+//! Rules 11, 12, 13, and 14: the `warcinfo` record that opens a file, the one each record names,
 //! the collection a `warcinfo` record names, and the host the requests under it target.
 
 use std::io::BufRead;
