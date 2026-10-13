@@ -40,7 +40,7 @@ sha1 = { version = "0.11", optional = true }
 sha2 = { workspace = true, optional = true }
 sha3 = { version = "0.12", optional = true }
 thiserror.workspace = true
-xxhash-rust = { version = "0.8.18", optional = true, features = ["xxh3"] }
+xxhash-rust = { version = "0.8.19", optional = true, features = ["xxh3"] }
 
 [dev-dependencies]
 archivindex-test-support.workspace = true

@@ -136,9 +136,7 @@ fn target_uri_and_original_distinguish_records() {
         Some("https://example.org/a"),
         Some("https://example.org/b"),
     ] {
-        let fields = target
-            .map(|target| vec![("WARC-Target-URI", target)])
-            .unwrap_or_default();
+        let fields = target.map_or_default(|target| vec![("WARC-Target-URI", target)]);
         let next = id(&record("2026-01-01T00:00:00Z", &fields));
         assert!(!ids.contains(&next), "{target:?}");
         ids.push(next);

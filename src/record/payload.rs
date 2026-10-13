@@ -9,7 +9,8 @@ use archivindex_http::body::{Error, Framing};
 
 /// Extract a WARC HTTP payload with content coding preserved and stored-message tolerance.
 ///
-/// Unsupported transfer codings and incomplete chunk data are errors.
+/// Unsupported transfer codings are errors. A body that is not complete chunk framing, including a
+/// truncated chunked body, is assumed to be already dechunked and returned unchanged.
 pub fn entity_body(message: &[u8]) -> Result<Cow<'_, [u8]>, Error> {
     archivindex_http::body::entity_body_with_policy(message, Framing::Inferred)
 }

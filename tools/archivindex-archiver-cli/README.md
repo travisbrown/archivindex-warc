@@ -38,7 +38,9 @@ The `wreq` backend also negotiates HTTP/2, which it records as reconstructed HTT
 marked with `WARC-Protocol: h2`. It compiles BoringSSL from source and needs CMake, a C/C++
 compiler, and libclang. The implementation comes from `archivindex-http-client` in the
 [Archivindex repository](https://github.com/travisbrown/archivindex). Its unpublished `wreq` fork
-and matching TLS revisions are patched in the repository's root manifest.
+and matching TLS revisions are patched in the repository's root manifest. The manifest also pins
+upstream `wreq-util` to include an unreleased zstd dependency update that resolves security
+advisories.
 
 Build from the repository root with:
 

@@ -954,12 +954,19 @@ fn the_payload_digest_of_a_segment_is_left_alone() {
 
 #[test]
 fn truncated_payloads_are_validated_and_receive_missing_digests() {
-    for (kind, body) in [
-        ("resource", b"hello".as_slice()),
-        ("response", RESPONSE_BLOCK),
+    for (kind, body, digest) in [
+        ("resource", b"hello".as_slice(), ADDED_PAYLOAD_DIGEST),
+        ("response", RESPONSE_BLOCK, ADDED_PAYLOAD_DIGEST),
         (
             "response",
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+            ADDED_PAYLOAD_DIGEST,
+        ),
+        // Incomplete chunk framing is treated as already dechunked, so all retained bytes count.
+        (
+            "response",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhel",
+            "sha256:ad8fd392207e68e857fc48bc489f287807f008e1ff10f883bde3d0c2689aad0f",
         ),
     ] {
         let incorrect = payload_record(
@@ -983,31 +990,26 @@ fn truncated_payloads_are_validated_and_receive_missing_digests() {
             .unwrap();
         assert_eq!(
             written(&raw, "WARC-Payload-Digest").as_deref(),
-            Some(ADDED_PAYLOAD_DIGEST)
+            Some(digest)
         );
     }
 }
 
 #[test]
 fn unextractable_truncated_payloads_remain_unchecked() {
-    for body in [
-        b"HTTP/1.1 200 OK\r\n".as_slice(),
-        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhel",
-    ] {
-        let record = payload_record(
-            "response",
-            &[
-                ("WARC-Truncated", "disconnect"),
-                (
-                    "WARC-Payload-Digest",
-                    "sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ",
-                ),
-            ],
-            body,
-        );
-        assert_eq!(record.incorrect_payload_digest(), None);
-        assert!(record.into_raw().is_ok());
-    }
+    let record = payload_record(
+        "response",
+        &[
+            ("WARC-Truncated", "disconnect"),
+            (
+                "WARC-Payload-Digest",
+                "sha1:3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ",
+            ),
+        ],
+        b"HTTP/1.1 200 OK\r\n",
+    );
+    assert_eq!(record.incorrect_payload_digest(), None);
+    assert!(record.into_raw().is_ok());
 }
 
 /// A payload using an unsupported transfer-coding cannot be checked and is preserved.
