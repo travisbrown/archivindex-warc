@@ -2,7 +2,7 @@
 
 use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use archivindex_http_client::conditional::{Variance, request_field};
 use archivindex_publication::{Policy, Publication};
@@ -73,9 +73,8 @@ impl Collection {
     /// publication fails.
     pub fn new_for_path(output: &Path, options: CollectionOptions<'_>) -> Result<Self, Error> {
         let warcinfo = warcinfo_record(options.warc_name, &options.warcinfo)?;
-        let publication =
-            Publication::with_partial_path(output, partial_path(output), Policy::CreateNew)?
-                .retain_partial();
+        let publication = Publication::with_partial_suffix(output, ".partial", Policy::CreateNew)?
+            .retain_partial();
         let file = publication.reopen()?;
 
         Self::with_spool(file, Some(publication), warcinfo, options)
@@ -408,12 +407,6 @@ impl Collection {
         publication.publish()?;
         Ok(summary)
     }
-}
-
-fn partial_path(output: &Path) -> PathBuf {
-    let mut path = output.as_os_str().to_os_string();
-    path.push(".partial");
-    path.into()
 }
 
 /// What a capture's summary takes from its final hop.

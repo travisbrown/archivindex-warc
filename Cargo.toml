@@ -62,12 +62,12 @@ wiremock = "0.6.5"
 # The optional wreq backend needs observer hooks from a fork. Repeat the HTTP client
 # workspace patches here because Cargo ignores patches declared by dependencies.
 [patch.crates-io]
-wreq = { git = "https://github.com/travisbrown/wreq", rev = "108701e00f33b40132e78d28abce8b4f6e3a6b19" }
+wreq = { git = "https://github.com/travisbrown/wreq", rev = "da923c0a4fc7c17bee15c05624844deb719f8ff4" }
 
 # The fork uses btls APIs not yet published in 0.5.6. Keep its TLS crates at one revision.
-btls = { git = "https://github.com/0x676e67/btls", rev = "9d859deefab0183e2fccf91204c818c8d1805b27" }
-btls-sys = { git = "https://github.com/0x676e67/btls", rev = "9d859deefab0183e2fccf91204c818c8d1805b27" }
-tokio-btls = { git = "https://github.com/0x676e67/btls", rev = "9d859deefab0183e2fccf91204c818c8d1805b27" }
+btls = { git = "https://github.com/0x676e67/btls", rev = "f0721c5116fac6b124af18c778e9ed05a0087ac2" }
+btls-sys = { git = "https://github.com/0x676e67/btls", rev = "f0721c5116fac6b124af18c778e9ed05a0087ac2" }
+tokio-btls = { git = "https://github.com/0x676e67/btls", rev = "f0721c5116fac6b124af18c778e9ed05a0087ac2" }
 
 [[workspace.metadata.archivindex-build.exemptions]]
 package = "archivindex-warc"
