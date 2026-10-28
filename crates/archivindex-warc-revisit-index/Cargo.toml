@@ -29,7 +29,7 @@ archivindex-http.workspace = true
 archivindex-http-client.workspace = true
 archivindex-warc.workspace = true
 fluent-uri.workspace = true
-rusqlite = "0.40"
+rusqlite = "0.41"
 thiserror.workspace = true
 
 [dev-dependencies]
