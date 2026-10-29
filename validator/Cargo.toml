@@ -46,7 +46,7 @@ archivindex-warc-ops = { path = "../crates/archivindex-warc-ops" }
 # warcat 0.3.4 enables blake3's experimental digest traits, which became incompatible with its
 # digest 0.10 dependency in blake3 1.8.4.
 blake3 = { version = "=1.8.3", features = ["pure", "traits-preview"] }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 directories = "6"
 flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
 log = "0.4"

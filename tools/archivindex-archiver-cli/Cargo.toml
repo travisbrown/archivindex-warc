@@ -44,13 +44,13 @@ wreq-util = { version = "=0.2.0", default-features = false, optional = true, fea
 [dev-dependencies]
 archivindex-test-support.workspace = true
 data-encoding.workspace = true
-h2 = "0.4.19"
+h2 = "0.4.20"
 http.workspace = true
 rcgen = "0.14"
-rustls = "0.23.45"
+rustls = "0.23.46"
 tempfile.workspace = true
 tokio = { version = "1", features = ["rt", "time", "sync", "macros", "net"] }
-tokio-rustls = "0.26.5"
+tokio-rustls = "0.26.6"
 
 [[test]]
 name = "wreq_archive"

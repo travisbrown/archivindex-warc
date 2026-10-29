@@ -44,13 +44,13 @@ archivindex-warc = { version = "0.1.0", path = "." }
 archivindex-warc-identifier = { version = "0.1.0", path = "crates/archivindex-warc-identifier" }
 archivindex-warc-linter = { version = "0.1.0", path = "crates/archivindex-warc-linter" }
 chrono = "0.4"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 data-encoding = "2"
 flate2 = { version = "1", default-features = false, features = ["miniz_oxide"] }
 fluent-uri = "0.4"
 http = "1"
 log = "0.4"
-proptest = { version = "1.11", features = ["attr-macro"] }
+proptest = { version = "1.12", features = ["attr-macro"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
@@ -62,12 +62,15 @@ wiremock = "0.6.5"
 # The optional wreq backend needs observer hooks from a fork. Repeat the HTTP client
 # workspace patches here because Cargo ignores patches declared by dependencies.
 [patch.crates-io]
-wreq = { git = "https://github.com/travisbrown/wreq", rev = "da923c0a4fc7c17bee15c05624844deb719f8ff4" }
+wreq = { git = "https://github.com/travisbrown/wreq", rev = "f48511ac657bfa4286f3098f00454d078ae51bb6" }
+
+# Use upstream's zstd update until it is released.
+wreq-util = { git = "https://github.com/0x676e67/wreq-util", rev = "4d21e3b65d6846187e02802172073438944e6399" }
 
 # The fork uses btls APIs not yet published in 0.5.6. Keep its TLS crates at one revision.
-btls = { git = "https://github.com/0x676e67/btls", rev = "f0721c5116fac6b124af18c778e9ed05a0087ac2" }
-btls-sys = { git = "https://github.com/0x676e67/btls", rev = "f0721c5116fac6b124af18c778e9ed05a0087ac2" }
-tokio-btls = { git = "https://github.com/0x676e67/btls", rev = "f0721c5116fac6b124af18c778e9ed05a0087ac2" }
+btls = { git = "https://github.com/0x676e67/btls", rev = "ada9bd9e2eb85ac756975004ae2aa8a9126692ab" }
+btls-sys = { git = "https://github.com/0x676e67/btls", rev = "ada9bd9e2eb85ac756975004ae2aa8a9126692ab" }
+tokio-btls = { git = "https://github.com/0x676e67/btls", rev = "ada9bd9e2eb85ac756975004ae2aa8a9126692ab" }
 
 [[workspace.metadata.archivindex-build.exemptions]]
 package = "archivindex-warc"

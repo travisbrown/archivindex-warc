@@ -6,6 +6,11 @@ version = 2
 ignore = [
   # The graph renderer `d2-little` depends on `ttf-parser`.
   { id = "RUSTSEC-2026-0192", reason = "`ttf-parser` is unmaintained" },
+  # The standalone comparison validator uses warcat 0.3.4, which requires zstd 0.13.
+  # Accept these advisories until warcat upgrades; retain its Zstandard support.
+  { id = "RUSTSEC-2026-0391", reason = "warcat's zstd requirement prevents the fixed 0.14.3 release" },
+  { id = "RUSTSEC-2026-0398", reason = "warcat's zstd requirement prevents the fixed zstd-safe 8.2.0 release" },
+  { id = "RUSTSEC-2026-0403", reason = "warcat's zstd requirement prevents the fixed zstd-safe 8.2.0 release" },
 ]
 
 [bans]
@@ -70,10 +75,11 @@ exceptions = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# The support packages shared across the Archivindex repositories, and the observer-enabled `wreq`
-# fork and unreleased btls APIs required by the optional wreq capture backend.
+# The shared Archivindex packages, observer-enabled wreq fork, unreleased btls APIs, and
+# upstream wreq-util dependency fixes.
 allow-git = [
   "https://github.com/travisbrown/archivindex",
   "https://github.com/travisbrown/wreq",
   "https://github.com/0x676e67/btls",
+  "https://github.com/0x676e67/wreq-util",
 ]
