@@ -75,11 +75,12 @@ exceptions = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# The shared Archivindex packages, observer-enabled wreq fork, unreleased btls APIs, and
-# upstream wreq-util dependency fixes.
+# The shared Archivindex packages, observer and emulation forks, and matching TLS and HTTP codecs.
 allow-git = [
   "https://github.com/travisbrown/archivindex",
   "https://github.com/travisbrown/wreq",
   "https://github.com/0x676e67/btls",
-  "https://github.com/0x676e67/wreq-util",
+  "https://github.com/0x676e67/http2",
+  "https://github.com/0x676e67/netty",
+  "https://github.com/travisbrown/wreq-util",
 ]
