@@ -62,7 +62,7 @@ wiremock = "0.6.5"
 # The optional wreq backend needs observer hooks from a fork. Repeat the HTTP client
 # workspace patches here because Cargo ignores patches declared by dependencies.
 [patch.crates-io]
-wreq = { git = "https://github.com/travisbrown/wreq", rev = "5ab034a2a8bcae63c1c0384df9266ea4b48b12b9" }
+wreq = { git = "https://github.com/travisbrown/wreq", rev = "729e006cf6f48fb4509147a2e1b7cba2f73699de" }
 
 # Match the emulation profiles to the fork's TLS and HTTP/2 APIs.
 wreq-util = { git = "https://github.com/travisbrown/wreq-util", rev = "69af0555e88cb2882de7a4250a40a828d7eb9a61" }

@@ -6,11 +6,6 @@ version = 2
 ignore = [
   # The graph renderer `d2-little` depends on `ttf-parser`.
   { id = "RUSTSEC-2026-0192", reason = "`ttf-parser` is unmaintained" },
-  # The standalone comparison validator uses warcat 0.3.4, which requires zstd 0.13.
-  # Accept these advisories until warcat upgrades; retain its Zstandard support.
-  { id = "RUSTSEC-2026-0391", reason = "warcat's zstd requirement prevents the fixed 0.14.3 release" },
-  { id = "RUSTSEC-2026-0398", reason = "warcat's zstd requirement prevents the fixed zstd-safe 8.2.0 release" },
-  { id = "RUSTSEC-2026-0403", reason = "warcat's zstd requirement prevents the fixed zstd-safe 8.2.0 release" },
 ]
 
 [bans]
