@@ -1,7 +1,8 @@
 # The default configuration of archivindex-archiver.
 #
 # Top-level keys are optional and use these defaults. Unknown keys are errors. Durations use
-# humantime strings such as "30s", "1m 30s", or "10m".
+# Jiff's friendly format, such as "30s" or "1m 30s", or ISO 8601, such as "PT30S". Use hours or
+# smaller units in descending order without repetition. Write "24h" instead of "1d".
 
 # The User-Agent header value sent with every request. The default is this tool's name and version.
 # user-agent = "archivindex-archiver/0.1.0"

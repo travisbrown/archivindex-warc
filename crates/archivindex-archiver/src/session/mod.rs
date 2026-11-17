@@ -280,10 +280,10 @@ pub struct RetryConfig {
     /// Total attempts, including the first. Zero is treated as one.
     pub attempts: usize,
     /// Delay before the first retry.
-    #[serde(with = "humantime_serde")]
+    #[serde(with = "jiff::fmt::serde::unsigned_duration::friendly::compact::required")]
     pub initial_backoff: Duration,
     /// Maximum retry delay.
-    #[serde(with = "humantime_serde")]
+    #[serde(with = "jiff::fmt::serde::unsigned_duration::friendly::compact::required")]
     pub max_backoff: Duration,
 }
 

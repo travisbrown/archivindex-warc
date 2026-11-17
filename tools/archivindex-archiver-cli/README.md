@@ -64,9 +64,10 @@ archivindex-archiver archive --config capture.toml --output capture.warc < urls.
 Top-level keys are optional and use defaults when absent. An empty TOML file or an empty JSON object
 uses the default configuration. Unknown keys are errors. Set `gzip-warc = true` to compress records;
 the output filename does not select compression. [default-config.toml](default-config.toml) lists
-every key with its default value and meaning. Durations are humantime strings such as `30s` or
-`10m`, and the limits `max-capture-time` and `max-response-length` are lifted by writing
-`"unbounded"`.
+every key with its default value and meaning. Durations use Jiff's friendly format, such as `30s`
+or `1m 30s`, or ISO 8601, such as `PT30S`. Use hours or smaller units, in descending order without
+repetition. For example, write `24h` instead of `1d`. The limits `max-capture-time` and
+`max-response-length` are lifted by writing `"unbounded"`.
 
 Use `--proxy` to route requests through a SOCKS5 proxy:
 

@@ -79,8 +79,9 @@ pub struct Archiver {
 ///
 /// Configuration supports formats such as TOML and JSON. Top-level fields are optional; configured
 /// software entries require both name and version. Unknown fields are errors. Durations are
-/// `humantime` strings such as `30s` or `10m`. Write `"unbounded"` to remove a default limit. The
-/// defaults, as TOML, are:
+/// strings such as `30s` or `1m 30s`, parsed with Jiff's friendly duration format. Units must be
+/// hours or smaller, in descending order without repetition. ISO 8601 durations such as `PT30S`
+/// are also accepted. Write `"unbounded"` to remove a default limit. The defaults, as TOML, are:
 ///
 /// ```toml
 /// user-agent = "archivindex-archiver/0.1.0"  # this crate's name and version
@@ -143,7 +144,7 @@ pub struct Config {
     /// is recorded with a `WARC-Truncated` reason of `time`. Each operation is timed on its own, so
     /// a slow peer that keeps sending never trips it; [`max_capture_time`](Self::max_capture_time)
     /// bounds the whole capture.
-    #[serde(with = "humantime_serde")]
+    #[serde(with = "jiff::fmt::serde::unsigned_duration::friendly::compact::required")]
     pub timeout: Duration,
     /// The maximum time spent capturing one URL, when set.
     ///

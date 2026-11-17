@@ -196,7 +196,7 @@ pub struct SessionConfig {
     /// The policy for retrying transient failures.
     pub retry: RetryConfig,
     /// The wait between successive queued capture requests.
-    #[serde(with = "humantime_serde")]
+    #[serde(with = "jiff::fmt::serde::unsigned_duration::friendly::compact::required")]
     pub request_delay: Duration,
     /// The persistent revisit and resource-state database consulted by sessions, when set.
     pub revisit_index: Option<PathBuf>,
@@ -213,9 +213,12 @@ impl Default for SessionConfig {
     }
 }
 
-/// Serde functions for a time limit written as a `humantime` duration or as `"unbounded"`.
+/// Serde functions for a time limit written as a Jiff duration string or as `"unbounded"`.
 pub mod bounded_duration {
     use std::time::Duration;
+
+    use jiff::fmt::serde::unsigned_duration::friendly::compact::required;
+    use serde::de::value::StrDeserializer;
 
     /// Write the limit as a duration, or as `"unbounded"` when unset.
     pub fn serialize<S: serde::ser::Serializer>(
@@ -223,7 +226,7 @@ pub mod bounded_duration {
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         match limit {
-            Some(limit) => humantime_serde::serialize(limit, serializer),
+            Some(limit) => required::serialize(limit, serializer),
             None => serializer.serialize_str(super::UNBOUNDED),
         }
     }
@@ -243,12 +246,10 @@ pub mod bounded_duration {
 
             fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
                 if value == super::UNBOUNDED {
-                    return Ok(None);
+                    Ok(None)
+                } else {
+                    required::deserialize(StrDeserializer::<E>::new(value)).map(Some)
                 }
-
-                humantime_serde::re::humantime::parse_duration(value)
-                    .map(Some)
-                    .map_err(E::custom)
             }
         }
 
@@ -555,6 +556,69 @@ mod tests {
         assert!(serde_json::from_str::<Config>(r#"{"min-revisit-payload-length": -1}"#).is_err());
         assert!(serde_json::from_str::<Config>(r#"{"max-capture-time": "forever"}"#).is_err());
         assert!(serde_json::from_str::<Config>(r#"{"session": {"limit": 5}}"#).is_err());
+    }
+
+    #[test]
+    fn duration_fields_parse_and_round_trip_with_the_same_precision() {
+        for (value, expected) in [
+            ("0s", Duration::ZERO),
+            ("1m 30s", Duration::from_secs(90)),
+            ("24h", Duration::from_hours(24)),
+            ("250ms", Duration::from_millis(250)),
+            ("1us", Duration::from_micros(1)),
+            ("0.000000001s", Duration::from_nanos(1)),
+            ("PT1M30S", Duration::from_secs(90)),
+            ("18446744073709551615s 999ms 999us 999ns", Duration::MAX),
+        ] {
+            let document = serde_json::json!({
+                "timeout": value,
+                "max-capture-time": value,
+                "session": {
+                    "request-delay": value,
+                    "retry": {"initial-backoff": value, "max-backoff": value}
+                }
+            });
+            let config: Config = serde_json::from_value(document).expect(value);
+            assert_eq!(config.timeout, expected);
+            assert_eq!(config.max_capture_time, Some(expected));
+            assert_eq!(config.session.request_delay, expected);
+            assert_eq!(config.session.retry.initial_backoff, expected);
+            assert_eq!(config.session.retry.max_backoff, expected);
+
+            let written = serde_json::to_value(&config).unwrap();
+            assert_eq!(serde_json::from_value::<Config>(written).unwrap(), config);
+        }
+    }
+
+    /// Timeouts are fixed, nonnegative durations. Calendar units need a reference date.
+    #[test]
+    fn duration_fields_reject_invalid_or_ambiguous_values() {
+        for value in [
+            "-1s",
+            "1s ago",
+            "1d",
+            "1w",
+            "1mo",
+            "1y",
+            "P1D",
+            "1s 1m",
+            "1s 1s",
+            "18446744073709551616s",
+            "forever",
+        ] {
+            for document in [
+                serde_json::json!({"timeout": value}),
+                serde_json::json!({"max-capture-time": value}),
+                serde_json::json!({"session": {"request-delay": value}}),
+                serde_json::json!({"session": {"retry": {"initial-backoff": value}}}),
+                serde_json::json!({"session": {"retry": {"max-backoff": value}}}),
+            ] {
+                assert!(
+                    serde_json::from_value::<Config>(document.clone()).is_err(),
+                    "{document}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -33,9 +33,7 @@ archivindex-warc-revisit-index = { version = "0.1.0", path = "../archivindex-war
 archivindex-warc = { workspace = true, features = ["gzip", "payload-identification", "serde"] }
 fluent-uri.workspace = true
 http.workspace = true
-# Durations in configuration files are written as `humantime` strings, such as `30s`.
-humantime-serde = "1"
-jiff.workspace = true
+jiff = { workspace = true, features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
