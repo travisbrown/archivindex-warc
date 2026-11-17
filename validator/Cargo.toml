@@ -8,6 +8,7 @@ version = "0.1.0"
 authors = ["Travis Brown <travisrobertbrown@gmail.com>"]
 edition = "2024"
 rust-version = "1.98"
+readme = "README.md"
 license = "GPL-3.0-only"
 repository = "https://github.com/travisbrown/archivindex-warc"
 
@@ -29,6 +30,7 @@ description = "Validate WARC files with several independent validators"
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+readme.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
