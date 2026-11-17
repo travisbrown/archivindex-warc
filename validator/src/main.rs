@@ -112,7 +112,7 @@ fn run(cli: Cli) -> Result<bool> {
             continue;
         }
 
-        log::info!("running the {validator:?} validator");
+        tracing::info!("running the {validator:?} validator");
         let result = match validator {
             ValidatorName::ArchivindexRaw => run_archivindex(&file, Layer::Raw),
             ValidatorName::ArchivindexUntyped => run_archivindex(&file, Layer::Untyped),

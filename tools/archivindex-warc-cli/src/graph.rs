@@ -201,7 +201,7 @@ fn source(records: &[Record]) -> (String, usize) {
                 .expect("invariant violation: writing to a String");
                 reference_count += 1;
             } else {
-                log::warn!(
+                tracing::warn!(
                     "not drawing {} reference to absent record {}",
                     reference.label(),
                     String::from_utf8_lossy(&reference.target)

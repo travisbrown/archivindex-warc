@@ -134,7 +134,7 @@ fn same_target_captures(input: &Path) -> Result<HashSet<Vec<u8>>> {
         .filter(|(_, refers_to, target_uri)| responses.get(refers_to) == Some(target_uri))
         .map(|(id, _, _)| id)
         .collect::<Vec<_>>();
-    log::info!(
+    tracing::info!(
         "found {} revisit records of their originals' target URIs",
         pending.len()
     );

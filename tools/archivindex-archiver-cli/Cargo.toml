@@ -34,8 +34,8 @@ archivindex-warc-identifier.workspace = true
 archivindex-warc-ops = { path = "../../crates/archivindex-warc-ops" }
 clap.workspace = true
 fluent-uri.workspace = true
-log.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 wreq = { version = "=0.16.1", default-features = false, optional = true }
 wreq-util = { version = "=0.2.0", default-features = false, optional = true, features = [
   "emulation",

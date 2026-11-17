@@ -158,7 +158,7 @@ impl MergePlan {
                 .push(index);
         }
 
-        log::info!(
+        tracing::info!(
             "merging {} warcinfo records into {}",
             records.len(),
             groups.len()
@@ -211,7 +211,7 @@ impl MergePlan {
                     return Err(Error::MissingWarcinfoRecordId);
                 };
                 if normalize_id(dropped_id) != normalize_id(kept_id) {
-                    log::debug!(
+                    tracing::debug!(
                         "redirecting references from {} to {}",
                         String::from_utf8_lossy(dropped_id),
                         String::from_utf8_lossy(kept_id)
@@ -276,7 +276,7 @@ impl MergePlan {
                             record_id: id,
                         } => {
                             input_scope = Some((scope, id));
-                            log::debug!(
+                            tracing::debug!(
                                 "dropping the duplicate warcinfo record {}",
                                 String::from_utf8_lossy(record_id(&record).unwrap_or_default())
                             );

@@ -125,18 +125,18 @@ fn archive(options: &ArchiveOptions, quiet: bool) -> Result<CommandOutcome> {
     let summary =
         result.with_context(|| format!("cannot archive to {}", options.output.display()))?;
     if let Some(error) = &input_error {
-        log::warn!("stopped reading input early: {error}");
+        tracing::warn!("stopped reading input early: {error}");
     }
     if summary.cancelled {
-        log::warn!("stopped archiving at an interrupt");
+        tracing::warn!("stopped archiving at an interrupt");
     }
 
     for failure in &summary.failures {
-        log::warn!("failed to capture {}: {}", failure.url, failure.error);
+        tracing::warn!("failed to capture {}: {}", failure.url, failure.error);
     }
     for capture in &summary.captures {
         if capture.is_partial() {
-            log::warn!(
+            tracing::warn!(
                 "captured {} only in part: {}",
                 capture.url,
                 capture
@@ -162,7 +162,7 @@ fn archive(options: &ArchiveOptions, quiet: bool) -> Result<CommandOutcome> {
     if summary.is_complete() && input_error.is_none() {
         Ok(CommandOutcome::Success)
     } else {
-        log::warn!(
+        tracing::warn!(
             "a partial archive was published at {}",
             options.output.display()
         );

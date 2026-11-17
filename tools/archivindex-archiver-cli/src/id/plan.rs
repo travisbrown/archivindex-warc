@@ -69,6 +69,6 @@ pub(super) fn redirects(input: &Path) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
             );
         }
     }
-    log::info!("changing {} record identifiers", redirects.len());
+    tracing::info!("changing {} record identifiers", redirects.len());
     Ok(redirects)
 }

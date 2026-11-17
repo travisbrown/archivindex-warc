@@ -73,7 +73,9 @@ pub fn framed_payloads(input: &Path, output: &Path) -> Result<FramedPayloadsSumm
                         rewritten += 1;
                     }
                     Ok(None) => {}
-                    Err(kept) => log::warn!("keeping the payload digest of record {index}: {kept}"),
+                    Err(kept) => {
+                        tracing::warn!("keeping the payload digest of record {index}: {kept}");
+                    }
                 }
             }
 

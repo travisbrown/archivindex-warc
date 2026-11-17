@@ -17,8 +17,8 @@ archivindex-http.workspace = true
 archivindex-publication.workspace = true
 archivindex-warc.workspace = true
 flate2.workspace = true
-log.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 archivindex-test-support.workspace = true

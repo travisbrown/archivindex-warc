@@ -318,7 +318,7 @@ fn run(cli: Cli) -> Result<CommandOutcome> {
                 ExportFormat::Json => export::json::export(reader, BufWriter::new(stdout)),
             }
             .with_context(|| format!("cannot export {}", input.display()))?;
-            log::info!("exported {}", plural(records, "record"));
+            tracing::info!("exported {}", plural(records, "record"));
         }
         Command::Graph { input, output } => {
             let summary = graph::graph(&input, output.as_deref())?;
@@ -609,7 +609,7 @@ fn lint(
     }
 
     if problems > 0 {
-        log::warn!(
+        tracing::warn!(
             "found {} in {}",
             plural(problems, "problem"),
             input.display()

@@ -43,7 +43,7 @@ pub fn warc_files(path: &Path) -> Result<Vec<PathBuf>> {
     }
     files.sort_unstable();
     if files.is_empty() {
-        log::warn!("no .warc or .warc.gz files in {}", path.display());
+        tracing::warn!("no .warc or .warc.gz files in {}", path.display());
     }
 
     Ok(files.into_iter().map(|(_, path)| path).collect())
@@ -72,7 +72,7 @@ pub fn load(index: &mut Index, input: &Path) -> Result<LoadSummary> {
 
     index
         .load_records(reader.iter_records::<NoExtension>(), |record, error| {
-            log::warn!(
+            tracing::warn!(
                 "skipping record {} at {} of {}: {error}",
                 record.value.core().record_id,
                 record.location,

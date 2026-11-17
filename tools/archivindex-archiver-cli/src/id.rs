@@ -85,7 +85,7 @@ pub fn record_ids(input: &Path, output: &Path) -> Result<Summary> {
                     reidentified += 1;
                 }
                 Err(reason) => {
-                    log::warn!("retaining the identifier of record {index}: {reason}");
+                    tracing::warn!("retaining the identifier of record {index}: {reason}");
                     unidentifiable += 1;
                 }
             }

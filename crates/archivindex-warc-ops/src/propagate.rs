@@ -92,7 +92,7 @@ fn response_payload_types(input: &Path) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
             continue;
         };
         if MediaType::parse(value.trim_ascii()).is_err() {
-            log::warn!(
+            tracing::warn!(
                 "not repeating the malformed identified payload type of {}",
                 String::from_utf8_lossy(id.trim_ascii())
             );
@@ -103,7 +103,7 @@ fn response_payload_types(input: &Path) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
             .or_insert_with(|| value.to_vec());
     }
 
-    log::info!(
+    tracing::info!(
         "found {} response records with an identified payload type",
         originals.len()
     );

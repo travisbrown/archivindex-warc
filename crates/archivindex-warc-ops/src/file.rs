@@ -155,7 +155,7 @@ pub fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Record>>>(
     let mut index = 0;
 
     for (path, reader) in readers {
-        log::info!("copying records from {}", path.display());
+        tracing::info!("copying records from {}", path.display());
 
         for result in reader.iter_raw_records().records() {
             let record = result.map_err(|source| Error::Read {
@@ -168,7 +168,7 @@ pub fn transform<F: FnMut(usize, raw::Record) -> Result<Option<raw::Record>>>(
                     path: partial.clone(),
                     source,
                 })?;
-                log::trace!(
+                tracing::trace!(
                     "wrote {} bytes at offset {}",
                     written.length,
                     written.offset

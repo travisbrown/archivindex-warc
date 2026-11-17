@@ -33,9 +33,9 @@ clap.workspace = true
 csv = "1"
 d2-little = "0.7.1-1"
 fluent-uri.workspace = true
-log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 archivindex-test-support.workspace = true
