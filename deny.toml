@@ -6,6 +6,8 @@ version = 2
 ignore = [
   # The graph renderer `d2-little` depends on `ttf-parser`.
   { id = "RUSTSEC-2026-0192", reason = "`ttf-parser` is unmaintained" },
+  # The comparison tests and standalone validator retain these upstream implementations.
+  { id = "RUSTSEC-2026-0543", reason = "Used by upstream `warc` and `warcat`" },
 ]
 
 [bans]
