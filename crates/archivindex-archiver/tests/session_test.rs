@@ -1710,8 +1710,8 @@ fn session_honours_an_http_date_retry_after() -> Result<(), Box<dyn std::error::
         let attempt = server_attempts.fetch_add(1, Ordering::Relaxed);
         let reply = if attempt == 0 {
             // A real `Retry-After` date is an IMF-fixdate in GMT, not RFC 2822's `+0000` form.
-            let retry_at = (chrono::Utc::now() + chrono::Duration::seconds(2))
-                .format("%a, %d %b %Y %H:%M:%S GMT");
+            let retry_at = (jiff::Timestamp::now() + jiff::SignedDuration::from_secs(2))
+                .strftime("%a, %d %b %Y %H:%M:%S GMT");
             response(
                 503,
                 &[

@@ -11,8 +11,8 @@ use archivindex_warc::record::fields::dcmi::DcmiTerm;
 use archivindex_warc::record::fields::metadata::MetadataField;
 use archivindex_warc::record::fields::warcinfo::WarcinfoField;
 use archivindex_warc::value::WarcDate;
-use chrono::Utc;
 use fluent_uri::Uri;
+use jiff::Timestamp;
 
 use super::outcome::DATE_PRECISION;
 use super::record_id::assign_record_id;
@@ -58,11 +58,14 @@ fn software_value(software: &Software, engine: Engine) -> String {
 /// Check that the configured software and operator, and the backend's engine, can be written as
 /// `warc-fields` values.
 pub fn check_warcinfo_fields(config: &Config, engine: Engine) -> Result<(), FieldsError> {
-    let builder = Record::<NoExtension>::warcinfo(WarcDate::new(Utc::now(), DATE_PRECISION))
-        .field(
-            WarcinfoField::Software,
-            &software_value(&config.software, engine),
-        )?;
+    let builder = Record::<NoExtension>::warcinfo(WarcDate::new(
+        jiff::tz::Offset::UTC.to_datetime(Timestamp::now()),
+        DATE_PRECISION,
+    ))
+    .field(
+        WarcinfoField::Software,
+        &software_value(&config.software, engine),
+    )?;
     if let Some(operator) = &config.operator {
         builder.operator(&operator.name, operator.email.as_deref())?;
     }
@@ -82,12 +85,15 @@ pub struct MetadataValues<'a> {
 ///
 /// `software` and `http-header-user-agent` are always included.
 pub fn warcinfo_record(warc_name: &str, options: &WarcinfoOptions<'_>) -> Result<Record, Error> {
-    let mut builder = Record::warcinfo(WarcDate::new(Utc::now(), DATE_PRECISION))
-        .filename(warc_name)?
-        .field(
-            WarcinfoField::Software,
-            &software_value(options.software, options.engine),
-        )?;
+    let mut builder = Record::warcinfo(WarcDate::new(
+        jiff::tz::Offset::UTC.to_datetime(Timestamp::now()),
+        DATE_PRECISION,
+    ))
+    .filename(warc_name)?
+    .field(
+        WarcinfoField::Software,
+        &software_value(options.software, options.engine),
+    )?;
     if let Some(operator) = options.operator {
         builder = builder.operator(&operator.name, operator.email.as_deref())?;
     }

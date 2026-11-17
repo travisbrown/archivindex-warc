@@ -365,7 +365,7 @@ pub struct RevisitOriginal {
 mod tests {
     use std::net::Ipv4Addr;
 
-    use chrono::Utc;
+    use jiff::Timestamp;
 
     use super::*;
     use crate::record::RenderError;
@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn the_records_share_the_capture_fields_and_link_in_write_order() {
         let ip_address = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Timestamp::now())
             .warcinfo_id(warcinfo_id())
             .ip_address(ip_address)
             .payload_digest(entity_body_digest(b"hello"))
@@ -474,7 +474,7 @@ mod tests {
                 .and_then(|headers| headers.identified_payload_type.clone())
         };
 
-        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Timestamp::now())
             .identify_payload_type()
             .exchange(REQUEST_BLOCK, response_block)
             .expect("a capture");
@@ -487,7 +487,7 @@ mod tests {
         );
         records.response.into_raw().expect("a renderable response");
 
-        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Timestamp::now())
             .exchange(REQUEST_BLOCK, response_block)
             .expect("a capture");
 
@@ -498,7 +498,7 @@ mod tests {
     #[cfg(feature = "payload-identification")]
     #[test]
     fn a_capture_told_to_identify_omits_the_field_it_cannot_fill() {
-        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Timestamp::now())
             .identify_payload_type()
             .exchange(
                 REQUEST_BLOCK,
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn a_capture_without_a_fetch_time_has_no_metadata_record() {
-        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Timestamp::now())
             .exchange(REQUEST_BLOCK, RESPONSE_BLOCK)
             .expect("a capture");
 
@@ -526,7 +526,7 @@ mod tests {
 
     #[test]
     fn a_truncation_reason_lands_on_the_response_record_alone() {
-        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Timestamp::now())
             .payload_digest(entity_body_digest(b"other"))
             .truncated(TruncatedType::Length)
             .exchange(REQUEST_BLOCK, RESPONSE_BLOCK)
@@ -547,7 +547,7 @@ mod tests {
     const NOT_MODIFIED_BLOCK: &[u8] = b"HTTP/1.1 304 Not Modified\r\netag: \"1\"\r\n\r\n";
 
     fn original() -> CaptureRecords {
-        CaptureEvent::new(target_uri(), Utc::now())
+        CaptureEvent::new(target_uri(), Timestamp::now())
             .payload_digest(entity_body_digest(b"hello"))
             .exchange(REQUEST_BLOCK, RESPONSE_BLOCK)
             .expect("a capture")
@@ -580,7 +580,7 @@ mod tests {
     fn a_revisit_repeats_the_identified_payload_type_of_its_original() {
         let mut original = original().revisit_original();
         original.identified_payload_type = Some(MediaType::TEXT_PLAIN);
-        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Timestamp::now())
             .payload_digest(entity_body_digest(b"hello"))
             .revisit_exchange(
                 REQUEST_BLOCK,
@@ -602,7 +602,7 @@ mod tests {
         let original = original();
         let ip_address = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let head = &RESPONSE_BLOCK[..RESPONSE_BLOCK.len() - b"hello".len()];
-        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Timestamp::now())
             .warcinfo_id(warcinfo_id())
             .ip_address(ip_address)
             .payload_digest(entity_body_digest(b"hello"))
@@ -656,7 +656,7 @@ mod tests {
 
     #[test]
     fn an_identical_payload_revisit_without_a_block_is_not_truncated() {
-        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Timestamp::now())
             .payload_digest(entity_body_digest(b"hello"))
             .truncated(TruncatedType::Disconnect)
             .revisit_exchange(
@@ -675,7 +675,7 @@ mod tests {
 
     #[test]
     fn a_server_not_modified_revisit_stores_the_response_as_received() {
-        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Timestamp::now())
             .payload_digest(entity_body_digest(b"hello"))
             .revisit_exchange(
                 REQUEST_BLOCK,
@@ -701,7 +701,7 @@ mod tests {
 
     #[test]
     fn a_server_not_modified_revisit_keeps_the_event_truncation_reason() {
-        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Timestamp::now())
             .truncated(TruncatedType::Disconnect)
             .revisit_exchange(
                 REQUEST_BLOCK,
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn an_identical_payload_revisit_without_a_digest_fails_rendering() {
-        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Timestamp::now())
             .revisit_exchange(
                 REQUEST_BLOCK,
                 Vec::new(),
@@ -736,7 +736,7 @@ mod tests {
 
     #[test]
     fn a_mismatched_payload_digest_fails_rendering_the_response() {
-        let records: CaptureRecords = CaptureEvent::new(target_uri(), Utc::now())
+        let records: CaptureRecords = CaptureEvent::new(target_uri(), Timestamp::now())
             .payload_digest(entity_body_digest(b"other"))
             .exchange(REQUEST_BLOCK, RESPONSE_BLOCK)
             .expect("a capture");

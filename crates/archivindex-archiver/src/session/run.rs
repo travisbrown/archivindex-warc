@@ -249,7 +249,7 @@ impl Session<'_> {
                         |exchange| {
                             delays.for_retry_after(
                                 exchange.response_field("retry-after").as_deref(),
-                                chrono::Utc::now(),
+                                jiff::Timestamp::now(),
                             )
                         },
                     );

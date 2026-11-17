@@ -6,11 +6,11 @@ mod common;
 
 use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::record::Record;
-use chrono::Utc;
+use jiff::Timestamp;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The builder generates a `urn:uuid` record identifier and a body describing WARC 1.1.
-    let record: Record = Record::warcinfo(Utc::now())
+    let record: Record = Record::warcinfo(Timestamp::now())
         .filename("warc_example.warc")?
         .hostname("localhost")?
         .build();

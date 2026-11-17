@@ -411,7 +411,7 @@ impl Collection {
 
 /// What a capture's summary takes from its final hop.
 struct FinalHop {
-    date: chrono::DateTime<chrono::Utc>,
+    date: jiff::civil::DateTime,
     status: u16,
     size: u64,
     truncated: Option<TruncatedType>,

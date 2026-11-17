@@ -3,7 +3,7 @@
 //! One-shot archiving and crawl sessions both report their work in these types.
 
 use archivindex_warc::record::header::truncated_type::TruncatedType;
-use chrono::{DateTime, Utc};
+use jiff::civil::DateTime;
 
 use crate::Error;
 
@@ -71,8 +71,8 @@ pub struct CaptureSummary {
     pub url: String,
     /// Where the URL came from.
     pub origin: Origin,
-    /// When capture of the final response began.
-    pub date: DateTime<Utc>,
+    /// When capture of the final response began, in UTC.
+    pub date: DateTime,
     /// The final response status.
     pub status: u16,
     /// The entity-body length after transfer decoding, or the stored body length if decoding fails.

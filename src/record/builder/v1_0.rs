@@ -8,10 +8,10 @@
 //! use archivindex_warc::record::Record;
 //! use archivindex_warc::record::builder::v1_0;
 //! use archivindex_warc::version::WarcVersion;
-//! use chrono::Utc;
+//! use jiff::Timestamp;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let record: Record = v1_0::response("https://example.com/", Utc::now())?
+//! let record: Record = v1_0::response("https://example.com/", Timestamp::now())?
 //!     .body("HTTP/1.1 200 OK\r\n\r\nhello")?;
 //!
 //! assert_eq!(record.version(), WarcVersion::V1_0);
@@ -44,12 +44,12 @@ use crate::version::WarcVersion;
 /// # use archivindex_warc::record::extension::NoExtension;
 /// # use archivindex_warc::record::header::RevisitProfile;
 /// # use archivindex_warc::version::WarcVersion;
-/// # use chrono::Utc;
+/// # use jiff::Timestamp;
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let profile = RevisitProfile::ServerNotModified(WarcVersion::V1_0);
 ///
-/// let builder = v1_0::revisit::<NoExtension>("https://example.com/", Utc::now(), profile)?
-///     .refers_to_date(Utc::now());
+/// let builder = v1_0::revisit::<NoExtension>("https://example.com/", Timestamp::now(), profile)?
+///     .refers_to_date(Timestamp::now());
 /// # Ok(())
 /// # }
 /// ```

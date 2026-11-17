@@ -440,11 +440,15 @@ pub fn update_resource(
 }
 
 fn observation_parts(date: WarcDate) -> (String, i64, i64) {
-    let date_time = date.date_time();
+    let elapsed = date
+        .date_time()
+        .duration_since(jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0));
+    let nanos = elapsed.subsec_nanos();
+    // Keep the stored fraction nonnegative, including for observations before the epoch.
     (
         date.to_string(),
-        date_time.timestamp(),
-        i64::from(date_time.timestamp_subsec_nanos()),
+        elapsed.as_secs() - i64::from(nanos < 0),
+        i64::from(nanos.rem_euclid(1_000_000_000)),
     )
 }
 
@@ -527,6 +531,26 @@ mod tests {
 
     use super::*;
     use crate::{Index, prop};
+
+    /// Stored seconds and nanoseconds retain their meaning across date library changes.
+    #[test]
+    fn observation_parts_preserve_unix_seconds_and_nonnegative_fractions() {
+        for (value, seconds, nanos) in [
+            ("0000-01-01T00:00:00Z", -62_167_219_200, 0),
+            ("1969-12-31T23:59:59Z", -1, 0),
+            ("1969-12-31T23:59:59.999999999Z", -1, 999_999_999),
+            ("1970-01-01T00:00:00Z", 0, 0),
+            ("1970-01-01T00:00:00.000000001Z", 0, 1),
+            (
+                "9999-12-31T23:59:59.999999999Z",
+                253_402_300_799,
+                999_999_999,
+            ),
+        ] {
+            let date = parse_date("observed_at", value.to_owned()).unwrap();
+            assert_eq!(observation_parts(date), (value.to_owned(), seconds, nanos));
+        }
+    }
 
     #[proptest::property_test]
     fn integer_columns_round_trip(#[strategy = 0..=u64::MAX >> 1] value: u64) {

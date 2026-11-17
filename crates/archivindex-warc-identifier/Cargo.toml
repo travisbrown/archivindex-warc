@@ -20,9 +20,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 archivindex-warc.workspace = true
 data-encoding.workspace = true
 fluent-uri.workspace = true
+jiff.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 archivindex-test-support.workspace = true
-chrono.workspace = true

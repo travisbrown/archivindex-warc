@@ -73,7 +73,7 @@ fn transport_metadata_is_recorded_on_the_correct_warc_records() {
             let request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".to_vec();
             let ip_address = Some("192.0.2.1".parse().unwrap());
             let started_at = "2026-10-06T12:34:56.123456Z"
-                .parse::<chrono::DateTime<chrono::Utc>>()
+                .parse::<jiff::Timestamp>()
                 .unwrap();
             let captured = HttpExchange {
                 request: request.clone(),
@@ -109,8 +109,14 @@ fn transport_metadata_is_recorded_on_the_correct_warc_records() {
                 .iter()
                 .find(|r| r.type_name() == "response")
                 .unwrap();
-            assert_eq!(request_record.core().date.date_time(), started_at);
-            assert_eq!(response_record.core().date.date_time(), started_at);
+            assert_eq!(
+                request_record.core().date.date_time(),
+                jiff::tz::Offset::UTC.to_datetime(started_at)
+            );
+            assert_eq!(
+                response_record.core().date.date_time(),
+                jiff::tz::Offset::UTC.to_datetime(started_at)
+            );
             assert_eq!(request_record.protocols(), protocols);
             assert_eq!(response_record.protocols(), protocols);
             assert_eq!(request_record.core().truncated, None);

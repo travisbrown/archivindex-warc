@@ -5,7 +5,7 @@
 
 use archivindex_warc::parse::raw::RecordHeader;
 use archivindex_warc::version::WarcVersion;
-use chrono::{SecondsFormat, Utc};
+use jiff::Timestamp;
 use uuid::Uuid;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         (
             "WARC-Date".to_owned(),
-            format!(" {}", Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)).into_bytes(),
+            format!(" {}", Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ")).into_bytes(),
         ),
         (
             "Content-Length".to_owned(),

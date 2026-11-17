@@ -16,14 +16,14 @@ pub(super) fn assign_record_id(record: &mut Record) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use archivindex_warc::value::WarcDate;
-    use chrono::DateTime;
+    use jiff::Timestamp;
 
     use super::*;
 
     fn response(timestamp: i64, target: &str, body: &[u8]) -> Record {
         Record::response(
             target,
-            WarcDate::from(DateTime::from_timestamp_millis(timestamp).unwrap()),
+            WarcDate::from(Timestamp::from_millisecond(timestamp).unwrap()),
         )
         .unwrap()
         .body(body.to_vec())
@@ -51,7 +51,7 @@ mod tests {
     /// A warcinfo record has no target URI, so the scheme's absent-target vector applies to it.
     #[test]
     fn absent_target_and_empty_block_vector() {
-        let mut record = Record::warcinfo(WarcDate::from(DateTime::UNIX_EPOCH)).build();
+        let mut record = Record::warcinfo(WarcDate::from(Timestamp::UNIX_EPOCH)).build();
         if let Record::Warcinfo { body, .. } = &mut record {
             *body = archivindex_warc::record::FieldsBlock::Raw(Vec::new());
         }

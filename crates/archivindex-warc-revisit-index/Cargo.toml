@@ -29,6 +29,7 @@ archivindex-http.workspace = true
 archivindex-http-client.workspace = true
 archivindex-warc.workspace = true
 fluent-uri.workspace = true
+jiff.workspace = true
 rusqlite = "0.43"
 thiserror.workspace = true
 

@@ -7,11 +7,11 @@ mod common;
 use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::parse::raw::RecordHeader;
 use archivindex_warc::version::WarcVersion;
-use chrono::{SecondsFormat, Utc};
+use jiff::Timestamp;
 use uuid::Uuid;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let date = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    let date = Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ");
     let body = format!("wrote to the file on {date}").into_bytes();
 
     let mut header = RecordHeader::new(WarcVersion::V1_1);

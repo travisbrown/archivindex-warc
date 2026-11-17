@@ -3,8 +3,8 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use chrono::{DateTime, Utc};
 use fluent_uri::Uri;
+use jiff::SignedDuration;
 use proptest::prelude::*;
 use proptest::sample::select;
 
@@ -124,12 +124,14 @@ pub fn warc_date(version: WarcVersion) -> impl Strategy<Value = WarcDate> {
 
     // The range spans the whole four-digit year the grammar writes.
     (
-        0..=253_402_300_799_i64,
-        0..1_000_000_000_u32,
+        -62_167_219_200..=253_402_300_799_i64,
+        0..1_000_000_000_i32,
         select(precisions),
     )
         .prop_map(|(seconds, nanoseconds, precision)| {
-            let date_time = DateTime::<Utc>::from_timestamp(seconds, nanoseconds)
+            let date_time = jiff::civil::date(1970, 1, 1)
+                .at(0, 0, 0, 0)
+                .checked_add(SignedDuration::new(seconds, nanoseconds))
                 .expect("invariant violation: a generated instant is in range");
 
             WarcDate::new(date_time, precision)

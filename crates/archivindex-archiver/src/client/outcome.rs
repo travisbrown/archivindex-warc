@@ -114,7 +114,10 @@ impl Exchange {
         });
 
         Self {
-            date: WarcDate::new(captured.started_at, DATE_PRECISION),
+            date: WarcDate::new(
+                jiff::tz::Offset::UTC.to_datetime(captured.started_at),
+                DATE_PRECISION,
+            ),
             method: method.clone(),
             status: captured.status,
             decoded,
@@ -421,7 +424,7 @@ mod tests {
                 tls_version: None,
                 target_uri: Uri::parse("https://example.com/".to_owned()).unwrap(),
                 ip_address: None,
-                started_at: chrono::Utc::now(),
+                started_at: jiff::Timestamp::now(),
                 fetch_time: Duration::ZERO,
                 truncated,
             };

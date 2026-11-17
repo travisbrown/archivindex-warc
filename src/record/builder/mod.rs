@@ -9,14 +9,14 @@
 //! ```
 //! use archivindex_warc::record::{Record, RecordHeader};
 //! use archivindex_warc::value::MediaType;
-//! use chrono::Utc;
+//! use jiff::Timestamp;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let record: Record = Record::response("https://example.com/", Utc::now())?
+//! let record: Record = Record::response("https://example.com/", Timestamp::now())?
 //!     .content_type(MediaType::HTTP)
 //!     .body("HTTP/1.1 200 OK\r\n\r\nhello")?;
 //!
-//! let header: RecordHeader = Record::response("https://example.com/", Utc::now())?.build();
+//! let header: RecordHeader = Record::response("https://example.com/", Timestamp::now())?.build();
 //!
 //! assert_eq!(header.type_name(), record.type_name());
 //! # Ok(())
@@ -507,9 +507,9 @@ macro_rules! capture_builder {
 ///
 /// ```
 /// # use archivindex_warc::record::{Record, extension::NoExtension};
-/// # use chrono::Utc;
+/// # use jiff::Timestamp;
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let record = Record::<NoExtension>::warcinfo(Utc::now())
+/// let record = Record::<NoExtension>::warcinfo(Timestamp::now())
 ///     .hostname("crawling017.archive.org")?
 ///     .build();
 ///
@@ -844,12 +844,12 @@ macro_rules! revisit_builder {
 ///
 /// ```
 /// # use archivindex_warc::record::{Record, extension::NoExtension, header::RevisitProfile};
-/// # use chrono::Utc;
+/// # use jiff::Timestamp;
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let profile = RevisitProfile::SERVER_NOT_MODIFIED;
 ///
-/// let builder = Record::<NoExtension>::revisit("https://example.com/", Utc::now(), profile)?
-///     .refers_to_date(Utc::now());
+/// let builder = Record::<NoExtension>::revisit("https://example.com/", Timestamp::now(), profile)?
+///     .refers_to_date(Timestamp::now());
 ///
 /// assert_eq!(builder.build().type_name(), "revisit");
 /// # Ok(())

@@ -169,7 +169,11 @@ fn length_prefixed(write: &mut impl FnMut(&[u8]), value: &str) {
 
 /// Encode a date as unsigned Unix microseconds, refusing dates before 1970.
 fn date_bytes(date: WarcDate, field: Field) -> Result<[u8; 8], Error> {
-    u64::try_from(date.date_time().timestamp_micros())
+    let elapsed = date
+        .date_time()
+        .duration_since(jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0));
+    // Round down so even the last nanosecond before the epoch remains negative.
+    u64::try_from(elapsed.as_nanos().div_euclid(1_000))
         .map(u64::to_be_bytes)
         .map_err(|_| Error::InvalidField(field))
 }

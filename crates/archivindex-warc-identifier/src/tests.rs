@@ -2,7 +2,7 @@ use archivindex_test_support::warc::render;
 use archivindex_warc::parse::raw;
 use archivindex_warc::record::header::RevisitProfile;
 use archivindex_warc::version::WarcVersion;
-use chrono::DateTime;
+use jiff::Timestamp;
 
 use super::*;
 
@@ -114,7 +114,11 @@ fn dates_use_archiver_precision() {
 /// Dates are unsigned Unix microseconds, since the archiver never writes a date before 1970.
 #[test]
 fn rejects_dates_before_1970() {
-    for date in ["1969-12-31T23:59:59.999999Z", "0000-01-01T00:00:00Z"] {
+    for date in [
+        "1969-12-31T23:59:59.999999999Z",
+        "1969-12-31T23:59:59.999999Z",
+        "0000-01-01T00:00:00Z",
+    ] {
         assert!(matches!(
             record_id(&record(date, &[])),
             Err(Error::InvalidField(Field::Date))
@@ -301,7 +305,7 @@ fn rejects_segmented_records() {
             Err(Error::Segmented(found)) if found == field
         ));
     }
-    let date = WarcDate::from(DateTime::UNIX_EPOCH);
+    let date = WarcDate::from(Timestamp::UNIX_EPOCH);
     let record = Record::response("https://example.org/", date)
         .unwrap()
         .segment_origin()
@@ -316,7 +320,7 @@ fn rejects_segmented_records() {
 /// Typed capture properties and their serialized representation must give the same ID.
 #[test]
 fn typed_and_raw_records_agree() {
-    let date = WarcDate::from(DateTime::from_timestamp_micros(1_234_001).unwrap());
+    let date = WarcDate::from(Timestamp::from_microsecond(1_234_001).unwrap());
     let record = Record::response("https://example.org/", date)
         .unwrap()
         .warcinfo_id(Uri::parse("urn:uuid:info".to_owned()).unwrap())
@@ -332,7 +336,7 @@ fn typed_and_raw_records_agree() {
     )
     .unwrap()
     .refers_to_target_uri(Uri::parse("https://example.org/original".to_owned()).unwrap())
-    .refers_to_date(WarcDate::from(DateTime::UNIX_EPOCH))
+    .refers_to_date(WarcDate::from(Timestamp::UNIX_EPOCH))
     .body(b"abc".to_vec())
     .unwrap();
     let typed = IdentityV1::from_record(&record).unwrap().uri();

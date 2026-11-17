@@ -8,7 +8,7 @@ mod common;
 use archivindex_warc::io::write::WarcWriter;
 use archivindex_warc::parse::raw::{Record, RecordHeader};
 use archivindex_warc::version::WarcVersion;
-use chrono::{SecondsFormat, Utc};
+use jiff::Timestamp;
 use uuid::Uuid;
 
 /// Build a raw record with the given type, body, and additional field lines.
@@ -25,7 +25,7 @@ fn record(record_type: &str, lines: &[(&str, &str)], body: Vec<u8>) -> Record {
         ),
         (
             "WARC-Date".to_owned(),
-            format!(" {}", Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)).into_bytes(),
+            format!(" {}", Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ")).into_bytes(),
         ),
     ];
     header.headers.extend(
@@ -42,7 +42,7 @@ fn record(record_type: &str, lines: &[(&str, &str)], body: Vec<u8>) -> Record {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let date = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    let date = Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ");
 
     let warcinfo = record(
         "warcinfo",
